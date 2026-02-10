@@ -1,0 +1,24 @@
+[package]
+name = "unifuse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Кроссплатформенная async FUSE-абстракция (rfuse3 + winfsp-rs)"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[target.'cfg(unix)'.dependencies]
+rfuse3 = { workspace = true }
+libc = { workspace = true }
+nix = { version = "0.29", features = ["user"] }
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+futures-util = "0.3"

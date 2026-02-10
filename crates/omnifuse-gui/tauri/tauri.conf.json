@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OmniFuse",
+  "identifier": "com.omnifuse.app",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../web" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../web" }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OmniFuse",
+        "width": 560,
+        "height": 520,
+        "resizable": true,
+        "minWidth": 440,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

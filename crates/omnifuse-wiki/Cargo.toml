@@ -1,0 +1,20 @@
+[package]
+name = "omnifuse-wiki"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Wiki backend для OmniFuse"
+
+[lints]
+workspace = true
+
+[dependencies]
+omnifuse-core = { path = "../omnifuse-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+diffy = { workspace = true }

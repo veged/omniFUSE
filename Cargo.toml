@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/unifuse",
+  "crates/omnifuse-core",
+  "crates/omnifuse-git",
+  "crates/omnifuse-wiki",
+  "crates/omnifuse-cli",
+  "crates/omnifuse-gui/tauri"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Общие
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "6"
+chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+tempfile = "3"
+inventory = "0.3"
+toml = "0.8"
+
+# FUSE (Linux/macOS) — async, tokio-native
+rfuse3 = { version = "0.0.5", features = ["tokio-runtime"] }
+
+# Merge
+diffy = "0.4"
+
+# Git
+gix = { version = "0.72", default-features = false, features = [
+  "blocking-network-client",
+  "worktree-mutation"
+] }
+ignore = "0.4"
+
+# Wiki/HTTP
+reqwest = { version = "0.12", features = ["json"] }
+url = "2"
+
+# Dev
+axum = "0.7"
+tower = "0.5"
+http = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

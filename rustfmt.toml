@@ -1,0 +1,94 @@
+# rustfmt Configuration
+# Edition: 2024, Nightly features, Max width: 120
+
+# ========== CRITICAL: ENABLE NIGHTLY FEATURES FIRST ==========
+# This MUST be at the top before any unstable options
+unstable_features = true
+
+# ========== EDITION AND STYLE ==========
+# Rust edition — must match Cargo.toml
+edition = "2024"
+
+# Style edition — controls formatting rules (2024 style: const → type → module)
+style_edition = "2024"
+
+# ========== BASIC FORMATTING ==========
+# Maximum line width before wrapping
+max_width = 120
+
+# Use spaces instead of tabs
+hard_tabs = false
+
+# Number of spaces per indentation level
+tab_spaces = 2
+
+# ========== BLANK LINES ==========
+# Maximum number of blank lines allowed (unstable)
+blank_lines_upper_bound = 1
+
+# ========== IMPORTS ==========
+# Reorder imports alphabetically (stable)
+reorder_imports = true
+
+# Reorder module declarations (stable)
+reorder_modules = true
+
+# Import granularity: "Crate" groups by crate (unstable)
+imports_granularity = "Crate"
+
+# Group imports: std → external → crate (unstable)
+group_imports = "StdExternalCrate"
+
+# ========== CODE FORMATTING ==========
+# Format code blocks in doc comments (unstable)
+format_code_in_doc_comments = true
+
+# ========== INDENTATION STYLE ==========
+# Function parameters layout (renamed from fn_args_layout)
+fn_params_layout = "Tall"
+
+# ========== COMMENTS ==========
+# Don't wrap comments (preserve manual formatting) (unstable)
+comment_width = 0
+
+# Normalize doc comments (use consistent style) (unstable)
+normalize_comments = true
+
+# Don't wrap long doc attributes (unstable)
+wrap_comments = false
+
+# ========== STRUCT AND LITERALS ==========
+# Use field shorthand (Point { x, y } instead of Point { x: x, y: y })
+use_field_init_shorthand = true
+
+# Don't format string literals (unstable)
+format_strings = false
+
+# ========== TRAILING ELEMENTS ==========
+# Never add trailing commas (unstable)
+trailing_comma = "Never"
+
+# Don't add trailing semicolons in macros (unstable)
+trailing_semicolon = false
+
+# ========== WHERE CLAUSE ==========
+# Put where clause on new line (unstable)
+where_single_line = false
+
+# ========== FUNCTION FORMATTING ==========
+# Function definition brace style (unstable)
+brace_style = "SameLineWhere"
+
+# ========== MATCH AND CONDITIONALS ==========
+# Don't force multiline blocks (unstable)
+force_multiline_blocks = false
+
+# ========== MISC ==========
+# Merge derives when possible
+merge_derives = true
+
+# Reorder impl items (unstable)
+reorder_impl_items = true
+
+# Remove nested parens
+remove_nested_parens = true

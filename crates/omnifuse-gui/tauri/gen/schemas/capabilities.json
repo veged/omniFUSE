@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions for OmniFuse","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:event:allow-listen","core:event:allow-emit","dialog:default","dialog:allow-open"]}}
