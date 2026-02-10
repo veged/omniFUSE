@@ -1,6 +1,6 @@
 # omniFUSE
 
-![](./omniFUSE.png=200x200)
+<img src="./omniFUSE.png" width="200" height="200" alt="omniFUSE logo">
 
 Universal virtual filesystem — mount git repos, wikis, and cloud storage as local directories.
 
