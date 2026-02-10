@@ -1,5 +1,7 @@
 # omniFUSE
 
+![](omniFUSE.png)
+
 Universal virtual filesystem — mount git repos, wikis, and cloud storage as local directories.
 
 Edit files with your favorite editor, and **omniFUSE** syncs changes automatically.
