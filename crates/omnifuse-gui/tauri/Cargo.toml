@@ -3,7 +3,13 @@ name = "omnifuse-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "OmniFuse GUI (Tauri)"
+keywords = ["fuse", "gui", "tauri", "vfs", "filesystem"]
+categories = ["gui", "filesystem"]
 
 [[bin]]
 name = "omnifuse-gui"

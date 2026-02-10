@@ -3,7 +3,17 @@ name = "omnifuse-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "OmniFuse core: Backend trait, SyncEngine, VFS, FileBufferManager"
+keywords = ["fuse", "vfs", "sync-engine", "filesystem", "backend"]
+categories = ["filesystem"]
+
+[features]
+## Expose test utilities (MockBackend, TestEventHandler, etc.) for integration tests.
+test-utils = []
 
 [lints]
 workspace = true
@@ -21,3 +31,8 @@ toml = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs"] }
 xattr = "1"
+
+[dev-dependencies]
+omnifuse-core = { path = ".", features = ["test-utils"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }

@@ -1,0 +1,52 @@
+# omniFUSE CI/CD pipeline for SourceCraft.dev
+# Docs: https://sourcecraft.dev/portal/docs/en/sourcecraft/operations/ci-cd
+
+on:
+  push:
+    - workflows: [check, test]
+      filter:
+        branches: ["main"]
+  pull_request:
+    - workflows: [check, test]
+
+workflows:
+  check:
+    tasks:
+      - name: clippy
+      - name: fmt
+
+  test:
+    tasks:
+      - name: unit-tests
+      - name: integration-tests
+
+tasks:
+  - name: clippy
+    cubes:
+      - name: run-clippy
+        image: rustlang/rust:nightly
+        script:
+          - cargo clippy --workspace -- -D warnings
+
+  - name: fmt
+    cubes:
+      - name: run-fmt
+        image: rustlang/rust:nightly
+        script:
+          - cargo fmt --all -- --check
+
+  - name: unit-tests
+    cubes:
+      - name: run-tests
+        image: rustlang/rust:nightly
+        script:
+          - apt-get update && apt-get install -y fuse3 libfuse3-dev
+          - cargo test --workspace -- --skip fuse_mount --skip real_api
+
+  - name: integration-tests
+    cubes:
+      - name: run-fuse-tests
+        image: rustlang/rust:nightly
+        script:
+          - apt-get update && apt-get install -y fuse3 libfuse3-dev
+          - cargo test --workspace --test fuse_mount_tests

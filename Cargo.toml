@@ -13,6 +13,10 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+authors = ["veged"]
+repository = "https://github.com/veged/omniFUSE"
+homepage = "https://github.com/veged/omniFUSE"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Common
@@ -56,6 +60,8 @@ url = "2"
 axum = "0.7"
 tower = "0.5"
 http = "1"
+assert_cmd = "2"
+predicates = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
