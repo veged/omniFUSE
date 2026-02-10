@@ -186,6 +186,7 @@ pub fn path_to_slug(path: &Path, local_dir: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
   use super::*;
 
@@ -240,6 +241,66 @@ mod tests {
     store.remove("docs/test");
     assert!(store.load_meta("docs/test").is_none());
     assert!(store.load_base("docs/test").is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn test_all_slugs_nested() {
+    // Nested slugs are correctly collected from .vfs/meta/
+    let dir = std::env::temp_dir().join("omnifuse-meta-nested-test");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let store = MetaStore::new(&dir).expect("create store");
+
+    let meta1 = PageMeta {
+      id: 1,
+      title: "Root".to_string(),
+      slug: "root".to_string(),
+      modified_at: "2024-01-01T00:00:00Z".to_string(),
+    };
+    let meta2 = PageMeta {
+      id: 2,
+      title: "Docs".to_string(),
+      slug: "root/docs".to_string(),
+      modified_at: "2024-01-01T00:00:01Z".to_string(),
+    };
+    let meta3 = PageMeta {
+      id: 3,
+      title: "Deep".to_string(),
+      slug: "root/docs/deep".to_string(),
+      modified_at: "2024-01-01T00:00:02Z".to_string(),
+    };
+
+    store.save_meta("root", &meta1).expect("save 1");
+    store.save_meta("root/docs", &meta2).expect("save 2");
+    store.save_meta("root/docs/deep", &meta3).expect("save 3");
+
+    let mut slugs = store.all_slugs().expect("all_slugs");
+    slugs.sort();
+
+    assert_eq!(slugs.len(), 3, "should have 3 slugs");
+    assert!(slugs.contains(&"root".to_string()));
+    assert!(slugs.contains(&"root/docs".to_string()));
+    assert!(slugs.contains(&"root/docs/deep".to_string()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn test_remove_nonexistent_silent() {
+    // Removing a nonexistent slug does not cause an error
+    let dir = std::env::temp_dir().join("omnifuse-meta-remove-test");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let store = MetaStore::new(&dir).expect("create store");
+
+    // Should not panic
+    store.remove("nonexistent/page");
+
+    // Verify the store is empty
+    let slugs = store.all_slugs().expect("all_slugs");
+    assert!(slugs.is_empty(), "store should be empty");
 
     let _ = std::fs::remove_dir_all(&dir);
   }

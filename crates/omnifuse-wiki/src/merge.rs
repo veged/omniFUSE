@@ -138,6 +138,53 @@ mod tests {
     );
   }
 
+  /// Changes at different positions: local modifies line 1, remote modifies line 3 -> merge without conflicts.
+  #[test]
+  fn test_merges_changes_at_different_positions() {
+    let base = "aaa\nbbb\nccc";
+    let local = "AAA\nbbb\nccc";
+    let remote = "aaa\nbbb\nCCC";
+
+    let result = three_way_merge(base, local, remote);
+    match result {
+      MergeResult::Merged(merged) => {
+        assert!(merged.contains("AAA"), "should contain AAA: {merged}");
+        assert!(merged.contains("CCC"), "should contain CCC: {merged}");
+      }
+      other => panic!("expected Merged, got {other:?}")
+    }
+  }
+
+  /// Conflicting changes on the same line: local -> XXX, remote -> YYY -> Failed.
+  #[test]
+  fn test_detects_conflicting_changes() {
+    let base = "aaa\nbbb";
+    let local = "XXX\nbbb";
+    let remote = "YYY\nbbb";
+
+    let result = three_way_merge(base, local, remote);
+    assert!(
+      matches!(result, MergeResult::Failed { .. }),
+      "conflicting changes should return Failed: {result:?}"
+    );
+  }
+
+  /// Empty base, local adds content, remote is empty -> result = local.
+  #[test]
+  fn test_empty_base_treated_as_new_file() {
+    let base = "";
+    let local = "new content";
+    let remote = "";
+
+    // remote unchanged (base == remote == ""), so NoConflict
+    let result = three_way_merge(base, local, remote);
+    assert_eq!(
+      result,
+      MergeResult::NoConflict,
+      "empty base, remote unchanged -> NoConflict: {result:?}"
+    );
+  }
+
   #[test]
   fn empty_local_vs_modified_remote() {
     let base = "original content";

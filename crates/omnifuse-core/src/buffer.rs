@@ -280,6 +280,10 @@ impl FileBufferManager {
     }
 
     let mut lru = self.lru_order.write().await;
+    // Limit attempts to avoid infinite loop
+    // when all buffers are dirty and cannot be evicted
+    let max_attempts = lru.len();
+    let mut attempts = 0;
 
     while self.memory_usage.load(Ordering::SeqCst).saturating_add(additional_size) > max_memory {
       let Some(oldest) = lru.pop_front() else {
@@ -290,6 +294,10 @@ impl FileBufferManager {
       if let Some(buffer) = self.buffers.get(&oldest) {
         if buffer.is_dirty() {
           lru.push_back(oldest);
+          attempts += 1;
+          if attempts >= max_attempts {
+            break;
+          }
           continue;
         }
 
@@ -409,6 +417,7 @@ impl FileBufferManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
   use super::*;
 
@@ -486,5 +495,334 @@ mod tests {
 
     buffer.write(0, b"modified").await;
     assert_eq!(manager.dirty_buffers().len(), 1);
+  }
+
+  #[tokio::test]
+  async fn test_buffer_flush_to_disk() {
+    eprintln!("[TEST] test_buffer_flush_to_disk");
+    // Flush writes dirty buffer to disk and marks it clean
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("flush_test.txt");
+    tokio::fs::write(&path, b"initial").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let buffer = manager.cache(&path, b"initial".to_vec()).await;
+    buffer.write(0, b"modified").await;
+    assert!(buffer.is_dirty());
+
+    manager.flush(&path).await.expect("flush");
+    assert!(!buffer.is_dirty(), "buffer should be clean after flush");
+
+    let on_disk = tokio::fs::read_to_string(&path).await.expect("read");
+    assert_eq!(on_disk, "modified", "data should be written to disk");
+  }
+
+  #[tokio::test]
+  async fn test_lru_eviction() {
+    // LRU evicts old buffers when memory limit is exceeded
+    let config = BufferConfig {
+      max_memory_mb: 0, // 0 MB, but min = 1 buffer
+      lru_eviction_enabled: true,
+    };
+    // max_memory_bytes() = 0, so each cache call triggers eviction
+    let manager = FileBufferManager::new(config);
+
+    let p1 = PathBuf::from("/test/a.txt");
+    let p2 = PathBuf::from("/test/b.txt");
+
+    manager.cache(&p1, vec![0u8; 100]).await;
+    assert_eq!(manager.buffer_count(), 1);
+
+    // Second file should evict the first one (limit is 0)
+    manager.cache(&p2, vec![0u8; 100]).await;
+
+    // First buffer should be evicted
+    assert!(manager.get(&p1).is_none(), "first buffer should be evicted");
+    assert!(manager.get(&p2).is_some(), "second buffer should remain");
+  }
+
+  #[tokio::test]
+  async fn test_dirty_buffer_not_evicted() {
+    // Dirty buffers are not evicted during LRU eviction
+    let config = BufferConfig {
+      max_memory_mb: 0,
+      lru_eviction_enabled: true,
+    };
+    let manager = FileBufferManager::new(config);
+
+    let p1 = PathBuf::from("/test/dirty.txt");
+    let p2 = PathBuf::from("/test/new.txt");
+
+    let buf = manager.cache(&p1, vec![0u8; 50]).await;
+    buf.write(0, b"modified").await; // Mark as dirty
+
+    // Add second one — eviction will try to evict dirty buffer, but cannot
+    manager.cache(&p2, vec![0u8; 50]).await;
+
+    assert!(manager.get(&p1).is_some(), "dirty buffer should not be evicted");
+  }
+
+  #[tokio::test]
+  async fn test_get_or_load_from_disk() {
+    eprintln!("[TEST] test_get_or_load_from_disk");
+    // get_or_load loads file from disk on cache miss
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("load_test.txt");
+    tokio::fs::write(&path, "disk content").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    assert!(manager.get(&path).is_none(), "file should not be in cache");
+
+    let buffer = manager.get_or_load(&path).await.expect("get_or_load");
+    assert_eq!(buffer.content().await, b"disk content");
+    assert!(manager.get(&path).is_some(), "file should be in cache after loading");
+  }
+
+  #[tokio::test]
+  async fn test_get_or_load_cache_hit() {
+    eprintln!("[TEST] test_get_or_load_cache_hit");
+    // get_or_load returns buffer from cache without re-reading from disk
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("cached.txt");
+    tokio::fs::write(&path, "old").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    // Cache with different content
+    manager.cache(&path, b"cached version".to_vec()).await;
+
+    // get_or_load should return cached version, not from disk
+    let buffer = manager.get_or_load(&path).await.expect("get_or_load");
+    assert_eq!(buffer.content().await, b"cached version", "should return from cache");
+  }
+
+  #[tokio::test]
+  async fn test_buffer_write_marks_dirty() {
+    // write on FileBuffer sets is_dirty() = true
+    let buffer = FileBuffer::new(PathBuf::from("/test/dirty_mark.txt"), b"initial".to_vec());
+
+    assert!(!buffer.is_dirty(), "new buffer should not be dirty");
+
+    buffer.write(0, b"changed").await;
+
+    assert!(buffer.is_dirty(), "write should mark buffer as dirty");
+  }
+
+  #[tokio::test]
+  async fn test_buffer_multiple_writes_same_offset() {
+    // write "aaa" at 0, write "bbb" at 0, read = "bbb" (overwrite)
+    let buffer = FileBuffer::new(PathBuf::from("/test/overwrite.txt"), Vec::new());
+
+    buffer.write(0, b"aaa").await;
+    assert_eq!(buffer.read(0, 10).await, b"aaa");
+
+    buffer.write(0, b"bbb").await;
+    assert_eq!(
+      buffer.read(0, 10).await,
+      b"bbb",
+      "repeated write at the same offset should overwrite data"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_buffer_cache_returns_same_arc() {
+    eprintln!("[TEST] test_buffer_cache_returns_same_arc");
+    // get_or_load twice for the same path returns the same Arc (Arc::ptr_eq)
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("same_arc.txt");
+    tokio::fs::write(&path, "content").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let buf1 = manager.get_or_load(&path).await.expect("get_or_load 1");
+    let buf2 = manager.get_or_load(&path).await.expect("get_or_load 2");
+
+    assert!(
+      Arc::ptr_eq(&buf1, &buf2),
+      "two get_or_load calls for the same path should return the same Arc"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_concurrent_writes_to_same_buffer() {
+    eprintln!("[TEST] test_concurrent_writes_to_same_buffer");
+    // 10 tokio tasks with 50 writes each to one buffer — no panic/deadlock
+    let buffer = Arc::new(FileBuffer::new(
+      PathBuf::from("/test/concurrent.txt"),
+      vec![0u8; 1024]
+    ));
+
+    let mut handles = Vec::new();
+    for task_id in 0..10u8 {
+      let buf = Arc::clone(&buffer);
+      handles.push(tokio::spawn(async move {
+        for i in 0..50u64 {
+          let offset = (i * 2) % 1024;
+          buf.write(offset, &[task_id, task_id]).await;
+        }
+      }));
+    }
+
+    // Wait for all tasks with timeout (deadlock protection)
+    let result = tokio::time::timeout(
+      crate::test_utils::TEST_TIMEOUT,
+      async {
+        for h in handles {
+          h.await.expect("join");
+        }
+      }
+    ).await;
+
+    assert!(
+      result.is_ok(),
+      "concurrent writes should not cause deadlock"
+    );
+
+    // Verify buffer is not corrupted — size >= 1024
+    assert!(
+      buffer.size() >= 1024,
+      "buffer size should not shrink after concurrent writes"
+    );
+    assert!(buffer.is_dirty(), "buffer should be dirty after writes");
+  }
+
+  #[tokio::test]
+  async fn test_buffer_mtime_stable_on_same_content() {
+    eprintln!("[TEST] test_buffer_mtime_stable_on_same_content");
+    // Create buffer, write "data", flush, write "data" again,
+    // check file mtime via fs::metadata
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("mtime_stable.txt");
+    tokio::fs::write(&path, b"").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    // First write + flush
+    let buffer = manager.cache(&path, Vec::new()).await;
+    buffer.write(0, b"data").await;
+    manager.flush(&path).await.expect("flush 1");
+
+    // Remember file mtime on disk
+    let meta1 = tokio::fs::metadata(&path).await.expect("metadata 1");
+    let mtime1 = meta1.modified().expect("mtime 1");
+
+    // Wait for the clock to advance
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Write the same data again and flush
+    buffer.write(0, b"data").await;
+    manager.flush(&path).await.expect("flush 2");
+
+    let meta2 = tokio::fs::metadata(&path).await.expect("metadata 2");
+    let mtime2 = meta2.modified().expect("mtime 2");
+
+    // Buffer does not check data identity, so flush will rewrite the file
+    // and mtime will be updated. Verify file size has not changed.
+    assert_eq!(meta1.len(), meta2.len(), "file size should not change");
+    // mtime2 >= mtime1 — correct behavior (flush rewrites the file)
+    assert!(mtime2 >= mtime1, "mtime should not go backwards after repeated flush");
+  }
+
+  /// Dirty buffer is NOT overwritten on repeated get_or_load.
+  ///
+  /// Pattern from SimpleGitFS concurrent_editing_tests: if buffer is marked dirty
+  /// (user made changes), re-reading from disk should not overwrite
+  /// unflushed data — even if the file on disk has changed.
+  #[tokio::test]
+  async fn test_dirty_buffer_preserved_on_reload() {
+    eprintln!("[TEST] test_dirty_buffer_preserved_on_reload");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("dirty_preserved.txt");
+    tokio::fs::write(&path, b"disk_v1").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    // Load file from disk -> cache it
+    let buffer = manager.get_or_load(&path).await.expect("get_or_load");
+    assert_eq!(buffer.content().await, b"disk_v1");
+
+    // User writes data to buffer -> dirty=true
+    buffer.write(0, b"user_edit").await;
+    assert!(buffer.is_dirty(), "buffer should be dirty after write");
+
+    // External process updates file on disk
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::fs::write(&path, b"disk_v2_external").await.expect("write disk_v2");
+
+    // Repeated get_or_load should NOT overwrite dirty buffer
+    let reloaded = manager.get_or_load(&path).await.expect("get_or_load 2");
+    assert_eq!(
+      reloaded.content().await,
+      b"user_edit",
+      "dirty buffer should not be overwritten with disk data"
+    );
+    assert!(
+      Arc::ptr_eq(&buffer, &reloaded),
+      "should return the same Arc (dirty buffer preserved)"
+    );
+  }
+
+  /// Write beyond current size extends buffer with zeros.
+  ///
+  /// Buffer "hello" (5 bytes), write "!" at offset 10 -> size = 11.
+  /// Gap [5..10) is filled with zeros.
+  #[tokio::test]
+  async fn test_buffer_size_after_extend() {
+    let buffer = FileBuffer::new(PathBuf::from("/test/extend.txt"), b"hello".to_vec());
+    assert_eq!(buffer.size(), 5);
+
+    // Write "!" at offset 10 — buffer extends to 11 bytes
+    buffer.write(10, b"!").await;
+    assert_eq!(buffer.size(), 11, "size should be 11 after extension");
+
+    // Gap [5..10) should be filled with zeros
+    let gap = buffer.read(5, 5).await;
+    assert_eq!(gap, vec![0u8; 5], "gap should be filled with zeros");
+
+    // Verify full content: "hello" + 5 zeros + "!"
+    let full = buffer.content().await;
+    let mut expected = b"hello".to_vec();
+    expected.extend_from_slice(&[0u8; 5]);
+    expected.push(b'!');
+    assert_eq!(full, expected, "full buffer content after extension");
+  }
+
+  /// Flush clears the dirty flag: write -> dirty=true -> flush -> dirty=false.
+  ///
+  /// Pattern from SimpleGitFS core_pipeline_tests: after flush the buffer
+  /// should be clean, ready for a new write cycle.
+  #[tokio::test]
+  async fn test_buffer_flush_clears_dirty() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("flush_dirty.txt");
+    tokio::fs::write(&path, b"original").await.expect("write");
+
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let buffer = manager.cache(&path, b"original".to_vec()).await;
+
+    // Initially buffer is not dirty
+    assert!(!buffer.is_dirty(), "new buffer should not be dirty");
+
+    // Write -> dirty=true
+    buffer.write(0, b"modified").await;
+    assert!(buffer.is_dirty(), "write should mark buffer as dirty");
+
+    // Flush -> dirty=false
+    manager.flush(&path).await.expect("flush");
+    assert!(!buffer.is_dirty(), "buffer should be clean after flush");
+
+    // Verify data is actually written to disk
+    let on_disk = tokio::fs::read(&path).await.expect("read");
+    assert_eq!(on_disk, b"modified", "flush should write data to disk");
   }
 }

@@ -123,8 +123,12 @@ impl WikiBackend {
         Ok(page) => {
           let content = page.content.as_deref().unwrap_or("");
 
-          // Write .md file
+          // Check if content has changed since last time
           let file_path = local_dir.join(format!("{}.md", node.slug));
+          let existing = std::fs::read_to_string(&file_path).ok();
+          let changed = existing.as_deref() != Some(content);
+
+          // Write .md file
           if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;
           }
@@ -140,8 +144,10 @@ impl WikiBackend {
           meta_store.save_meta(&node.slug, &meta)?;
           meta_store.save_base(&node.slug, content)?;
 
-          count += 1;
-          debug!(slug = %node.slug, "page downloaded");
+          if changed {
+            count += 1;
+          }
+          debug!(slug = %node.slug, changed, "page downloaded");
         }
         Err(e) => {
           warn!(slug = %node.slug, error = %e, "failed to download page");

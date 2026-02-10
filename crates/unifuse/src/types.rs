@@ -265,3 +265,181 @@ impl FsError {
     }
   }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_fs_error_to_errno() {
+    assert_eq!(FsError::NotFound.to_errno(), libc::ENOENT);
+    assert_eq!(FsError::PermissionDenied.to_errno(), libc::EACCES);
+    assert_eq!(FsError::AlreadyExists.to_errno(), libc::EEXIST);
+    assert_eq!(FsError::NotADirectory.to_errno(), libc::ENOTDIR);
+    assert_eq!(FsError::IsADirectory.to_errno(), libc::EISDIR);
+    assert_eq!(FsError::NotEmpty.to_errno(), libc::ENOTEMPTY);
+    assert_eq!(FsError::NotSupported.to_errno(), libc::ENOSYS);
+    assert_eq!(FsError::Other("err".to_string()).to_errno(), libc::EIO);
+  }
+
+  #[test]
+  fn test_fs_error_display() {
+    assert_eq!(FsError::NotFound.to_string(), "not found");
+    assert_eq!(FsError::PermissionDenied.to_string(), "permission denied");
+    assert_eq!(FsError::AlreadyExists.to_string(), "already exists");
+    assert_eq!(FsError::NotSupported.to_string(), "not supported");
+    assert_eq!(FsError::Other("custom".to_string()).to_string(), "custom");
+  }
+
+  #[test]
+  fn test_file_attr_regular() {
+    let attr = FileAttr::regular(1024, 0o644);
+    assert_eq!(attr.size, 1024);
+    assert_eq!(attr.blocks, 2); // 1024 / 512 = 2
+    assert_eq!(attr.kind, FileType::RegularFile);
+    assert_eq!(attr.perm, 0o644);
+    assert_eq!(attr.nlink, 1);
+  }
+
+  #[test]
+  fn test_file_attr_directory() {
+    let attr = FileAttr::directory(0o755);
+    assert_eq!(attr.size, 0);
+    assert_eq!(attr.blocks, 0);
+    assert_eq!(attr.kind, FileType::Directory);
+    assert_eq!(attr.perm, 0o755);
+    assert_eq!(attr.nlink, 2);
+  }
+
+  #[test]
+  fn test_open_flags_constructors() {
+    let ro = OpenFlags::read_only();
+    assert!(ro.read);
+    assert!(!ro.write);
+    assert!(!ro.append);
+
+    let wo = OpenFlags::write_only();
+    assert!(!wo.read);
+    assert!(wo.write);
+
+    let rw = OpenFlags::read_write();
+    assert!(rw.read);
+    assert!(rw.write);
+    assert!(!rw.truncate);
+    assert!(!rw.create);
+    assert!(!rw.exclusive);
+  }
+
+  #[test]
+  fn test_file_type_equality() {
+    assert_eq!(FileType::RegularFile, FileType::RegularFile);
+    assert_eq!(FileType::Directory, FileType::Directory);
+    assert_ne!(FileType::RegularFile, FileType::Directory);
+    assert_ne!(FileType::Symlink, FileType::RegularFile);
+  }
+
+  #[test]
+  fn test_fs_error_io_wraps_error() {
+    // Verify that FsError::Io correctly wraps io::Error and returns errno
+    let io_err = std::io::Error::from_raw_os_error(libc::ECONNREFUSED);
+    let fs_err = FsError::Io(io_err);
+
+    assert_eq!(
+      fs_err.to_errno(),
+      libc::ECONNREFUSED,
+      "FsError::Io should return errno from the wrapped error"
+    );
+
+    // Verify that io::Error without os_error returns EIO
+    let io_err_no_os = std::io::Error::new(std::io::ErrorKind::Other, "custom");
+    let fs_err_no_os = FsError::Io(io_err_no_os);
+    assert_eq!(
+      fs_err_no_os.to_errno(),
+      libc::EIO,
+      "FsError::Io without raw_os_error should return EIO"
+    );
+  }
+
+  #[test]
+  fn test_file_attr_size_and_blocks() {
+    // Verify block calculation: ceil(1000 / 512) = 2
+    let attr = FileAttr::regular(1000, 0o644);
+    assert_eq!(attr.size, 1000, "size should be 1000");
+    assert_eq!(attr.blocks, 2, "ceil(1000 / 512) = 2 blocks");
+
+    // Additional check: exact multiple of 512
+    let attr_exact = FileAttr::regular(1024, 0o644);
+    assert_eq!(attr_exact.blocks, 2, "1024 / 512 = exactly 2 blocks");
+
+    // Check for zero size
+    let attr_zero = FileAttr::regular(0, 0o644);
+    assert_eq!(attr_zero.blocks, 0, "0 bytes = 0 blocks");
+
+    // Check for 1 byte
+    let attr_one = FileAttr::regular(1, 0o644);
+    assert_eq!(attr_one.blocks, 1, "1 byte = 1 block (rounded up)");
+  }
+
+  #[test]
+  fn test_statfs_fields() {
+    // Create StatFs with known values and verify all fields
+    let statfs = StatFs {
+      blocks: 1_000_000,
+      bfree: 500_000,
+      bavail: 400_000,
+      files: 100_000,
+      ffree: 50_000,
+      bsize: 4096,
+      namelen: 255,
+    };
+
+    assert_eq!(statfs.blocks, 1_000_000, "total blocks");
+    assert_eq!(statfs.bfree, 500_000, "free blocks");
+    assert_eq!(statfs.bavail, 400_000, "available blocks (for unprivileged users)");
+    assert_eq!(statfs.files, 100_000, "total inodes");
+    assert_eq!(statfs.ffree, 50_000, "free inodes");
+    assert_eq!(statfs.bsize, 4096, "block size");
+    assert_eq!(statfs.namelen, 255, "max file name length");
+  }
+
+  #[test]
+  fn test_fs_error_not_empty_display() {
+    // cgofuse-to-unifuse-porting.md: NotEmpty → ENOTEMPTY
+    let err = FsError::NotEmpty;
+    assert_eq!(err.to_errno(), libc::ENOTEMPTY);
+    assert_eq!(err.to_string(), "directory not empty");
+  }
+
+  #[test]
+  fn test_fs_error_already_exists_display() {
+    // cgofuse: AlreadyExists → EEXIST
+    let err = FsError::AlreadyExists;
+    assert_eq!(err.to_errno(), libc::EEXIST);
+    assert_eq!(err.to_string(), "already exists");
+  }
+
+  #[test]
+  fn test_file_attr_symlink() {
+    // rclone: symlink attributes
+    let now = std::time::SystemTime::now();
+    let attr = FileAttr {
+      size: 10,
+      blocks: 1,
+      atime: now,
+      mtime: now,
+      ctime: now,
+      crtime: now,
+      kind: FileType::Symlink,
+      perm: 0o777,
+      nlink: 1,
+      uid: 0,
+      gid: 0,
+      rdev: 0,
+      flags: 0,
+    };
+    assert_eq!(attr.kind, FileType::Symlink, "kind should be Symlink");
+    assert_eq!(attr.perm, 0o777, "symlinks typically have 0o777");
+    assert_eq!(attr.nlink, 1, "symlink has 1 link");
+  }
+}

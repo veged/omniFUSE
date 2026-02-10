@@ -33,6 +33,8 @@ pub mod buffer;
 pub mod config;
 pub mod events;
 pub mod sync_engine;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 pub mod vfs;
 
 pub use backend::{Backend, InitResult, RemoteChange, SyncResult};

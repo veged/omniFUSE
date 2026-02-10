@@ -227,4 +227,79 @@ mod tests {
     assert!(c.has_next);
     assert_eq!(c.next_cursor.as_deref(), Some("c"));
   }
+
+  #[test]
+  fn test_page_schema_deserialize() {
+    // Deserialize PageTreeNodeSchema with all fields
+    let json = r#"{
+      "id": 42,
+      "slug": "docs/architecture",
+      "title": "Architecture",
+      "modified_at": "2024-06-15T12:30:00Z",
+      "children": [
+        {
+          "id": 43,
+          "slug": "docs/architecture/overview",
+          "title": "Overview",
+          "modified_at": "2024-06-15T12:31:00Z",
+          "children": []
+        }
+      ]
+    }"#;
+    let node: PageTreeNodeSchema = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(node.id, 42);
+    assert_eq!(node.slug, "docs/architecture");
+    assert_eq!(node.title, "Architecture");
+    assert_eq!(node.modified_at, "2024-06-15T12:30:00Z");
+
+    let children = node.children.expect("children should be Some");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].id, 43);
+    assert_eq!(children[0].slug, "docs/architecture/overview");
+  }
+
+  #[test]
+  fn test_page_schema_content_optional() {
+    // JSON without content field -> deserialization succeeds (content = None)
+    let json = r#"{"id":10,"title":"No Content","slug":"no-content","page_type":"page","modified_at":"2024-01-01T00:00:00Z"}"#;
+    let p: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(p.id, 10);
+    assert_eq!(p.title, "No Content");
+    assert!(
+      p.content.is_none(),
+      "content should be None when field is absent"
+    );
+    assert_eq!(p.modified_at, "2024-01-01T00:00:00Z");
+  }
+
+  #[test]
+  fn test_collection_response_deserialize() {
+    // Deserialize Collection with multiple results
+    let json = r#"{
+      "results": [
+        {"id": 1, "slug": "page-a"},
+        {"id": 2, "slug": "page-b"},
+        {"id": 3, "slug": "page-c"}
+      ],
+      "next_cursor": null,
+      "has_next": false,
+      "metadata": {"total": 3}
+    }"#;
+    let c: Collection<PageSchema> = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(c.results.len(), 3, "should have 3 results");
+    assert!(!c.has_next, "has_next should be false");
+    assert!(c.next_cursor.is_none(), "next_cursor should be None");
+
+    // Check metadata
+    let meta = c.metadata.expect("metadata should be Some");
+    assert_eq!(meta.get("total"), Some(&serde_json::json!(3)));
+
+    // Check each element
+    assert_eq!(c.results[0].id, 1);
+    assert_eq!(c.results[0].slug, "page-a");
+    assert_eq!(c.results[1].id, 2);
+    assert_eq!(c.results[1].slug, "page-b");
+    assert_eq!(c.results[2].id, 3);
+    assert_eq!(c.results[2].slug, "page-c");
+  }
 }

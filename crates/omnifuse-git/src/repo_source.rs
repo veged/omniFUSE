@@ -270,6 +270,7 @@ fn dirs_cache_dir() -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
   use super::*;
 
@@ -318,6 +319,38 @@ mod tests {
     assert_eq!(
       RepoSource::extract_repo_name("git@github.com:user/another-repo.git"),
       "another-repo"
+    );
+  }
+
+  /// parse() preserves the URL unchanged (no normalization applied).
+  #[test]
+  fn test_parse_preserves_url() {
+    let url = "https://github.com/user/repo.git";
+    let source = RepoSource::parse(url);
+    assert!(source.is_remote(), "URL should be recognized as remote");
+    assert_eq!(
+      source.remote_url(),
+      Some(url),
+      "parse() should preserve URL unchanged (with .git suffix)"
+    );
+  }
+
+  /// parse() for ssh:// URL — original URL is returned unchanged.
+  #[test]
+  fn test_parse_keeps_original_url() {
+    let url = "ssh://git@host/repo";
+    let source = RepoSource::parse(url);
+    assert!(source.is_remote(), "ssh:// URL should be remote");
+    assert_eq!(
+      source.remote_url(),
+      Some(url),
+      "remote_url() should return the original URL without modifications"
+    );
+    // Additionally: Display also shows the original URL
+    assert_eq!(
+      source.to_string(),
+      url,
+      "Display should show the original URL"
     );
   }
 }
