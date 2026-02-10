@@ -1,9 +1,14 @@
 [package]
 name = "unifuse"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "Кроссплатформенная async FUSE-абстракция (rfuse3 + winfsp-rs)"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Cross-platform async FUSE abstraction (rfuse3 + winfsp-rs)"
+readme = "README.md"
+repository = "https://github.com/nicot/omnifuse"
+keywords = ["fuse", "filesystem", "winfsp", "virtual-filesystem", "async"]
+categories = ["filesystem", "os"]
+rust-version = "1.85"
 
 [lints]
 workspace = true
@@ -12,13 +17,17 @@ workspace = true
 default = []
 
 [target.'cfg(unix)'.dependencies]
-rfuse3 = { workspace = true }
-libc = { workspace = true }
+rfuse3 = { version = "0.0.5", features = ["tokio-runtime"] }
+libc = "0.2"
 nix = { version = "0.29", features = ["user"] }
 
+[target.'cfg(windows)'.dependencies]
+winfsp = "0.12"
+windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }
+
 [dependencies]
-tokio = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-dashmap = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+dashmap = "6"
 futures-util = "0.3"
