@@ -1,17 +1,17 @@
-//! unifuse — кроссплатформенная async FUSE-абстракция.
+//! unifuse — cross-platform async FUSE abstraction.
 //!
-//! Тонкий адаптационный слой поверх существующих Rust-крейтов:
+//! A thin adaptation layer on top of existing Rust crates:
 //!
-//! - Linux/macOS: **rfuse3** — async, tokio-native, работает напрямую с `/dev/fuse`
-//! - Windows: **winfsp-rs** — Native API (не FUSE compatibility layer)
+//! - Linux/macOS: **rfuse3** — async, tokio-native, works directly with `/dev/fuse`
+//! - Windows: **winfsp-rs** — Native API (not a FUSE compatibility layer)
 //!
-//! # Ключевая идея
+//! # Key idea
 //!
-//! `UniFuseFilesystem` — async path-based trait, который реализует бизнес-логика (omnifuse-core).
-//! Platform adapters (`Rfuse3Adapter`, `WinfspAdapter`) — тонкие обёртки,
-//! преобразующие платформо-специфичные вызовы в path-based async вызовы trait'а.
+//! `UniFuseFilesystem` — an async path-based trait implemented by the business logic (omnifuse-core).
+//! Platform adapters (`Rfuse3Adapter`, `WinfspAdapter`) — thin wrappers
+//! that convert platform-specific calls into path-based async trait calls.
 //!
-//! # Пример
+//! # Example
 //!
 //! ```ignore
 //! use unifuse::{UniFuseFilesystem, UniFuseHost, MountOptions};
@@ -28,6 +28,8 @@ pub mod inode;
 #[cfg(unix)]
 pub mod rfuse3_adapter;
 pub mod types;
+#[cfg(windows)]
+pub mod winfsp_adapter;
 
 use std::{
   ffi::OsStr,
@@ -39,33 +41,33 @@ use std::{
 pub use inode::{InodeMap, NodeKind, ROOT_INODE};
 pub use types::*;
 
-/// Кроссплатформенный async path-based filesystem trait.
+/// Cross-platform async path-based filesystem trait.
 ///
-/// Аналог cgofuse `FileSystemInterface` (42 метода),
-/// но с Rust-идиоматичным async API: `Result<T>`, `&Path`, `Vec<u8>`.
+/// Analogous to cgofuse `FileSystemInterface` (42 methods),
+/// but with a Rust-idiomatic async API: `Result<T>`, `&Path`, `Vec<u8>`.
 ///
-/// Async-first: rfuse3 вызывает эти методы из tokio runtime.
-/// `WinFsp` adapter использует `tokio::runtime::Handle::block_on()`
-/// для вызова async методов из синхронного контекста.
+/// Async-first: rfuse3 calls these methods from a tokio runtime.
+/// The `WinFsp` adapter uses `tokio::runtime::Handle::block_on()`
+/// to call async methods from a synchronous context.
 ///
-/// Реализатор trait'а — `omnifuse-core` (`OmniFuseVfs`).
+/// The trait implementor is `omnifuse-core` (`OmniFuseVfs`).
 pub trait UniFuseFilesystem: Send + Sync + 'static {
   // --- Lifecycle ---
 
-  /// Инициализация файловой системы. Вызывается перед первой операцией.
+  /// Initialize the filesystem. Called before the first operation.
   fn init(&mut self) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Ok(()) }
   }
 
-  /// Очистка при размонтировании.
+  /// Cleanup on unmount.
   fn destroy(&mut self) {}
 
-  // --- Метаданные ---
+  // --- Metadata ---
 
-  /// Получить атрибуты файла или директории.
+  /// Get file or directory attributes.
   fn getattr(&self, path: &Path) -> impl Future<Output = Result<FileAttr, FsError>> + Send;
 
-  /// Установить атрибуты (размер, время, права).
+  /// Set attributes (size, timestamps, permissions).
   fn setattr(
     &self,
     _path: &Path,
@@ -77,23 +79,23 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Найти файл в директории по имени.
+  /// Look up a file in a directory by name.
   fn lookup(
     &self,
     parent: &Path,
     name: &OsStr
   ) -> impl Future<Output = Result<FileAttr, FsError>> + Send;
 
-  // --- Файловые операции ---
+  // --- File operations ---
 
-  /// Открыть файл.
+  /// Open a file.
   fn open(
     &self,
     path: &Path,
     flags: OpenFlags
   ) -> impl Future<Output = Result<FileHandle, FsError>> + Send;
 
-  /// Создать и открыть файл.
+  /// Create and open a file.
   fn create(
     &self,
     _path: &Path,
@@ -103,7 +105,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Прочитать данные из файла.
+  /// Read data from a file.
   fn read(
     &self,
     path: &Path,
@@ -112,7 +114,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     size: u32
   ) -> impl Future<Output = Result<Vec<u8>, FsError>> + Send;
 
-  /// Записать данные в файл.
+  /// Write data to a file.
   fn write(
     &self,
     _path: &Path,
@@ -123,7 +125,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Сбросить буферы файла.
+  /// Flush file buffers.
   fn flush(
     &self,
     _path: &Path,
@@ -132,14 +134,14 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Ok(()) }
   }
 
-  /// Закрыть файл.
+  /// Close a file.
   fn release(
     &self,
     path: &Path,
     fh: FileHandle
   ) -> impl Future<Output = Result<(), FsError>> + Send;
 
-  /// Синхронизировать файл на диск.
+  /// Sync a file to disk.
   fn fsync(
     &self,
     _path: &Path,
@@ -149,12 +151,12 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Ok(()) }
   }
 
-  // --- Директории ---
+  // --- Directories ---
 
-  /// Прочитать содержимое директории.
+  /// Read directory contents.
   fn readdir(&self, path: &Path) -> impl Future<Output = Result<Vec<DirEntry>, FsError>> + Send;
 
-  /// Создать директорию.
+  /// Create a directory.
   fn mkdir(
     &self,
     _path: &Path,
@@ -163,19 +165,19 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Удалить директорию.
+  /// Remove a directory.
   fn rmdir(&self, _path: &Path) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
-  // --- Операции над деревом ---
+  // --- Tree operations ---
 
-  /// Удалить файл.
+  /// Remove a file.
   fn unlink(&self, _path: &Path) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Переименовать файл или директорию.
+  /// Rename a file or directory.
   fn rename(
     &self,
     _from: &Path,
@@ -185,9 +187,9 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  // --- Символические ссылки ---
+  // --- Symbolic links ---
 
-  /// Создать символическую ссылку.
+  /// Create a symbolic link.
   fn symlink(
     &self,
     _target: &Path,
@@ -196,14 +198,14 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Прочитать содержимое символической ссылки.
+  /// Read the contents of a symbolic link.
   fn readlink(&self, _path: &Path) -> impl Future<Output = Result<PathBuf, FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
   // --- Extended attributes ---
 
-  /// Установить расширенный атрибут.
+  /// Set an extended attribute.
   fn setxattr(
     &self,
     _path: &Path,
@@ -214,7 +216,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Получить расширенный атрибут.
+  /// Get an extended attribute.
   fn getxattr(
     &self,
     _path: &Path,
@@ -223,7 +225,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Список расширенных атрибутов.
+  /// List extended attributes.
   fn listxattr(
     &self,
     _path: &Path
@@ -231,7 +233,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  /// Удалить расширенный атрибут.
+  /// Remove an extended attribute.
   fn removexattr(
     &self,
     _path: &Path,
@@ -240,20 +242,20 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
     async { Err(FsError::NotSupported) }
   }
 
-  // --- Информация о файловой системе ---
+  // --- Filesystem information ---
 
-  /// Получить статистику файловой системы.
+  /// Get filesystem statistics.
   fn statfs(&self, path: &Path) -> impl Future<Output = Result<StatFs, FsError>> + Send;
 }
 
-/// Опции монтирования.
+/// Mount options.
 #[derive(Debug, Clone)]
 pub struct MountOptions {
-  /// Имя файловой системы (отображается в mount).
+  /// Filesystem name (displayed in mount).
   pub fs_name: String,
-  /// Разрешить доступ другим пользователям.
+  /// Allow access by other users.
   pub allow_other: bool,
-  /// Монтировать только для чтения.
+  /// Mount as read-only.
   pub read_only: bool
 }
 
@@ -267,9 +269,9 @@ impl Default for MountOptions {
   }
 }
 
-/// Хост для монтирования файловой системы.
+/// Host for mounting the filesystem.
 ///
-/// Обёртка над platform-specific mount API:
+/// A wrapper over the platform-specific mount API:
 /// - Unix: rfuse3 `Session` + `MountHandle`
 /// - Windows: winfsp `FileSystemHost`
 pub struct UniFuseHost<F: UniFuseFilesystem> {
@@ -277,16 +279,16 @@ pub struct UniFuseHost<F: UniFuseFilesystem> {
 }
 
 impl<F: UniFuseFilesystem> UniFuseHost<F> {
-  /// Создать новый хост для заданной файловой системы.
+  /// Create a new host for the given filesystem.
   pub fn new(fs: F) -> Self {
     Self { fs: Arc::new(fs) }
   }
 
-  /// Смонтировать файловую систему и заблокировать до unmount.
+  /// Mount the filesystem and block until unmount.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности монтирования.
+  /// Returns an error if mounting fails.
   #[cfg(unix)]
   pub async fn mount(&self, mountpoint: &Path, options: &MountOptions) -> Result<(), FsError> {
     use rfuse3_adapter::Rfuse3Adapter;
@@ -302,16 +304,62 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
     let mount_handle = rfuse3::raw::Session::new(mount_options)
       .mount_with_unprivileged(adapter, mountpoint)
       .await
-      .map_err(|e| FsError::Other(format!("ошибка монтирования: {e}")))?;
+      .map_err(|e| FsError::Other(format!("mount error: {e}")))?;
 
     mount_handle
       .await
-      .map_err(|e| FsError::Other(format!("ошибка FUSE сессии: {e}")))?;
+      .map_err(|e| FsError::Other(format!("FUSE session error: {e}")))?;
 
     Ok(())
   }
 
-  /// Проверить доступность платформы FUSE/WinFsp.
+  /// Mount the filesystem on Windows via WinFsp and block until unmount.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if mounting fails.
+  #[cfg(windows)]
+  pub async fn mount(&self, mountpoint: &Path, options: &MountOptions) -> Result<(), FsError> {
+    use winfsp_adapter::WinfspAdapter;
+    use winfsp::host::{FileSystemHost, VolumeParams};
+
+    let rt = tokio::runtime::Handle::current();
+    let adapter = WinfspAdapter::new(Arc::clone(&self.fs), rt);
+
+    let mut volume_params = VolumeParams::new();
+    volume_params
+      .filesystem_name(&options.fs_name)
+      .sector_size(512)
+      .sectors_per_allocation_unit(8)
+      .max_component_length(255)
+      .case_sensitive_search(false)
+      .case_preserved_names(true)
+      .unicode_on_disk(true)
+      .read_only_volume(options.read_only);
+
+    let mut host = FileSystemHost::new(volume_params, adapter)
+      .map_err(|e| FsError::Other(format!("WinFsp host creation error: {e}")))?;
+
+    let mount_str = mountpoint.to_string_lossy();
+    host
+      .mount(&mount_str)
+      .map_err(|e| FsError::Other(format!("WinFsp mount error: {e}")))?;
+
+    host
+      .start()
+      .map_err(|e| FsError::Other(format!("WinFsp start error: {e}")))?;
+
+    // Block until Ctrl+C (same pattern as rfuse3 mount_handle.await on Unix).
+    tokio::signal::ctrl_c()
+      .await
+      .map_err(|e| FsError::Other(format!("signal error: {e}")))?;
+
+    host.stop();
+    host.unmount();
+    Ok(())
+  }
+
+  /// Check whether the FUSE/WinFsp platform is available.
   #[must_use]
   pub fn is_available() -> bool {
     #[cfg(target_os = "linux")]
@@ -325,7 +373,9 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
     }
     #[cfg(windows)]
     {
-      false // TODO: winfsp проверка
+      // Check if WinFsp is installed by looking for the DLL.
+      Path::new(r"C:\Program Files (x86)\WinFsp\bin\winfsp-x64.dll").exists()
+        || Path::new(r"C:\Program Files\WinFsp\bin\winfsp-x64.dll").exists()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {

@@ -1,65 +1,65 @@
-//! Кроссплатформенные типы файловой системы.
+//! Cross-platform filesystem types.
 //!
-//! Общее подмножество POSIX stat и Windows `FILE_INFO`.
-//! Platform adapters (rfuse3, winfsp) маппят из/в платформо-специфичные типы.
+//! A common subset of POSIX stat and Windows `FILE_INFO`.
+//! Platform adapters (rfuse3, winfsp) map from/to platform-specific types.
 
 use std::time::SystemTime;
 
-/// Тип файлового объекта.
+/// File object type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileType {
-  /// Обычный файл.
+  /// Regular file.
   RegularFile,
-  /// Директория.
+  /// Directory.
   Directory,
-  /// Символическая ссылка.
+  /// Symbolic link.
   Symlink,
-  /// Блочное устройство.
+  /// Block device.
   BlockDevice,
-  /// Символьное устройство.
+  /// Character device.
   CharDevice,
-  /// Именованный канал (FIFO).
+  /// Named pipe (FIFO).
   NamedPipe,
   /// Unix socket.
   Socket
 }
 
-/// Атрибуты файла (кроссплатформенные).
+/// File attributes (cross-platform).
 ///
-/// Общее подмножество POSIX stat и Windows `FILE_INFO`.
-/// Platform adapters маппят из/в платформо-специфичные типы.
+/// A common subset of POSIX stat and Windows `FILE_INFO`.
+/// Platform adapters map from/to platform-specific types.
 #[derive(Debug, Clone)]
 pub struct FileAttr {
-  /// Размер файла в байтах.
+  /// File size in bytes.
   pub size: u64,
-  /// Размер в блоках (512 байт).
+  /// Size in blocks (512 bytes).
   pub blocks: u64,
-  /// Время последнего доступа.
+  /// Last access time.
   pub atime: SystemTime,
-  /// Время последней модификации.
+  /// Last modification time.
   pub mtime: SystemTime,
-  /// Время последнего изменения метаданных.
+  /// Last metadata change time.
   pub ctime: SystemTime,
-  /// Время создания (macOS/Windows).
+  /// Creation time (macOS/Windows).
   pub crtime: SystemTime,
-  /// Тип файла.
+  /// File type.
   pub kind: FileType,
-  /// Права доступа (Unix mode: 0o644, 0o755). На Windows → readonly маппинг.
+  /// Access permissions (Unix mode: 0o644, 0o755). On Windows maps to readonly.
   pub perm: u16,
-  /// Количество жёстких ссылок.
+  /// Number of hard links.
   pub nlink: u32,
-  /// User ID (Unix). На Windows = 0.
+  /// User ID (Unix). On Windows = 0.
   pub uid: u32,
-  /// Group ID (Unix). На Windows = 0.
+  /// Group ID (Unix). On Windows = 0.
   pub gid: u32,
-  /// Device ID (для специальных файлов).
+  /// Device ID (for special files).
   pub rdev: u32,
-  /// Флаги (BSD flags на macOS / `FILE_ATTRIBUTE_*` на Windows).
+  /// Flags (BSD flags on macOS / `FILE_ATTRIBUTE_*` on Windows).
   pub flags: u32
 }
 
 impl FileAttr {
-  /// Создать атрибуты для обычного файла с типичными значениями.
+  /// Create attributes for a regular file with typical values.
   #[must_use]
   pub fn regular(size: u64, perm: u16) -> Self {
     let now = SystemTime::now();
@@ -80,7 +80,7 @@ impl FileAttr {
     }
   }
 
-  /// Создать атрибуты для директории.
+  /// Create attributes for a directory.
   #[must_use]
   pub fn directory(perm: u16) -> Self {
     let now = SystemTime::now();
@@ -102,39 +102,39 @@ impl FileAttr {
   }
 }
 
-/// Хэндл открытого файла.
+/// Handle for an open file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileHandle(pub u64);
 
-/// Элемент директории.
+/// Directory entry.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
-  /// Имя файла (без пути).
+  /// File name (without path).
   pub name: String,
-  /// Тип файла.
+  /// File type.
   pub kind: FileType
 }
 
-/// Флаги открытия файла.
+/// File open flags.
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OpenFlags {
-  /// Открытие на чтение.
+  /// Open for reading.
   pub read: bool,
-  /// Открытие на запись.
+  /// Open for writing.
   pub write: bool,
-  /// Режим дописывания.
+  /// Append mode.
   pub append: bool,
-  /// Обрезать файл до нулевой длины.
+  /// Truncate the file to zero length.
   pub truncate: bool,
-  /// Создать файл если не существует.
+  /// Create the file if it does not exist.
   pub create: bool,
-  /// Ошибка если файл уже существует (вместе с create).
+  /// Error if the file already exists (together with create).
   pub exclusive: bool
 }
 
 impl OpenFlags {
-  /// Флаги для чтения.
+  /// Flags for reading.
   #[must_use]
   pub const fn read_only() -> Self {
     Self {
@@ -147,7 +147,7 @@ impl OpenFlags {
     }
   }
 
-  /// Флаги для записи.
+  /// Flags for writing.
   #[must_use]
   pub const fn write_only() -> Self {
     Self {
@@ -160,7 +160,7 @@ impl OpenFlags {
     }
   }
 
-  /// Флаги для чтения и записи.
+  /// Flags for reading and writing.
   #[must_use]
   pub const fn read_write() -> Self {
     Self {
@@ -174,59 +174,59 @@ impl OpenFlags {
   }
 }
 
-/// Информация о файловой системе.
+/// Filesystem information.
 #[derive(Debug, Clone)]
 pub struct StatFs {
-  /// Общее количество блоков.
+  /// Total number of blocks.
   pub blocks: u64,
-  /// Свободные блоки.
+  /// Free blocks.
   pub bfree: u64,
-  /// Доступные блоки (для непривилегированных пользователей).
+  /// Available blocks (for unprivileged users).
   pub bavail: u64,
-  /// Общее количество inodes.
+  /// Total number of inodes.
   pub files: u64,
-  /// Свободные inodes.
+  /// Free inodes.
   pub ffree: u64,
-  /// Размер блока в байтах.
+  /// Block size in bytes.
   pub bsize: u32,
-  /// Максимальная длина имени файла.
+  /// Maximum file name length.
   pub namelen: u32
 }
 
-/// Ошибки FUSE-операций.
+/// FUSE operation errors.
 #[derive(Debug, thiserror::Error)]
 pub enum FsError {
-  /// Файл или директория не найдены.
+  /// File or directory not found.
   #[error("not found")]
   NotFound,
-  /// Нет прав доступа.
+  /// Permission denied.
   #[error("permission denied")]
   PermissionDenied,
-  /// Файл или директория уже существует.
+  /// File or directory already exists.
   #[error("already exists")]
   AlreadyExists,
-  /// Ожидалась директория, но это не она.
+  /// Expected a directory, but it is not one.
   #[error("not a directory")]
   NotADirectory,
-  /// Путь является директорией (когда ожидался файл).
+  /// Path is a directory (when a file was expected).
   #[error("is a directory")]
   IsADirectory,
-  /// Директория не пуста (при удалении).
+  /// Directory is not empty (on removal).
   #[error("directory not empty")]
   NotEmpty,
-  /// Операция не поддерживается.
+  /// Operation not supported.
   #[error("not supported")]
   NotSupported,
-  /// Ошибка ввода-вывода.
+  /// I/O error.
   #[error(transparent)]
   Io(#[from] std::io::Error),
-  /// Прочая ошибка.
+  /// Other error.
   #[error("{0}")]
   Other(String)
 }
 
 impl FsError {
-  /// Преобразование в libc errno для FUSE.
+  /// Convert to libc errno for FUSE.
   #[cfg(unix)]
   #[must_use]
   pub fn to_errno(&self) -> i32 {
@@ -240,6 +240,28 @@ impl FsError {
       Self::NotSupported => libc::ENOSYS,
       Self::Io(e) => e.raw_os_error().unwrap_or(libc::EIO),
       Self::Other(_) => libc::EIO
+    }
+  }
+
+  /// Convert to NTSTATUS code for WinFsp.
+  #[cfg(windows)]
+  #[must_use]
+  pub fn to_ntstatus(&self) -> windows::Win32::Foundation::NTSTATUS {
+    use windows::Win32::Foundation::{
+      NTSTATUS, STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY,
+      STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED,
+      STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_UNSUCCESSFUL
+    };
+
+    match self {
+      Self::NotFound => STATUS_OBJECT_NAME_NOT_FOUND,
+      Self::PermissionDenied => STATUS_ACCESS_DENIED,
+      Self::AlreadyExists => STATUS_OBJECT_NAME_COLLISION,
+      Self::NotADirectory => STATUS_NOT_A_DIRECTORY,
+      Self::IsADirectory => STATUS_FILE_IS_A_DIRECTORY,
+      Self::NotEmpty => STATUS_DIRECTORY_NOT_EMPTY,
+      Self::NotSupported => STATUS_NOT_SUPPORTED,
+      Self::Io(_) | Self::Other(_) => STATUS_UNSUCCESSFUL
     }
   }
 }

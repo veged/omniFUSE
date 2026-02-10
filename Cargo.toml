@@ -15,7 +15,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# Общие
+# Common
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -33,6 +33,10 @@ toml = "0.8"
 
 # FUSE (Linux/macOS) — async, tokio-native
 rfuse3 = { version = "0.0.5", features = ["tokio-runtime"] }
+
+# WinFsp (Windows)
+winfsp = "0.12"
+windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }
 
 # Merge
 diffy = "0.4"
