@@ -109,11 +109,54 @@ rustup toolchain install nightly
 # Build all crates
 cargo build --workspace
 
-# Run tests (33 tests)
-cargo test --workspace
-
-# Lint (0 warnings enforced)
+# Lint
 cargo clippy --workspace
+```
+
+### Testing
+
+All tests (~319) run by default:
+
+```bash
+cargo test --workspace
+```
+
+#### Skipping tests in environments without dependencies
+
+If a runtime lacks certain dependencies, explicitly exclude specific test groups:
+
+```bash
+# CI without FUSE — skip FUSE mount tests
+cargo test --workspace -- --skip fuse_mount
+
+# CI without Wiki API credentials — skip real API tests
+cargo test --workspace -- --skip real_api
+
+# Combined skip
+cargo test --workspace -- --skip fuse_mount --skip real_api
+```
+
+#### Real API tests (Wiki)
+
+Tests in `real_api_tests.rs` hit the real Wiki API.
+Without env variables the tests do an early return (they don't fail):
+
+```bash
+export OMNIFUSE_WIKI_URL=https://wiki.example.com
+export OMNIFUSE_WIKI_TOKEN=your-token
+export OMNIFUSE_WIKI_ROOT_SLUG=my/project
+cargo test -p omnifuse-wiki --test real_api_tests
+```
+
+#### Running individual crates
+
+```bash
+cargo test -p omnifuse-core       # VFS, SyncEngine, buffer, config (131 tests)
+cargo test -p omnifuse-core --test fuse_mount_tests  # FUSE mount (30 tests)
+cargo test -p omnifuse-git        # Git engine, ops, filter (53 + 8 integration)
+cargo test -p omnifuse-wiki       # Wiki merge, meta, models, client, backend (67 tests)
+cargo test -p omnifuse-cli        # CLI E2E (11 tests)
+cargo test -p unifuse             # Types, inode (19 tests)
 ```
 
 ### Design decisions
