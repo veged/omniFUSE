@@ -1,7 +1,7 @@
 //! `OmniFuse` GUI
 //!
-//! Графический интерфейс для `OmniFuse` на базе Tauri.
-//! Поддерживает git и wiki backend'ы.
+//! Graphical interface for `OmniFuse` based on Tauri.
+//! Supports git and wiki backends.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use commands::AppState;
 
-/// Точка входа для GUI приложения.
+/// Entry point for the GUI application.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

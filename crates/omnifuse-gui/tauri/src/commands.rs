@@ -1,4 +1,4 @@
-//! Tauri commands для управления VFS.
+//! Tauri commands for VFS management.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,16 +9,16 @@ use tokio::sync::Mutex;
 
 use crate::events::TauriEventHandler;
 
-/// Состояние приложения.
+/// Application state.
 pub struct AppState {
-    /// Флаг, смонтирована ли VFS.
+    /// Flag indicating whether the VFS is mounted.
     pub mounted: Mutex<bool>,
-    /// Токен для отмены монтирования.
+    /// Cancellation token for unmounting.
     pub cancel_token: Mutex<Option<tokio::sync::oneshot::Sender<()>>>
 }
 
 impl AppState {
-    /// Создать новое состояние.
+    /// Create a new state.
     pub fn new() -> Self {
         Self {
             mounted: Mutex::new(false),
@@ -27,16 +27,16 @@ impl AppState {
     }
 }
 
-/// Проверить доступность платформы FUSE.
+/// Check FUSE platform availability.
 #[tauri::command]
-#[allow(clippy::unnecessary_wraps)] // Tauri command требует Result
+#[allow(clippy::unnecessary_wraps)] // Tauri command requires Result
 pub fn check_fuse() -> Result<bool, String> {
     Ok(omnifuse_core::is_fuse_available())
 }
 
-/// Смонтировать git backend.
+/// Mount a git backend.
 #[tauri::command]
-#[allow(clippy::similar_names)] // mount_point (param) vs mnt (local) — разные вещи
+#[allow(clippy::similar_names)] // mount_point (param) vs mnt (local) — different things
 pub async fn mount_git(
     source: String,
     mount_point: String,
@@ -46,7 +46,7 @@ pub async fn mount_git(
 ) -> Result<(), String> {
     let mut mounted = state.mounted.lock().await;
     if *mounted {
-        return Err("Уже смонтировано".to_string());
+        return Err("Already mounted".to_string());
     }
 
     let mnt = PathBuf::from(&mount_point);
@@ -77,7 +77,7 @@ pub async fn mount_git(
         "vfs:log",
         serde_json::json!({
             "level": "info",
-            "message": format!("запуск монтирования: {} -> {}", source, mnt.display())
+            "message": format!("starting mount: {} -> {}", source, mnt.display())
         })
     );
 
@@ -113,9 +113,9 @@ pub async fn mount_git(
     Ok(())
 }
 
-/// Смонтировать wiki backend.
+/// Mount a wiki backend.
 #[tauri::command]
-#[allow(clippy::similar_names)] // mount_point (param) vs mnt (local) — разные вещи
+#[allow(clippy::similar_names)] // mount_point (param) vs mnt (local) — different things
 pub async fn mount_wiki(
     base_url: String,
     root_slug: String,
@@ -126,7 +126,7 @@ pub async fn mount_wiki(
 ) -> Result<(), String> {
     let mut mounted = state.mounted.lock().await;
     if *mounted {
-        return Err("Уже смонтировано".to_string());
+        return Err("Already mounted".to_string());
     }
 
     let mnt = PathBuf::from(&mount_point);
@@ -141,7 +141,7 @@ pub async fn mount_wiki(
     };
 
     let wiki_backend = omnifuse_wiki::WikiBackend::new(wiki_config)
-        .map_err(|e| format!("ошибка создания wiki backend: {e}"))?;
+        .map_err(|e| format!("failed to create wiki backend: {e}"))?;
 
     let mount_config = omnifuse_core::MountConfig {
         mount_point: mnt.clone(),
@@ -160,7 +160,7 @@ pub async fn mount_wiki(
         "vfs:log",
         serde_json::json!({
             "level": "info",
-            "message": format!("запуск монтирования: {} ({}) -> {}", base_url, root_slug, mnt.display())
+            "message": format!("starting mount: {} ({}) -> {}", base_url, root_slug, mnt.display())
         })
     );
 
@@ -196,12 +196,12 @@ pub async fn mount_wiki(
     Ok(())
 }
 
-/// Размонтировать VFS.
+/// Unmount the VFS.
 #[tauri::command]
 pub async fn unmount(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut mounted = state.mounted.lock().await;
     if !*mounted {
-        return Err("Не смонтировано".to_string());
+        return Err("Not mounted".to_string());
     }
 
     let cancel = state.cancel_token.lock().await.take();
@@ -214,7 +214,7 @@ pub async fn unmount(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     Ok(())
 }
 
-/// Выбрать папку через системный диалог.
+/// Pick a folder using the system dialog.
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     let result = app.dialog().file().blocking_pick_folder();

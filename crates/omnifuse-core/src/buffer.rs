@@ -1,7 +1,7 @@
-//! Кэширование файлов в памяти с LRU-вытеснением.
+//! In-memory file caching with LRU eviction.
 //!
-//! Портировано из `SimpleGitFS` `core/src/vfs/buffer.rs`.
-//! Все операции async-safe через `tokio::sync::RwLock` и атомарные типы.
+//! Ported from `SimpleGitFS` `core/src/vfs/buffer.rs`.
+//! All operations are async-safe via `tokio::sync::RwLock` and atomic types.
 
 use std::{
   collections::VecDeque,
@@ -19,29 +19,29 @@ use tracing::{debug, trace};
 
 use crate::config::BufferConfig;
 
-/// Кэшированный буфер одного файла.
+/// Cached buffer for a single file.
 #[derive(Debug)]
 pub struct FileBuffer {
-  /// Путь к файлу.
+  /// File path.
   pub path: PathBuf,
-  /// Содержимое файла.
+  /// File content.
   content: RwLock<Vec<u8>>,
-  /// Буфер был изменён (ожидает flush на диск).
+  /// Buffer has been modified (pending flush to disk).
   dirty: AtomicBool,
-  /// Время последней модификации.
+  /// Last modification time.
   mtime: RwLock<SystemTime>,
-  /// Кэшированный размер файла.
+  /// Cached file size.
   size: AtomicU64
 }
 
 impl FileBuffer {
-  /// Создать новый буфер для файла.
+  /// Create a new buffer for a file.
   #[must_use]
   pub fn new(path: PathBuf, content: Vec<u8>) -> Self {
     Self::with_mtime(path, content, SystemTime::now())
   }
 
-  /// Создать новый буфер с указанным временем модификации.
+  /// Create a new buffer with the specified modification time.
   #[must_use]
   pub fn with_mtime(path: PathBuf, content: Vec<u8>, mtime: SystemTime) -> Self {
     let size = content.len() as u64;
@@ -54,7 +54,7 @@ impl FileBuffer {
     }
   }
 
-  /// Прочитать часть содержимого буфера.
+  /// Read a portion of the buffer content.
   pub async fn read(&self, offset: u64, size: u32) -> Vec<u8> {
     let content = self.content.read().await;
     let start = offset as usize;
@@ -67,37 +67,37 @@ impl FileBuffer {
     content[start..end].to_vec()
   }
 
-  /// Записать данные в буфер.
+  /// Write data to the buffer.
   ///
-  /// Расширяет буфер при необходимости. Помечает буфер как грязный.
+  /// Extends the buffer if necessary. Marks the buffer as dirty.
   pub async fn write(&self, offset: u64, data: &[u8]) -> usize {
     let mut content = self.content.write().await;
     let offset = offset as usize;
 
-    // Расширить при необходимости
+    // Extend if necessary
     if offset + data.len() > content.len() {
       content.resize(offset + data.len(), 0);
     }
 
     content[offset..offset + data.len()].copy_from_slice(data);
 
-    // Обновить метаданные
+    // Update metadata
     self.dirty.store(true, Ordering::SeqCst);
     self.size.store(content.len() as u64, Ordering::SeqCst);
 
-    // Обновить mtime
+    // Update mtime
     let mut mtime = self.mtime.write().await;
     *mtime = SystemTime::now();
 
     data.len()
   }
 
-  /// Получить полное содержимое буфера.
+  /// Get the full buffer content.
   pub async fn content(&self) -> Vec<u8> {
     self.content.read().await.clone()
   }
 
-  /// Установить полное содержимое буфера.
+  /// Set the full buffer content.
   pub async fn set_content(&self, data: Vec<u8>) {
     let mut content = self.content.write().await;
     self.size.store(data.len() as u64, Ordering::SeqCst);
@@ -108,7 +108,7 @@ impl FileBuffer {
     *mtime = SystemTime::now();
   }
 
-  /// Обрезать буфер до указанного размера.
+  /// Truncate the buffer to the specified size.
   pub async fn truncate(&self, new_size: u64) {
     let mut content = self.content.write().await;
     content.truncate(new_size as usize);
@@ -119,48 +119,48 @@ impl FileBuffer {
     *mtime = SystemTime::now();
   }
 
-  /// Изменён ли буфер (ожидает flush).
+  /// Whether the buffer has been modified (pending flush).
   #[must_use]
   pub fn is_dirty(&self) -> bool {
     self.dirty.load(Ordering::SeqCst)
   }
 
-  /// Пометить буфер как чистый (после flush на диск).
+  /// Mark the buffer as clean (after flush to disk).
   pub fn mark_clean(&self) {
     self.dirty.store(false, Ordering::SeqCst);
   }
 
-  /// Размер файла в байтах.
+  /// File size in bytes.
   #[must_use]
   pub fn size(&self) -> u64 {
     self.size.load(Ordering::SeqCst)
   }
 
-  /// Время последней модификации.
+  /// Last modification time.
   pub async fn mtime(&self) -> SystemTime {
     *self.mtime.read().await
   }
 }
 
-/// Менеджер файловых буферов с LRU-вытеснением.
+/// File buffer manager with LRU eviction.
 ///
-/// Потокобезопасный кэш содержимого файлов в памяти.
-/// Вытеснение старых буферов при превышении лимита памяти.
-/// Грязные буферы (с ожидающей записью) не вытесняются.
+/// Thread-safe in-memory file content cache.
+/// Evicts old buffers when the memory limit is exceeded.
+/// Dirty buffers (with pending writes) are not evicted.
 #[derive(Debug)]
 pub struct FileBufferManager {
-  /// Кэшированные буферы по пути.
+  /// Cached buffers by path.
   buffers: DashMap<PathBuf, Arc<FileBuffer>>,
-  /// Очередь LRU для вытеснения.
+  /// LRU queue for eviction.
   lru_order: RwLock<VecDeque<PathBuf>>,
-  /// Текущее использование памяти в байтах.
+  /// Current memory usage in bytes.
   memory_usage: AtomicUsize,
-  /// Конфигурация.
+  /// Configuration.
   config: BufferConfig
 }
 
 impl FileBufferManager {
-  /// Создать новый менеджер буферов.
+  /// Create a new buffer manager.
   #[must_use]
   pub fn new(config: BufferConfig) -> Self {
     Self {
@@ -171,18 +171,18 @@ impl FileBufferManager {
     }
   }
 
-  /// Получить буфер из кэша (если есть).
+  /// Get a buffer from the cache (if present).
   #[must_use]
   pub fn get(&self, path: &Path) -> Option<Arc<FileBuffer>> {
     self.buffers.get(path).map(|r| Arc::clone(r.value()))
   }
 
-  /// Добавить файл в кэш.
+  /// Add a file to the cache.
   pub async fn cache(&self, path: &Path, content: Vec<u8>) -> Arc<FileBuffer> {
     self.cache_with_mtime(path, content, SystemTime::now()).await
   }
 
-  /// Добавить файл в кэш с указанным временем модификации.
+  /// Add a file to the cache with the specified modification time.
   pub async fn cache_with_mtime(
     &self,
     path: &Path,
@@ -191,7 +191,7 @@ impl FileBufferManager {
   ) -> Arc<FileBuffer> {
     let size = content.len();
 
-    // Вытеснить старые буферы если нужно
+    // Evict old buffers if needed
     if self.config.lru_eviction_enabled {
       self.maybe_evict(size).await;
     }
@@ -199,45 +199,45 @@ impl FileBufferManager {
     let buffer = Arc::new(FileBuffer::with_mtime(path.to_path_buf(), content, mtime));
     self.buffers.insert(path.to_path_buf(), Arc::clone(&buffer));
 
-    // Обновить LRU
+    // Update LRU
     let mut lru = self.lru_order.write().await;
     lru.push_back(path.to_path_buf());
 
-    // Обновить использование памяти
+    // Update memory usage
     self.memory_usage.fetch_add(size, Ordering::SeqCst);
 
-    debug!(path = %path.display(), size, "файл закэширован");
+    debug!(path = %path.display(), size, "file cached");
 
     buffer
   }
 
-  /// Получить буфер или загрузить с диска.
+  /// Get a buffer or load from disk.
   ///
-  /// Если файл закэширован и свеж — возвращает кэш.
-  /// Если файл был изменён на диске (и буфер не грязный) — перезагружает.
-  /// Иначе — читает с диска и кэширует.
+  /// If the file is cached and fresh — returns the cache.
+  /// If the file was modified on disk (and the buffer is not dirty) — reloads.
+  /// Otherwise — reads from disk and caches.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности чтения файла.
+  /// Returns an error if the file cannot be read.
   pub async fn get_or_load(&self, path: &Path) -> std::io::Result<Arc<FileBuffer>> {
-    // Проверить кэш
+    // Check cache
     if let Some(buffer) = self.get(path) {
-      // Грязный буфер — не перезагружать
+      // Dirty buffer — do not reload
       if buffer.is_dirty() {
         trace!(path = %path.display(), "cache hit (dirty)");
         self.touch(path).await;
         return Ok(buffer);
       }
 
-      // Проверить свежесть по mtime
+      // Check freshness by mtime
       if let Ok(metadata) = tokio::fs::metadata(path).await
         && let Ok(disk_mtime) = metadata.modified()
       {
         let cached_mtime = buffer.mtime().await;
         if disk_mtime > cached_mtime {
-          // Файл изменён извне — перезагрузить
-          debug!(path = %path.display(), "кэш устарел, перезагрузка с диска");
+          // File modified externally — reload
+          debug!(path = %path.display(), "cache stale, reloading from disk");
           self.remove(path).await;
           let content = tokio::fs::read(path).await?;
           return Ok(self.cache_with_mtime(path, content, disk_mtime).await);
@@ -249,28 +249,28 @@ impl FileBufferManager {
       return Ok(buffer);
     }
 
-    // Загрузить с диска
-    trace!(path = %path.display(), "cache miss, загрузка с диска");
+    // Load from disk
+    trace!(path = %path.display(), "cache miss, loading from disk");
     let metadata = tokio::fs::metadata(path).await?;
     let mtime = metadata.modified().unwrap_or_else(|_| SystemTime::now());
     let content = tokio::fs::read(path).await?;
     Ok(self.cache_with_mtime(path, content, mtime).await)
   }
 
-  /// Обновить позицию в LRU (пометить как недавно использованный).
+  /// Update the LRU position (mark as recently used).
   async fn touch(&self, path: &Path) {
     let mut lru = self.lru_order.write().await;
 
-    // Удалить из текущей позиции
+    // Remove from current position
     if let Some(pos) = lru.iter().position(|p| p == path) {
       lru.remove(pos);
     }
 
-    // Добавить в конец (самый свежий)
+    // Add to the end (most recent)
     lru.push_back(path.to_path_buf());
   }
 
-  /// Вытеснить старые буферы при превышении лимита памяти.
+  /// Evict old buffers when the memory limit is exceeded.
   async fn maybe_evict(&self, additional_size: usize) {
     let max_memory = self.config.max_memory_bytes();
     let current = self.memory_usage.load(Ordering::SeqCst);
@@ -286,7 +286,7 @@ impl FileBufferManager {
         break;
       };
 
-      // Грязные буферы не вытесняем
+      // Do not evict dirty buffers
       if let Some(buffer) = self.buffers.get(&oldest) {
         if buffer.is_dirty() {
           lru.push_back(oldest);
@@ -304,12 +304,12 @@ impl FileBufferManager {
           })
           .ok();
 
-        debug!(path = %oldest.display(), size, "буфер вытеснен");
+        debug!(path = %oldest.display(), size, "buffer evicted");
       }
     }
   }
 
-  /// Удалить буфер из кэша.
+  /// Remove a buffer from the cache.
   pub async fn remove(&self, path: &Path) {
     if let Some((_, buffer)) = self.buffers.remove(path) {
       let size = buffer.size() as usize;
@@ -325,11 +325,11 @@ impl FileBufferManager {
         lru.remove(pos);
       }
 
-      debug!(path = %path.display(), "буфер удалён");
+      debug!(path = %path.display(), "buffer removed");
     }
   }
 
-  /// Получить все грязные буферы.
+  /// Get all dirty buffers.
   #[must_use]
   pub fn dirty_buffers(&self) -> Vec<Arc<FileBuffer>> {
     self
@@ -340,11 +340,11 @@ impl FileBufferManager {
       .collect()
   }
 
-  /// Записать буфер на диск.
+  /// Flush a buffer to disk.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности записи.
+  /// Returns an error if the write fails.
   pub async fn flush(&self, path: &Path) -> std::io::Result<()> {
     let Some(buffer) = self.get(path) else {
       return Ok(());
@@ -358,16 +358,16 @@ impl FileBufferManager {
     tokio::fs::write(path, &content).await?;
     buffer.mark_clean();
 
-    debug!(path = %path.display(), size = content.len(), "буфер сброшен на диск");
+    debug!(path = %path.display(), size = content.len(), "buffer flushed to disk");
 
     Ok(())
   }
 
-  /// Записать все грязные буферы на диск.
+  /// Flush all dirty buffers to disk.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности записи.
+  /// Returns an error if any write fails.
   pub async fn flush_all(&self) -> std::io::Result<()> {
     let dirty = self.dirty_buffers();
 
@@ -376,29 +376,29 @@ impl FileBufferManager {
       tokio::fs::write(&buffer.path, &content).await?;
       buffer.mark_clean();
 
-      debug!(path = %buffer.path.display(), size = content.len(), "буфер сброшен");
+      debug!(path = %buffer.path.display(), size = content.len(), "buffer flushed");
     }
 
     Ok(())
   }
 
-  /// Текущее использование памяти в байтах.
+  /// Current memory usage in bytes.
   #[must_use]
   pub fn memory_usage(&self) -> usize {
     self.memory_usage.load(Ordering::SeqCst)
   }
 
-  /// Количество закэшированных буферов.
+  /// Number of cached buffers.
   #[must_use]
   pub fn buffer_count(&self) -> usize {
     self.buffers.len()
   }
 
-  /// Очистить все буферы (грязные сначала сбрасываются на диск).
+  /// Clear all buffers (dirty ones are flushed to disk first).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности записи.
+  /// Returns an error if any write fails.
   pub async fn clear(&self) -> std::io::Result<()> {
     self.flush_all().await?;
     self.buffers.clear();

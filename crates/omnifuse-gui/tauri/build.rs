@@ -1,4 +1,4 @@
-//! Скрипт сборки для Tauri.
+//! Tauri build script.
 
 fn main() {
     tauri_build::build();

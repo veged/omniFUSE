@@ -1,115 +1,115 @@
-//! Backend trait — единый интерфейс для синхронизируемых хранилищ.
+//! Backend trait — unified interface for synchronized storage backends.
 //!
-//! Управляет sync самостоятельно: VFS-ядро говорит ЧТО синхронизировать,
-//! backend решает КАК.
+//! Manages sync autonomously: the VFS core tells WHAT to synchronize,
+//! the backend decides HOW.
 
 use std::{
   path::{Path, PathBuf},
   time::Duration
 };
 
-/// Backend для синхронизируемого хранилища.
+/// Backend for a synchronized storage.
 ///
-/// Управляет sync самостоятельно: VFS-ядро говорит ЧТО синхронизировать,
-/// backend решает КАК.
+/// Manages sync autonomously: the VFS core tells WHAT to synchronize,
+/// the backend decides HOW.
 pub trait Backend: Send + Sync + 'static {
-  /// Инициализация: подготовить локальную директорию.
+  /// Initialization: prepare the local directory.
   ///
-  /// Git: clone (если remote URL) или проверить существующий repo.
-  /// Wiki: создать local dir, fetch дерево, записать файлы.
+  /// Git: clone (if remote URL) or verify an existing repo.
+  /// Wiki: create local dir, fetch tree, write files.
   fn init(&self, local_dir: &Path) -> impl Future<Output = anyhow::Result<InitResult>> + Send;
 
-  /// Синхронизировать локальные изменения с remote.
+  /// Synchronize local changes with remote.
   ///
-  /// Вызывается `SyncEngine`'ом после debounce/close trigger.
-  /// Backend сам решает как мержить при конфликтах.
+  /// Called by `SyncEngine` after debounce/close trigger.
+  /// The backend decides how to merge on conflicts.
   fn sync(&self, dirty_files: &[PathBuf]) -> impl Future<Output = anyhow::Result<SyncResult>> + Send;
 
-  /// Проверить remote на изменения (периодический poll).
+  /// Check remote for changes (periodic poll).
   fn poll_remote(
     &self
   ) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send;
 
-  /// Применить remote изменения к локальной директории.
+  /// Apply remote changes to the local directory.
   ///
-  /// НЕ перезаписывает dirty файлы (`SyncEngine` проверяет).
+  /// Does NOT overwrite dirty files (`SyncEngine` checks for that).
   fn apply_remote(
     &self,
     changes: Vec<RemoteChange>
   ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-  /// Должен ли файл синхронизироваться с remote?
+  /// Should this file be synchronized with remote?
   ///
-  /// Git: проверка `.gitignore`, скрытие `.git/`.
-  /// Wiki: только `.md` файлы.
+  /// Git: check `.gitignore`, hide `.git/`.
+  /// Wiki: only `.md` files.
   fn should_track(&self, path: &Path) -> bool;
 
-  /// Интервал опроса remote на изменения.
+  /// Interval for polling remote for changes.
   fn poll_interval(&self) -> Duration;
 
-  /// Проверить доступность remote.
+  /// Check remote availability.
   fn is_online(&self) -> impl Future<Output = bool> + Send;
 
-  /// Название backend'а для логов и UI.
+  /// Backend name for logs and UI.
   fn name(&self) -> &'static str;
 }
 
-/// Результат инициализации.
+/// Initialization result.
 #[derive(Debug, Clone)]
 pub enum InitResult {
-  /// Новый клон/fetch.
+  /// Fresh clone/fetch.
   Fresh,
-  /// Локальная директория уже актуальна.
+  /// Local directory is already up to date.
   UpToDate,
-  /// Обновлено с remote.
+  /// Updated from remote.
   Updated,
-  /// Есть конфликты при инициализации.
+  /// There are conflicts during initialization.
   Conflicts {
-    /// Файлы с конфликтами.
+    /// Files with conflicts.
     files: Vec<PathBuf>
   },
-  /// Remote недоступен, работаем с локальным состоянием.
+  /// Remote is unavailable, working with local state.
   Offline
 }
 
-/// Результат синхронизации.
+/// Synchronization result.
 #[derive(Debug, Clone)]
 pub enum SyncResult {
-  /// Все файлы синхронизированы успешно.
+  /// All files synchronized successfully.
   Success {
-    /// Количество синхронизированных файлов.
+    /// Number of synchronized files.
     synced_files: usize
   },
-  /// Часть файлов конфликтует.
+  /// Some files have conflicts.
   Conflict {
-    /// Количество синхронизированных файлов.
+    /// Number of synchronized files.
     synced_files: usize,
-    /// Файлы с конфликтами.
+    /// Files with conflicts.
     conflict_files: Vec<PathBuf>
   },
-  /// Remote недоступен.
+  /// Remote is unavailable.
   Offline
 }
 
-/// Изменение на remote.
+/// Remote change.
 #[derive(Debug, Clone)]
 pub enum RemoteChange {
-  /// Файл был изменён.
+  /// File was modified.
   Modified {
-    /// Путь к файлу.
+    /// File path.
     path: PathBuf,
-    /// Новое содержимое.
+    /// New content.
     content: Vec<u8>
   },
-  /// Файл был удалён.
+  /// File was deleted.
   Deleted {
-    /// Путь к файлу.
+    /// File path.
     path: PathBuf
   }
 }
 
 impl RemoteChange {
-  /// Получить путь файла из изменения.
+  /// Get the file path from the change.
   #[must_use]
   pub fn path(&self) -> &Path {
     match self {

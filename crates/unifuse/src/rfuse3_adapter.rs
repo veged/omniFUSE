@@ -1,12 +1,12 @@
-//! Адаптер rfuse3 → async `UniFuseFilesystem`.
+//! Adapter from rfuse3 to async `UniFuseFilesystem`.
 //!
-//! Преобразует inode-based вызовы rfuse3 в path-based async вызовы
-//! `UniFuseFilesystem` trait'а.
+//! Converts inode-based rfuse3 calls into path-based async calls
+//! to the `UniFuseFilesystem` trait.
 //!
-//! Маппинг типов:
-//! - `rfuse3::Inode` (u64) → `Path` (через `InodeMap`)
-//! - `rfuse3::raw::reply::FileAttr` → `unifuse::FileAttr`
-//! - `unifuse::FsError` → `rfuse3::Errno`
+//! Type mapping:
+//! - `rfuse3::Inode` (u64) -> `Path` (via `InodeMap`)
+//! - `rfuse3::raw::reply::FileAttr` -> `unifuse::FileAttr`
+//! - `unifuse::FsError` -> `rfuse3::Errno`
 
 use std::{
   ffi::{OsStr, OsString},
@@ -25,28 +25,28 @@ use crate::{
   types::{self, FileHandle as UfFileHandle}
 };
 
-/// Алиас для rfuse3 `Result`.
+/// Alias for rfuse3 `Result`.
 type Result<T> = std::result::Result<T, Errno>;
 
-/// TTL для кеширования атрибутов (1 минута).
+/// TTL for attribute caching (1 minute).
 const TTL: Duration = Duration::from_secs(60);
 
-/// Максимальный размер записи (1 МБ).
+/// Maximum write size (1 MB).
 const MAX_WRITE: std::num::NonZeroU32 = match std::num::NonZeroU32::new(1024 * 1024) {
   Some(v) => v,
-  None => panic!("MAX_WRITE не может быть нулём")
+  None => panic!("MAX_WRITE cannot be zero")
 };
 
-/// Адаптер: преобразует inode-based вызовы rfuse3 → path-based async `UniFuseFilesystem`.
+/// Adapter: converts inode-based rfuse3 calls into path-based async `UniFuseFilesystem` calls.
 ///
-/// Содержит `InodeMap` для маппинга inode ↔ path.
+/// Contains an `InodeMap` for inode-to-path mapping.
 pub struct Rfuse3Adapter<F: UniFuseFilesystem> {
   inner: Arc<F>,
   inode_map: Arc<RwLock<InodeMap>>
 }
 
 impl<F: UniFuseFilesystem> Rfuse3Adapter<F> {
-  /// Создать новый адаптер для файловой системы.
+  /// Create a new adapter for the filesystem.
   pub fn new(fs: Arc<F>, root: PathBuf) -> Self {
     Self {
       inner: fs,
@@ -54,7 +54,7 @@ impl<F: UniFuseFilesystem> Rfuse3Adapter<F> {
     }
   }
 
-  /// Получить путь по inode, или вернуть ENOENT.
+  /// Get the path for an inode, or return ENOENT.
   async fn resolve_path(&self, inode: u64) -> Result<PathBuf> {
     self
       .inode_map
@@ -65,9 +65,9 @@ impl<F: UniFuseFilesystem> Rfuse3Adapter<F> {
   }
 }
 
-// --- Конвертация типов ---
+// --- Type conversions ---
 
-/// Преобразовать `unifuse::FileAttr` → `rfuse3::raw::reply::FileAttr`.
+/// Convert `unifuse::FileAttr` to `rfuse3::raw::reply::FileAttr`.
 fn to_rfuse3_attr(attr: &types::FileAttr, ino: u64) -> FileAttr {
   FileAttr {
     ino,
@@ -90,7 +90,7 @@ fn to_rfuse3_attr(attr: &types::FileAttr, ino: u64) -> FileAttr {
   }
 }
 
-/// Преобразовать `unifuse::FileType` → `rfuse3::FileType`.
+/// Convert `unifuse::FileType` to `rfuse3::FileType`.
 const fn to_rfuse3_filetype(kind: FileType) -> rfuse3::FileType {
   match kind {
     FileType::RegularFile => rfuse3::FileType::RegularFile,
@@ -103,7 +103,7 @@ const fn to_rfuse3_filetype(kind: FileType) -> rfuse3::FileType {
   }
 }
 
-/// Преобразовать `unifuse::FileType` → `inode::NodeKind`.
+/// Convert `unifuse::FileType` to `inode::NodeKind`.
 const fn to_node_kind(kind: FileType) -> NodeKind {
   match kind {
     FileType::Directory => NodeKind::Dir,
@@ -111,7 +111,7 @@ const fn to_node_kind(kind: FileType) -> NodeKind {
   }
 }
 
-/// Преобразовать `SystemTime` → rfuse3 `Timestamp`.
+/// Convert `SystemTime` to rfuse3 `Timestamp`.
 fn system_time_to_timestamp(time: SystemTime) -> Timestamp {
   let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
   Timestamp::new(
@@ -120,18 +120,18 @@ fn system_time_to_timestamp(time: SystemTime) -> Timestamp {
   )
 }
 
-/// Преобразовать rfuse3 `Timestamp` → `SystemTime`.
+/// Convert rfuse3 `Timestamp` to `SystemTime`.
 fn timestamp_to_system_time(ts: Timestamp) -> SystemTime {
   let secs = u64::try_from(ts.sec).unwrap_or(0);
   UNIX_EPOCH + Duration::new(secs, ts.nsec)
 }
 
-/// Преобразовать `FsError` → rfuse3 `Errno`.
+/// Convert `FsError` to rfuse3 `Errno`.
 fn fs_error_to_errno(err: &FsError) -> Errno {
   Errno::from(err.to_errno())
 }
 
-/// Преобразовать rfuse3 open flags → `unifuse::OpenFlags`.
+/// Convert rfuse3 open flags to `unifuse::OpenFlags`.
 const fn decode_open_flags(flags: u32) -> OpenFlags {
   let access_mode = flags & libc::O_ACCMODE as u32;
   OpenFlags {
@@ -313,7 +313,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
         let mut dir_entries: Vec<DirectoryEntry> = Vec::new();
         let mut index: i64 = 1;
 
-        // Добавляем . и ..
+        // Add . and ..
         if offset < index {
           dir_entries.push(DirectoryEntry {
             inode,
@@ -334,7 +334,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
         }
         index += 1;
 
-        // Собираем записи из UniFuseFilesystem
+        // Collect entries from UniFuseFilesystem
         for entry in entries {
           if offset < index {
             let child_path = path.join(&entry.name);
@@ -612,7 +612,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
   }
 
   async fn interrupt(&self, _req: Request, _unique: u64) -> Result<()> {
-    debug!("получен FUSE interrupt");
+    debug!("received FUSE interrupt");
     Ok(())
   }
 }

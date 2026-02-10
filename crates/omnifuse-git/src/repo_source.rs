@@ -1,6 +1,6 @@
-//! Управление источником репозитория (локальный путь / remote URL).
+//! Repository source management (local path / remote URL).
 //!
-//! Портировано из `SimpleGitFS` `core/src/git/repo_source.rs`.
+//! Ported from `SimpleGitFS` `core/src/git/repo_source.rs`.
 
 use std::{
   hash::{Hash, Hasher},
@@ -9,27 +9,27 @@ use std::{
 
 use tracing::{debug, info};
 
-/// Git URL префиксы для remote репозиториев.
+/// Git URL prefixes for remote repositories.
 const GIT_URL_PREFIXES: &[&str] = &["https://", "http://", "git://", "ssh://", "git@"];
 
-/// Источник репозитория — локальный путь или remote URL.
+/// Repository source — local path or remote URL.
 #[derive(Debug, Clone)]
 pub enum RepoSource {
-  /// Локальная файловая система.
+  /// Local filesystem.
   Local(PathBuf),
-  /// Удалённый git URL.
+  /// Remote git URL.
   Remote {
-    /// Оригинальный URL.
+    /// Original URL.
     url: String,
-    /// Локальный путь для кэша клона.
+    /// Local path for the clone cache.
     cache_path: PathBuf
   }
 }
 
 impl RepoSource {
-  /// Распарсить источник из строки.
+  /// Parse a source from a string.
   ///
-  /// Автоматически определяет URL vs локальный путь.
+  /// Automatically determines URL vs local path.
   #[must_use]
   pub fn parse(input: &str) -> Self {
     if Self::is_git_url(input) {
@@ -41,7 +41,7 @@ impl RepoSource {
     }
   }
 
-  /// Проверить, выглядит ли строка как git URL.
+  /// Check whether a string looks like a git URL.
   #[must_use]
   pub fn is_git_url(input: &str) -> bool {
     for prefix in GIT_URL_PREFIXES {
@@ -63,7 +63,7 @@ impl RepoSource {
     false
   }
 
-  /// Вычислить путь кэша для remote URL.
+  /// Compute the cache path for a remote URL.
   #[must_use]
   pub fn compute_cache_path(url: &str) -> PathBuf {
     let hash = Self::hash_url(url);
@@ -72,7 +72,7 @@ impl RepoSource {
     cache_base.join(format!("{name}-{hash}"))
   }
 
-  /// Извлечь имя репо из URL.
+  /// Extract the repository name from a URL.
   #[must_use]
   fn extract_repo_name(url: &str) -> String {
     let url = url.trim_end_matches(".git");
@@ -89,14 +89,14 @@ impl RepoSource {
       .collect()
   }
 
-  /// Хеш URL для уникального идентификатора.
+  /// Hash a URL for a unique identifier.
   fn hash_url(url: &str) -> String {
     let mut hasher = std::hash::DefaultHasher::new();
     url.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
   }
 
-  /// Локальный рабочий путь.
+  /// Local working path.
   #[must_use]
   pub fn local_path(&self) -> &Path {
     match self {
@@ -105,13 +105,13 @@ impl RepoSource {
     }
   }
 
-  /// Это remote источник?
+  /// Is this a remote source?
   #[must_use]
   pub const fn is_remote(&self) -> bool {
     matches!(self, Self::Remote { .. })
   }
 
-  /// Remote URL (если есть).
+  /// Remote URL (if available).
   #[must_use]
   pub fn remote_url(&self) -> Option<&str> {
     match self {
@@ -120,43 +120,43 @@ impl RepoSource {
     }
   }
 
-  /// Существует ли локальный путь?
+  /// Does the local path exist?
   #[must_use]
   pub fn exists(&self) -> bool {
     self.local_path().exists()
   }
 
-  /// Валидный ли git-репозиторий?
+  /// Is it a valid git repository?
   #[must_use]
   pub fn is_git_repo(&self) -> bool {
     self.local_path().join(".git").exists()
   }
 
-  /// Гарантировать наличие репозитория локально.
+  /// Ensure the repository is available locally.
   ///
-  /// Для local — проверяет существование.
-  /// Для remote — клонирует если нужно.
+  /// For local — checks existence.
+  /// For remote — clones if needed.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче clone или отсутствии локального пути.
+  /// Returns an error if clone fails or the local path is missing.
   pub async fn ensure_available(&self, branch: &str) -> anyhow::Result<PathBuf> {
     match self {
       Self::Local(path) => {
         if !path.exists() {
-          anyhow::bail!("путь не найден: {}", path.display());
+          anyhow::bail!("path not found: {}", path.display());
         }
         if !path.join(".git").exists() {
-          anyhow::bail!("не git-репозиторий: {}", path.display());
+          anyhow::bail!("not a git repository: {}", path.display());
         }
         Ok(path.clone())
       }
       Self::Remote { url, cache_path } => {
         if cache_path.join(".git").exists() {
-          info!(url, path = %cache_path.display(), "используем кэшированный репозиторий");
+          info!(url, path = %cache_path.display(), "using cached repository");
           Self::fetch_updates(cache_path).await?;
         } else {
-          info!(url, path = %cache_path.display(), "клонирование");
+          info!(url, path = %cache_path.display(), "cloning");
           Self::clone_repo(url, cache_path, branch).await?;
         }
         Ok(cache_path.clone())
@@ -164,13 +164,13 @@ impl RepoSource {
     }
   }
 
-  /// Клонировать remote репозиторий.
+  /// Clone a remote repository.
   async fn clone_repo(url: &str, target: &Path, branch: &str) -> anyhow::Result<()> {
     if let Some(parent) = target.parent() {
       std::fs::create_dir_all(parent)?;
     }
 
-    debug!(url, target = %target.display(), branch, "клонирование");
+    debug!(url, target = %target.display(), branch, "cloning");
 
     let output = tokio::process::Command::new("git")
       .args([
@@ -190,7 +190,7 @@ impl RepoSource {
       let stderr = String::from_utf8_lossy(&output.stderr);
 
       if stderr.contains("not found") || stderr.contains("Could not find remote branch") {
-        debug!("ветка {branch} не найдена, пробуем default");
+        debug!("branch {branch} not found, trying default");
 
         let output = tokio::process::Command::new("git")
           .args(["clone", "--single-branch", "--depth", "1", url])
@@ -207,20 +207,20 @@ impl RepoSource {
       }
     }
 
-    // Unshallow для полной истории
+    // Unshallow for full history
     let _ = tokio::process::Command::new("git")
       .args(["fetch", "--unshallow"])
       .current_dir(target)
       .output()
       .await;
 
-    info!(url, "клон завершён");
+    info!(url, "clone completed");
     Ok(())
   }
 
-  /// Fetch обновлений для существующего репозитория.
+  /// Fetch updates for an existing repository.
   async fn fetch_updates(repo_path: &Path) -> anyhow::Result<()> {
-    debug!(path = %repo_path.display(), "fetch обновлений");
+    debug!(path = %repo_path.display(), "fetching updates");
 
     let output = tokio::process::Command::new("git")
       .args(["fetch", "--all"])
@@ -230,7 +230,7 @@ impl RepoSource {
 
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
-      debug!("fetch не удался (продолжаем): {stderr}");
+      debug!("fetch failed (continuing): {stderr}");
     }
 
     Ok(())
@@ -246,7 +246,7 @@ impl std::fmt::Display for RepoSource {
   }
 }
 
-/// Получить директорию кэша (`XDG_CACHE_HOME` или fallback).
+/// Get the cache directory (`XDG_CACHE_HOME` or fallback).
 fn dirs_cache_dir() -> PathBuf {
   if let Ok(cache) = std::env::var("XDG_CACHE_HOME") {
     return PathBuf::from(cache);

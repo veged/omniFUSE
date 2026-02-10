@@ -1,16 +1,16 @@
-//! Маппинг inode ↔ path для FUSE.
+//! Inode-to-path mapping for FUSE.
 //!
-//! Двусторонняя карта между номерами inode (`u64`) и путями файловой системы.
-//! Используется FNV-1a хеш для детерминированной генерации номеров inode.
+//! A bidirectional map between inode numbers (`u64`) and filesystem paths.
+//! Uses FNV-1a hash for deterministic inode number generation.
 //!
-//! `WinFsp` работает с путями напрямую — `InodeMap` ему НЕ нужен.
+//! `WinFsp` works with paths directly — it does NOT need `InodeMap`.
 
 use std::path::{Path, PathBuf};
 
 use dashmap::DashMap;
 use tracing::{debug, error};
 
-/// Номер корневого inode (всегда 1 для FUSE).
+/// Root inode number (always 1 for FUSE).
 pub const ROOT_INODE: u64 = 1;
 
 /// FNV-1a offset basis.
@@ -19,31 +19,31 @@ const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
 /// FNV-1a prime.
 const FNV_PRIME: u64 = 1_099_511_628_211;
 
-/// Тип узла файловой системы.
+/// Filesystem node type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeKind {
-  /// Обычный файл.
+  /// Regular file.
   File,
-  /// Директория.
+  /// Directory.
   Dir
 }
 
-/// Двусторонняя карта inode ↔ path.
+/// Bidirectional inode-to-path map.
 ///
-/// Использует FNV-1a хеш для детерминированной генерации inode:
-/// один и тот же путь всегда даёт один и тот же номер inode.
+/// Uses FNV-1a hash for deterministic inode generation:
+/// the same path always produces the same inode number.
 #[derive(Debug)]
 pub struct InodeMap {
-  /// inode → path.
+  /// inode -> path.
   inode_to_path: DashMap<u64, PathBuf>,
-  /// path → inode.
+  /// path -> inode.
   path_to_inode: DashMap<PathBuf, u64>,
-  /// Корневой путь файловой системы.
+  /// Root path of the filesystem.
   root: PathBuf
 }
 
 impl InodeMap {
-  /// Создать новую карту с заданным корневым путём.
+  /// Create a new map with the given root path.
   #[must_use]
   pub fn new(root: PathBuf) -> Self {
     let map = Self {
@@ -52,35 +52,35 @@ impl InodeMap {
       root: root.clone()
     };
 
-    // Регистрируем корневую директорию
+    // Register the root directory
     map.inode_to_path.insert(ROOT_INODE, root.clone());
     map.path_to_inode.insert(root, ROOT_INODE);
 
     map
   }
 
-  /// Получить корневой путь.
+  /// Get the root path.
   #[must_use]
   pub fn root(&self) -> &Path {
     &self.root
   }
 
-  /// Вычислить inode для пути через FNV-1a хеш.
+  /// Compute an inode for a path via FNV-1a hash.
   ///
-  /// Хеш включает тип узла для различения файлов и директорий
-  /// с одинаковым именем.
+  /// The hash includes the node type to distinguish files and directories
+  /// with the same name.
   #[must_use]
   pub fn compute_inode(path: &Path, kind: NodeKind) -> u64 {
     let path_str = path.to_string_lossy();
 
-    // Корневая директория — всегда `ROOT_INODE`
+    // Root directory is always `ROOT_INODE`
     if path_str.is_empty() || path_str == "/" || path_str == "." {
       return ROOT_INODE;
     }
 
     let mut h: u64 = FNV_OFFSET;
 
-    // Включаем тип узла в хеш
+    // Include the node type in the hash
     let kind_prefix = match kind {
       NodeKind::File => b"f:",
       NodeKind::Dir => b"d:"
@@ -91,12 +91,12 @@ impl InodeMap {
       h = h.wrapping_mul(FNV_PRIME);
     }
 
-    // Избегаем коллизии с корневым inode
+    // Avoid collision with the root inode
     if h == ROOT_INODE {
       h = 2;
     }
 
-    // Избегаем 0 (невалидный inode)
+    // Avoid 0 (invalid inode)
     if h == 0 {
       h = u64::MAX;
     }
@@ -104,61 +104,61 @@ impl InodeMap {
     h
   }
 
-  /// Получить или создать inode для пути.
+  /// Get or create an inode for a path.
   ///
-  /// Если путь уже зарегистрирован — возвращает существующий inode.
-  /// Иначе — вычисляет и регистрирует новый.
+  /// If the path is already registered, returns the existing inode.
+  /// Otherwise, computes and registers a new one.
   pub fn get_or_insert(&self, path: &Path, kind: NodeKind) -> u64 {
-    // Проверяем, зарегистрирован ли путь
+    // Check if the path is registered
     if let Some(inode) = self.path_to_inode.get(path) {
       return *inode;
     }
 
-    // Вычисляем новый inode
+    // Compute a new inode
     let inode = Self::compute_inode(path, kind);
 
-    // Проверяем коллизию
+    // Check for collision
     if self.inode_to_path.contains_key(&inode) {
       let existing = self.inode_to_path.get(&inode);
       error!(
         inode,
         new_path = %path.display(),
         existing_path = %existing.map_or_else(|| "unknown".to_string(), |p| p.display().to_string()),
-        "обнаружена коллизия inode"
+        "inode collision detected"
       );
     }
 
-    // Регистрируем маппинг
+    // Register the mapping
     let path_buf = path.to_path_buf();
     self.inode_to_path.insert(inode, path_buf.clone());
     self.path_to_inode.insert(path_buf, inode);
 
-    debug!(inode, path = %path.display(), ?kind, "зарегистрирован inode");
+    debug!(inode, path = %path.display(), ?kind, "inode registered");
 
     inode
   }
 
-  /// Получить путь по номеру inode.
+  /// Get a path by inode number.
   #[must_use]
   pub fn get_path(&self, inode: u64) -> Option<PathBuf> {
     self.inode_to_path.get(&inode).map(|r| r.value().clone())
   }
 
-  /// Получить inode по пути.
+  /// Get an inode by path.
   #[must_use]
   pub fn get_inode(&self, path: &Path) -> Option<u64> {
     self.path_to_inode.get(path).map(|r| *r.value())
   }
 
-  /// Удалить путь из карты.
+  /// Remove a path from the map.
   pub fn remove(&self, path: &Path) {
     if let Some((_, inode)) = self.path_to_inode.remove(path) {
       self.inode_to_path.remove(&inode);
-      debug!(inode, path = %path.display(), "удалён маппинг inode");
+      debug!(inode, path = %path.display(), "inode mapping removed");
     }
   }
 
-  /// Переименовать путь (обновить маппинг).
+  /// Rename a path (update the mapping).
   pub fn rename(&self, old_path: &Path, new_path: &Path) {
     if let Some((_, inode)) = self.path_to_inode.remove(old_path) {
       self.inode_to_path.insert(inode, new_path.to_path_buf());
@@ -167,41 +167,41 @@ impl InodeMap {
         inode,
         old = %old_path.display(),
         new = %new_path.display(),
-        "переименован маппинг inode"
+        "inode mapping renamed"
       );
     }
   }
 
-  /// Проверить существование inode.
+  /// Check whether an inode exists.
   #[must_use]
   pub fn contains_inode(&self, inode: u64) -> bool {
     self.inode_to_path.contains_key(&inode)
   }
 
-  /// Проверить существование пути.
+  /// Check whether a path exists.
   #[must_use]
   pub fn contains_path(&self, path: &Path) -> bool {
     self.path_to_inode.contains_key(path)
   }
 
-  /// Количество зарегистрированных inode.
+  /// Number of registered inodes.
   #[must_use]
   pub fn len(&self) -> usize {
     self.inode_to_path.len()
   }
 
-  /// Пуста ли карта.
+  /// Whether the map is empty.
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.inode_to_path.is_empty()
   }
 
-  /// Очистить все маппинги кроме корневого.
+  /// Clear all mappings except the root.
   pub fn clear(&self) {
     self.inode_to_path.clear();
     self.path_to_inode.clear();
 
-    // Перерегистрируем корень
+    // Re-register the root
     self.inode_to_path.insert(ROOT_INODE, self.root.clone());
     self.path_to_inode.insert(self.root.clone(), ROOT_INODE);
   }
@@ -283,7 +283,7 @@ mod tests {
     assert_eq!(map.len(), 2); // root + file
 
     map.clear();
-    assert_eq!(map.len(), 1); // только root
+    assert_eq!(map.len(), 1); // only root
     assert!(map.contains_inode(ROOT_INODE));
     assert!(!map.contains_path(path));
   }

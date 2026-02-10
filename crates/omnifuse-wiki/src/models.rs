@@ -1,27 +1,27 @@
-//! Модели Wiki API (serde).
+//! Wiki API models (serde).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Поля страницы (подробно).
+/// Page fields (detailed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageFullDetailsSchema {
-  /// ID страницы.
+  /// Page ID.
   pub id: u64,
-  /// Заголовок.
+  /// Title.
   pub title: String,
   /// Slug.
   pub slug: String,
-  /// Тип страницы.
+  /// Page type.
   pub page_type: String,
-  /// Контент (markdown), если запрошен.
+  /// Content (markdown), if requested.
   pub content: Option<String>,
-  /// Время последнего изменения (ISO 8601).
+  /// Last modification time (ISO 8601).
   #[serde(default)]
   pub modified_at: String
 }
 
-/// Поля страницы (кратко).
+/// Page fields (brief).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageSchema {
   /// ID.
@@ -30,140 +30,140 @@ pub struct PageSchema {
   pub slug: String
 }
 
-/// Обновление страницы.
+/// Page update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageUpdateSchema {
-  /// Заголовок (опционально).
+  /// Title (optional).
   pub title: Option<String>,
-  /// Контент (опционально).
+  /// Content (optional).
   pub content: Option<String>
 }
 
-/// Создание страницы.
+/// Page creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePageSchema {
-  /// Тип страницы.
+  /// Page type.
   pub page_type: String,
-  /// Заголовок.
+  /// Title.
   pub title: String,
   /// Slug.
   pub slug: String,
-  /// Контент (опционально).
+  /// Content (optional).
   pub content: Option<String>
 }
 
-/// Ответ удаления.
+/// Deletion response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteResponse {
-  /// Токен восстановления.
+  /// Recovery token.
   pub recovery_token: String
 }
 
-/// Ошибка API.
+/// API error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
-  /// Код ошибки.
+  /// Error code.
   pub error_code: String,
-  /// Диагностическое сообщение.
+  /// Diagnostic message.
   pub debug_message: String,
-  /// Доп. поля (если есть).
+  /// Additional fields (if any).
   pub details: Option<Value>
 }
 
-/// Пагинированная коллекция.
+/// Paginated collection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Collection<T> {
-  /// Элементы.
+  /// Items.
   pub results: Vec<T>,
-  /// Курсор следующей страницы.
+  /// Next page cursor.
   pub next_cursor: Option<String>,
-  /// Есть ли следующая страница.
+  /// Whether there is a next page.
   pub has_next: bool,
-  /// Метаданные.
+  /// Metadata.
   pub metadata: Option<Map<String, Value>>
 }
 
-/// Узел дерева страниц.
+/// Page tree node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageTreeNodeSchema {
   /// ID.
   pub id: u64,
   /// Slug.
   pub slug: String,
-  /// Заголовок.
+  /// Title.
   pub title: String,
-  /// Время изменения (строкой API).
+  /// Modification time (API string).
   pub modified_at: String,
-  /// Дети.
+  /// Children.
   pub children: Option<Vec<Self>>
 }
 
-/// Ответ дерева страниц.
+/// Page tree response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageTreeResponseSchema {
-  /// Корень дерева.
+  /// Tree root.
   pub root: PageTreeNodeSchema
 }
 
-/// Идентификатор операции.
+/// Operation identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationIdentity {
-  /// Тип операции.
+  /// Operation type.
   #[serde(rename = "type")]
   pub ty: String,
-  /// ID операции.
+  /// Operation ID.
   pub id: String
 }
 
-/// Ответ создания операции.
+/// Operation created response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationCreatedSchema {
-  /// ID операции.
+  /// Operation ID.
   pub operation: OperationIdentity,
-  /// URL статуса (если есть).
+  /// Status URL (if available).
   pub status_url: Option<String>
 }
 
-/// Элемент move.
+/// Move item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoveCluster {
-  /// Исходный slug.
+  /// Source slug.
   pub source: String,
-  /// Целевой slug.
+  /// Target slug.
   pub target: String
 }
 
-/// Запрос move.
+/// Move request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoveClusterRequest {
-  /// Операции.
+  /// Operations.
   pub operations: Vec<MoveCluster>,
-  /// Копировать наследуемые права.
+  /// Copy inherited access rights.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub copy_inherited_access: Option<bool>,
-  /// Проверять наследование.
+  /// Check inheritance.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub check_inheritance: Option<bool>
 }
 
-/// Статус асинхронной операции.
+/// Async operation status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
-  /// Запланировано.
+  /// Scheduled.
   Scheduled,
-  /// Выполняется.
+  /// In progress.
   InProgress,
-  /// Успех.
+  /// Success.
   Success,
-  /// Ошибка.
+  /// Failed.
   Failed
 }
 
-/// Ответ статуса асинхронной операции.
+/// Async operation status response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncOperationStatusSchema {
-  /// Статус.
+  /// Status.
   pub status: Status
 }
 

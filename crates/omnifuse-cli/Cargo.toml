@@ -3,7 +3,7 @@ name = "omnifuse-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI для OmniFuse — универсальная VFS-утилита"
+description = "CLI for OmniFuse — a universal VFS utility"
 
 [[bin]]
 name = "of"

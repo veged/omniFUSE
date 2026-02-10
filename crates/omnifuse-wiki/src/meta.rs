@@ -1,41 +1,41 @@
-//! Метаданные страниц для конфликт-детекции.
+//! Page metadata for conflict detection.
 //!
-//! Хранит `.vfs/meta/{slug}.json` и `.vfs/base/{slug}.md`
-//! для three-way merge.
+//! Stores `.vfs/meta/{slug}.json` and `.vfs/base/{slug}.md`
+//! for three-way merge.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-/// Метаданные страницы.
+/// Page metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageMeta {
-  /// ID страницы на сервере.
+  /// Page ID on the server.
   pub id: u64,
-  /// Заголовок.
+  /// Title.
   pub title: String,
   /// Slug.
   pub slug: String,
-  /// Время последнего изменения на remote (ISO 8601).
+  /// Last modification time on remote (ISO 8601).
   pub modified_at: String
 }
 
-/// Хранилище метаданных и base-контента.
+/// Metadata and base content store.
 #[derive(Debug)]
 pub struct MetaStore {
-  /// Путь к `.vfs/meta/`.
+  /// Path to `.vfs/meta/`.
   meta_dir: PathBuf,
-  /// Путь к `.vfs/base/`.
+  /// Path to `.vfs/base/`.
   base_dir: PathBuf
 }
 
 impl MetaStore {
-  /// Создать хранилище для заданной локальной директории.
+  /// Create a store for the given local directory.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности создать директории.
+  /// Returns an error if the directories cannot be created.
   pub fn new(local_dir: &Path) -> anyhow::Result<Self> {
     let vfs_dir = local_dir.join(".vfs");
     let meta_dir = vfs_dir.join("meta");
@@ -47,11 +47,11 @@ impl MetaStore {
     Ok(Self { meta_dir, base_dir })
   }
 
-  /// Сохранить метаданные страницы.
+  /// Save page metadata.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку IO.
+  /// Returns an IO error.
   pub fn save_meta(&self, slug: &str, meta: &PageMeta) -> anyhow::Result<()> {
     let path = self.meta_path(slug);
 
@@ -62,11 +62,11 @@ impl MetaStore {
     let json = serde_json::to_string_pretty(meta)?;
     std::fs::write(&path, json)?;
 
-    debug!(slug, path = %path.display(), "meta сохранены");
+    debug!(slug, path = %path.display(), "meta saved");
     Ok(())
   }
 
-  /// Загрузить метаданные страницы.
+  /// Load page metadata.
   #[must_use]
   pub fn load_meta(&self, slug: &str) -> Option<PageMeta> {
     let path = self.meta_path(slug);
@@ -74,11 +74,11 @@ impl MetaStore {
     serde_json::from_str(&data).ok()
   }
 
-  /// Сохранить base-контент для merge.
+  /// Save base content for merge.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку IO.
+  /// Returns an IO error.
   pub fn save_base(&self, slug: &str, content: &str) -> anyhow::Result<()> {
     let path = self.base_path(slug);
 
@@ -87,45 +87,45 @@ impl MetaStore {
     }
 
     std::fs::write(&path, content)?;
-    debug!(slug, path = %path.display(), "base сохранён");
+    debug!(slug, path = %path.display(), "base saved");
     Ok(())
   }
 
-  /// Загрузить base-контент для merge.
+  /// Load base content for merge.
   #[must_use]
   pub fn load_base(&self, slug: &str) -> Option<String> {
     let path = self.base_path(slug);
     std::fs::read_to_string(&path).ok()
   }
 
-  /// Удалить метаданные и base для страницы.
+  /// Remove metadata and base for a page.
   pub fn remove(&self, slug: &str) {
     let _ = std::fs::remove_file(self.meta_path(slug));
     let _ = std::fs::remove_file(self.base_path(slug));
   }
 
-  /// Получить все slug'и из `.vfs/meta/`.
+  /// Get all slugs from `.vfs/meta/`.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку IO.
+  /// Returns an IO error.
   pub fn all_slugs(&self) -> anyhow::Result<Vec<String>> {
     let mut slugs = Vec::new();
     Self::collect_slugs(&self.meta_dir, &self.meta_dir, &mut slugs)?;
     Ok(slugs)
   }
 
-  /// Путь к файлу метаданных.
+  /// Path to the metadata file.
   fn meta_path(&self, slug: &str) -> PathBuf {
     self.meta_dir.join(slug_to_path(slug, "json"))
   }
 
-  /// Путь к base-контенту.
+  /// Path to the base content.
   fn base_path(&self, slug: &str) -> PathBuf {
     self.base_dir.join(slug_to_path(slug, "md"))
   }
 
-  /// Рекурсивный сбор slug'ов из директории.
+  /// Recursively collect slugs from a directory.
   fn collect_slugs(base: &Path, dir: &Path, slugs: &mut Vec<String>) -> anyhow::Result<()> {
     if !dir.exists() {
       return Ok(());
@@ -152,9 +152,9 @@ impl MetaStore {
   }
 }
 
-/// Преобразовать slug в путь файла.
+/// Convert a slug to a file path.
 ///
-/// `"docs/architecture"` → `"docs/architecture.{ext}"`
+/// `"docs/architecture"` -> `"docs/architecture.{ext}"`
 fn slug_to_path(slug: &str, ext: &str) -> PathBuf {
   let parts: Vec<&str> = slug.split('/').collect();
   let mut path = PathBuf::new();
@@ -170,9 +170,9 @@ fn slug_to_path(slug: &str, ext: &str) -> PathBuf {
   path
 }
 
-/// Преобразовать путь файла `.md` в slug.
+/// Convert an `.md` file path to a slug.
 ///
-/// `/mount/docs/page.md` → `"docs/page"` (относительно `local_dir`).
+/// `/mount/docs/page.md` -> `"docs/page"` (relative to `local_dir`).
 #[must_use]
 pub fn path_to_slug(path: &Path, local_dir: &Path) -> Option<String> {
   let rel = path.strip_prefix(local_dir).ok()?;

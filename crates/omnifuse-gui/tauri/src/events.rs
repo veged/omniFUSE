@@ -1,4 +1,4 @@
-//! Tauri event handler для событий VFS.
+//! Tauri event handler for VFS events.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,17 +6,17 @@ use std::sync::Arc;
 use omnifuse_core::events::{LogLevel, VfsEventHandler};
 use tauri::{AppHandle, Emitter};
 
-/// Обработчик событий для Tauri.
+/// Event handler for Tauri.
 ///
-/// Реализует `VfsEventHandler` — преобразует события ядра
-/// в Tauri IPC события для frontend.
+/// Implements `VfsEventHandler` — converts core events
+/// into Tauri IPC events for the frontend.
 pub struct TauriEventHandler {
-    /// Хендл приложения.
+    /// Application handle.
     app: Arc<AppHandle>
 }
 
 impl TauriEventHandler {
-    /// Создать новый обработчик.
+    /// Create a new event handler.
     pub fn new(app: AppHandle) -> Self {
         Self {
             app: Arc::new(app)

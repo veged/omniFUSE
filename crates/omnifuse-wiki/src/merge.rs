@@ -1,62 +1,62 @@
-//! Three-way merge через diffy.
+//! Three-way merge via diffy.
 
-/// Результат three-way merge.
+/// Result of a three-way merge.
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeResult {
-  /// Нет конфликта: remote не изменился или local не изменился.
+  /// No conflict: remote unchanged or local unchanged.
   NoConflict,
-  /// Успешное слияние, содержит результат.
+  /// Successful merge, contains the result.
   Merged(String),
-  /// Конфликт (маркеры или ошибка merge).
+  /// Conflict (markers or merge error).
   Failed {
-    /// Локальный контент.
+    /// Local content.
     local: String,
-    /// Remote контент.
+    /// Remote content.
     remote: String
   }
 }
 
-/// Three-way merge через diffy.
+/// Three-way merge via diffy.
 ///
-/// # Аргументы
-/// * `base` — оригинальный контент (при загрузке страницы)
-/// * `local` — локальные изменения пользователя
-/// * `remote` — текущий контент на сервере
+/// # Arguments
+/// * `base` — original content (at the time of page download)
+/// * `local` — user's local changes
+/// * `remote` — current content on the server
 ///
-/// # Возвращает
-/// `MergeResult` с результатом слияния.
+/// # Returns
+/// `MergeResult` with the merge outcome.
 #[must_use]
 #[allow(clippy::module_name_repetitions)]
 pub fn three_way_merge(base: &str, local: &str, remote: &str) -> MergeResult {
-  // Fast path: remote не изменился → нет конфликта
+  // Fast path: remote unchanged -> no conflict
   if base == remote {
     return MergeResult::NoConflict;
   }
 
-  // Fast path: local не изменился → берём remote
+  // Fast path: local unchanged -> take remote
   if base == local {
     return MergeResult::Merged(remote.to_string());
   }
 
-  // Fast path: одинаковые изменения → нет конфликта
+  // Fast path: identical changes -> no conflict
   if local == remote {
     return MergeResult::NoConflict;
   }
 
-  // Реальный merge через diffy
+  // Actual merge via diffy
   let merge = diffy::merge(base, local, remote);
   match merge {
     Ok(merged) => MergeResult::Merged(merged),
     Err(conflict) => {
-      // Проверяем наличие маркеров конфликта
+      // Check for conflict markers
       if conflict.contains("<<<<<<<") || conflict.contains(">>>>>>>") {
         MergeResult::Failed {
           local: local.to_string(),
           remote: remote.to_string()
         }
       } else {
-        // Нет маркеров — чистый merge
+        // No markers — clean merge
         MergeResult::Merged(conflict)
       }
     }
@@ -134,7 +134,7 @@ mod tests {
     let result = three_way_merge(base, local, remote);
     assert!(
       matches!(result, MergeResult::Failed { .. }),
-      "пустой base + разный контент → Failed, got {result:?}"
+      "empty base + different content -> Failed, got {result:?}"
     );
   }
 
@@ -147,7 +147,7 @@ mod tests {
     let result = three_way_merge(base, local, remote);
     assert!(
       matches!(result, MergeResult::Failed { .. }),
-      "пустой local + изменённый remote → Failed, got {result:?}"
+      "empty local + modified remote -> Failed, got {result:?}"
     );
   }
 }

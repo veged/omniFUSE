@@ -1,43 +1,43 @@
-//! Конфигурация `OmniFuse`.
+//! `OmniFuse` configuration.
 
 use std::{path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-/// Конфигурация монтирования.
+/// Mount configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountConfig {
-  /// Точка монтирования.
+  /// Mount point.
   pub mount_point: PathBuf,
-  /// Локальная директория для кэша.
+  /// Local directory for cache.
   pub local_dir: PathBuf,
-  /// Настройки синхронизации.
+  /// Sync settings.
   #[serde(default)]
   pub sync: SyncConfig,
-  /// Настройки буфера.
+  /// Buffer settings.
   #[serde(default)]
   pub buffer: BufferConfig,
-  /// Настройки FUSE монтирования.
+  /// FUSE mount settings.
   #[serde(default)]
   pub mount_options: FuseMountOptions,
-  /// Настройки логирования.
+  /// Logging settings.
   #[serde(default)]
   pub logging: LoggingConfig
 }
 
-/// Настройки синхронизации.
+/// Sync settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
-  /// Задержка debounce перед sync (секунды).
+  /// Debounce delay before sync (seconds).
   #[serde(default = "SyncConfig::default_debounce_secs")]
   pub debounce_timeout_secs: u64,
-  /// Максимальное количество retry.
+  /// Maximum number of retries.
   #[serde(default = "SyncConfig::default_max_retry")]
   pub max_retry_attempts: u32,
-  /// Начальная задержка retry (мс).
+  /// Initial retry delay (ms).
   #[serde(default = "SyncConfig::default_initial_backoff_ms")]
   pub initial_backoff_ms: u64,
-  /// Максимальная задержка retry (секунды).
+  /// Maximum retry delay (seconds).
   #[serde(default = "SyncConfig::default_max_backoff_secs")]
   pub max_backoff_secs: u64
 }
@@ -59,19 +59,19 @@ impl SyncConfig {
     30
   }
 
-  /// Преобразовать в `Duration` — timeout debounce.
+  /// Convert to `Duration` — debounce timeout.
   #[must_use]
   pub const fn debounce_timeout(&self) -> Duration {
     Duration::from_secs(self.debounce_timeout_secs)
   }
 
-  /// Преобразовать в `Duration` — начальная задержка retry.
+  /// Convert to `Duration` — initial retry delay.
   #[must_use]
   pub const fn initial_backoff(&self) -> Duration {
     Duration::from_millis(self.initial_backoff_ms)
   }
 
-  /// Преобразовать в `Duration` — максимальная задержка retry.
+  /// Convert to `Duration` — maximum retry delay.
   #[must_use]
   pub const fn max_backoff(&self) -> Duration {
     Duration::from_secs(self.max_backoff_secs)
@@ -89,13 +89,13 @@ impl Default for SyncConfig {
   }
 }
 
-/// Настройки буфера файлов.
+/// File buffer settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferConfig {
-  /// Максимальный объём памяти (МБ).
+  /// Maximum memory usage (MB).
   #[serde(default = "BufferConfig::default_max_memory_mb")]
   pub max_memory_mb: usize,
-  /// Включить LRU-вытеснение.
+  /// Enable LRU eviction.
   #[serde(default = "BufferConfig::default_lru_enabled")]
   pub lru_eviction_enabled: bool
 }
@@ -109,7 +109,7 @@ impl BufferConfig {
     true
   }
 
-  /// Максимальный объём памяти в байтах.
+  /// Maximum memory usage in bytes.
   #[must_use]
   pub const fn max_memory_bytes(&self) -> usize {
     self.max_memory_mb * 1024 * 1024
@@ -125,16 +125,16 @@ impl Default for BufferConfig {
   }
 }
 
-/// Настройки FUSE монтирования.
+/// FUSE mount settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuseMountOptions {
-  /// Имя файловой системы.
+  /// Filesystem name.
   #[serde(default = "FuseMountOptions::default_fs_name")]
   pub fs_name: String,
-  /// Разрешить доступ другим пользователям.
+  /// Allow access by other users.
   #[serde(default)]
   pub allow_other: bool,
-  /// Монтировать только для чтения.
+  /// Mount as read-only.
   #[serde(default)]
   pub read_only: bool
 }
@@ -155,13 +155,13 @@ impl Default for FuseMountOptions {
   }
 }
 
-/// Настройки логирования.
+/// Logging settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-  /// Уровень лога.
+  /// Log level.
   #[serde(default = "LoggingConfig::default_level")]
   pub level: String,
-  /// Путь к файлу лога.
+  /// Log file path.
   pub log_file: Option<PathBuf>
 }
 

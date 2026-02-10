@@ -1,7 +1,7 @@
-//! HTTP-клиент Wiki API.
+//! Wiki API HTTP client.
 //!
-//! Портировано из `YaWikiFS` `src/wiki/client.rs`.
-//! `WikiErr` → `anyhow::Error`.
+//! Ported from `YaWikiFS` `src/wiki/client.rs`.
+//! `WikiErr` -> `anyhow::Error`.
 
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tracing::{debug, error, trace};
@@ -12,33 +12,33 @@ use crate::models::{
   PageTreeResponseSchema, PageUpdateSchema, Status
 };
 
-/// HTTP-клиент Wiki API.
+/// Wiki API HTTP client.
 pub struct Client {
-  /// HTTP-клиент reqwest.
+  /// reqwest HTTP client.
   c: reqwest::Client,
-  /// Базовый URL (без trailing `/`).
+  /// Base URL (without trailing `/`).
   base: String
 }
 
 impl Client {
-  /// Создаёт клиент Wiki API.
+  /// Creates a Wiki API client.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку, если входные параметры пустые или не удалось собрать HTTP-клиент.
+  /// Returns an error if the input parameters are empty or the HTTP client cannot be built.
   pub fn new(base_url: &str, auth_token: &str) -> anyhow::Result<Self> {
     if base_url.trim().is_empty() {
-      anyhow::bail!("base_url не может быть пустым");
+      anyhow::bail!("base_url must not be empty");
     }
     if auth_token.trim().is_empty() {
-      anyhow::bail!("auth_token не может быть пустым");
+      anyhow::bail!("auth_token must not be empty");
     }
 
     let mut h = HeaderMap::new();
     h.insert(
       AUTHORIZATION,
       HeaderValue::from_str(&format!("Bearer {auth_token}"))
-        .map_err(|e| anyhow::anyhow!("некорректный auth_token: {e}"))?
+        .map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
     );
     h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -51,11 +51,11 @@ impl Client {
     })
   }
 
-  /// Читает страницу по slug (с `content`).
+  /// Reads a page by slug (with `content`).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn get_page_by_slug(&self, slug: &str) -> anyhow::Result<PageFullDetailsSchema> {
     self
       .get_json(
@@ -67,11 +67,11 @@ impl Client {
       .await
   }
 
-  /// Читает страницу по id (с `content`).
+  /// Reads a page by id (with `content`).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn get_page_by_idx(&self, idx: u64) -> anyhow::Result<PageFullDetailsSchema> {
     self
       .get_json(
@@ -83,11 +83,11 @@ impl Client {
       .await
   }
 
-  /// Обновляет страницу.
+  /// Updates a page.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn update_page(
     &self,
     idx: u64,
@@ -109,11 +109,11 @@ impl Client {
       .await
   }
 
-  /// Создаёт страницу.
+  /// Creates a page.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn create_page(
     &self,
     slug: &str,
@@ -136,11 +136,11 @@ impl Client {
       .await
   }
 
-  /// Удаляет страницу.
+  /// Deletes a page.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP.
+  /// Returns a network/HTTP error.
   pub async fn delete_page(&self, idx: u64) -> anyhow::Result<()> {
     self
       .send_ok(
@@ -151,11 +151,11 @@ impl Client {
       .await
   }
 
-  /// Возвращает список потомков страницы (с пагинацией).
+  /// Returns the list of page descendants (with pagination).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn get_descendants(&self, idx: u64) -> anyhow::Result<Vec<PageSchema>> {
     let mut out = vec![];
     let mut cursor: Option<String> = None;
@@ -185,11 +185,11 @@ impl Client {
     Ok(out)
   }
 
-  /// Дерево страниц начиная с `slug`.
+  /// Page tree starting from `slug`.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn get_page_tree(
     &self,
     slug: &str,
@@ -211,11 +211,11 @@ impl Client {
       .await
   }
 
-  /// Перемещает поддерево `source` → `target`.
+  /// Moves a subtree from `source` to `target`.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn move_cluster(
     &self,
     source: &str,
@@ -238,11 +238,11 @@ impl Client {
       .await
   }
 
-  /// Ожидает завершения асинхронной операции.
+  /// Waits for an asynchronous operation to complete.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку сети/HTTP/десериализации.
+  /// Returns a network/HTTP/deserialization error.
   pub async fn poll_status_url(
     &self,
     url: &str,
@@ -274,14 +274,14 @@ impl Client {
     }
   }
 
-  /// Выполнить запрос и десериализовать JSON ответ.
+  /// Execute a request and deserialize the JSON response.
   async fn get_json<T: serde::de::DeserializeOwned>(
     &self,
     r: reqwest::RequestBuilder
   ) -> anyhow::Result<T> {
     let rq = r
       .try_clone()
-      .ok_or_else(|| anyhow::anyhow!("не удалось клонировать запрос"))?
+      .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
       .build()?;
 
     let start = std::time::Instant::now();
@@ -305,18 +305,18 @@ impl Client {
 
     if st.is_success() {
       return serde_json::from_str(&txt)
-        .map_err(|e| anyhow::anyhow!("десериализация ({st}): {e}"));
+        .map_err(|e| anyhow::anyhow!("deserialization ({st}): {e}"));
     }
 
     let e: Option<ErrorResponse> = serde_json::from_str(&txt).ok();
     Self::check_error_response(st.as_u16(), e.as_ref(), &txt, start.elapsed().as_millis())
   }
 
-  /// Выполнить запрос и проверить статус (без десериализации).
+  /// Execute a request and check status (without deserialization).
   async fn send_ok(&self, r: reqwest::RequestBuilder) -> anyhow::Result<()> {
     let rq = r
       .try_clone()
-      .ok_or_else(|| anyhow::anyhow!("не удалось клонировать запрос"))?
+      .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
       .build()?;
 
     let start = std::time::Instant::now();
@@ -341,7 +341,7 @@ impl Client {
     Self::check_error_response::<()>(st.as_u16(), e.as_ref(), &txt, start.elapsed().as_millis())
   }
 
-  /// Проверить HTTP ошибку и преобразовать в `anyhow::Error`.
+  /// Check HTTP error and convert to `anyhow::Error`.
   fn check_error_response<T>(
     status: u16,
     e: Option<&ErrorResponse>,
@@ -358,16 +358,16 @@ impl Client {
     );
 
     if status == 404 {
-      anyhow::bail!("страница не найдена");
+      anyhow::bail!("page not found");
     }
     if status == 403 {
-      anyhow::bail!("доступ запрещён");
+      anyhow::bail!("access denied");
     }
     if matches!(error_code, Some("CHANGES_CONFLICT")) {
-      anyhow::bail!("конфликт изменений");
+      anyhow::bail!("changes conflict");
     }
     if matches!(error_code, Some("SLUG_OCCUPIED" | "SLUG_RESERVED")) {
-      anyhow::bail!("slug занят или зарезервирован");
+      anyhow::bail!("slug is occupied or reserved");
     }
 
     anyhow::bail!("HTTP {status}: {body}")

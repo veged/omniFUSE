@@ -40,7 +40,7 @@ function App() {
   const [wikiToken, setWikiToken] = useState('');
   const [wikiMountPoint, setWikiMountPoint] = useState('');
 
-  // Проверяем FUSE при запуске
+  // Check FUSE on startup
   useEffect(() => {
     const checkFuse = async () => {
       try {
@@ -49,7 +49,7 @@ function App() {
         if (!available) {
           setLogs([{
             level: 'warn',
-            message: 'FUSE не найден. Установите macFUSE (macOS) или libfuse3 (Linux).',
+            message: 'FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).',
             timestamp: new Date(),
           }]);
         }
@@ -60,7 +60,7 @@ function App() {
     checkFuse();
   }, []);
 
-  // Подписка на события VFS
+  // Subscribe to VFS events
   useEffect(() => {
     const unlisteners: Promise<UnlistenFn>[] = [
       listen('vfs:mounted', () => {
@@ -180,11 +180,11 @@ function App() {
           OmniFuse
         </Text>
         <Badge color={mounted ? 'green' : 'gray'} variant="filled">
-          {mounted ? 'Смонтировано' : 'Не смонтировано'}
+          {mounted ? 'Mounted' : 'Not mounted'}
         </Badge>
         {fuseAvailable === false && (
           <Badge color="red" variant="light">
-            FUSE не найден
+            FUSE not found
           </Badge>
         )}
       </Group>
@@ -202,14 +202,14 @@ function App() {
       {backend === 'git' ? (
         <>
           <TextInput
-            label="Репозиторий"
-            placeholder="URL или локальный путь"
+            label="Repository"
+            placeholder="URL or local path"
             value={gitSource}
             onChange={(e) => setGitSource(e.target.value)}
             disabled={mounted || loading}
           />
           <TextInput
-            label="Ветка"
+            label="Branch"
             placeholder="main"
             value={gitBranch}
             onChange={(e) => setGitBranch(e.target.value)}
@@ -217,7 +217,7 @@ function App() {
           />
           <Group align="end" gap="xs">
             <TextInput
-              label="Точка монтирования"
+              label="Mount point"
               placeholder="/path/to/mount"
               value={gitMountPoint}
               onChange={(e) => setGitMountPoint(e.target.value)}
@@ -229,28 +229,28 @@ function App() {
               disabled={mounted || loading}
               variant="default"
             >
-              Обзор
+              Browse
             </Button>
           </Group>
         </>
       ) : (
         <>
           <TextInput
-            label="URL Wiki API"
+            label="Wiki API URL"
             placeholder="https://wiki.example.com"
             value={wikiUrl}
             onChange={(e) => setWikiUrl(e.target.value)}
             disabled={mounted || loading}
           />
           <TextInput
-            label="Корневой slug"
+            label="Root slug"
             placeholder="my/project"
             value={wikiSlug}
             onChange={(e) => setWikiSlug(e.target.value)}
             disabled={mounted || loading}
           />
           <PasswordInput
-            label="Токен"
+            label="Token"
             placeholder="auth token"
             value={wikiToken}
             onChange={(e) => setWikiToken(e.target.value)}
@@ -258,7 +258,7 @@ function App() {
           />
           <Group align="end" gap="xs">
             <TextInput
-              label="Точка монтирования"
+              label="Mount point"
               placeholder="/path/to/mount"
               value={wikiMountPoint}
               onChange={(e) => setWikiMountPoint(e.target.value)}
@@ -270,7 +270,7 @@ function App() {
               disabled={mounted || loading}
               variant="default"
             >
-              Обзор
+              Browse
             </Button>
           </Group>
         </>
@@ -282,17 +282,17 @@ function App() {
         loading={loading}
         disabled={!mounted && !canMount}
       >
-        {mounted ? 'Размонтировать' : 'Смонтировать'}
+        {mounted ? 'Unmount' : 'Mount'}
       </Button>
 
       <Paper withBorder p="xs">
         <Text size="sm" fw={500} mb="xs">
-          Лог
+          Log
         </Text>
         <ScrollArea h={150}>
           {logs.length === 0 ? (
             <Text size="xs" c="dimmed">
-              Нет событий
+              No events
             </Text>
           ) : (
             logs.map((log, i) => (

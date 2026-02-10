@@ -3,7 +3,7 @@ name = "omnifuse-git"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Git backend для OmniFuse"
+description = "Git backend for OmniFuse"
 
 [lints]
 workspace = true

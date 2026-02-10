@@ -1,18 +1,18 @@
-//! omnifuse-core — ядро VFS для `OmniFuse`.
+//! omnifuse-core — VFS core for `OmniFuse`.
 //!
-//! Содержит:
-//! - `Backend` trait — единый интерфейс для синхронизируемых хранилищ
-//! - `SyncEngine` — оркестрация синхронизации (debounce, poll, retry)
-//! - `OmniFuseVfs` — реализация `UniFuseFilesystem` (файловые операции через local dir + буферы)
-//! - `FileBufferManager` — кэширование файлов в памяти с LRU-вытеснением
-//! - `VfsEventHandler` — trait для событий (UI, логи)
+//! Contains:
+//! - `Backend` trait — unified interface for synchronized storage backends
+//! - `SyncEngine` — sync orchestration (debounce, poll, retry)
+//! - `OmniFuseVfs` — `UniFuseFilesystem` implementation (file operations via local dir + buffers)
+//! - `FileBufferManager` — in-memory file caching with LRU eviction
+//! - `VfsEventHandler` — trait for events (UI, logs)
 //!
-//! # Архитектура
+//! # Architecture
 //!
 //! ```text
 //! ┌─────────────┐     ┌──────────────┐     ┌──────────┐
 //! │ FUSE/WinFsp │ ──► │ OmniFuseVfs  │ ──► │ Backend  │
-//! │ (unifuse)   │     │ (файлы+буфер)│     │ (git/wiki│
+//! │ (unifuse)   │     │ (files+buffer)│     │ (git/wiki│
 //! └─────────────┘     └──────┬───────┘     └──────────┘
 //!                            │
 //!                     ┌──────▼───────┐
@@ -46,17 +46,17 @@ use std::{path::Path, sync::Arc};
 
 use tracing::info;
 
-/// Главная точка входа: смонтировать `OmniFuse`.
+/// Main entry point: mount `OmniFuse`.
 ///
-/// 1. Инициализирует backend (clone/fetch)
-/// 2. Запускает `SyncEngine` (dirty tracking + periodic poll)
-/// 3. Создаёт `OmniFuseVfs` (implements async `UniFuseFilesystem`)
-/// 4. Монтирует через `UniFuseHost`
-/// 5. При завершении: flush + final sync
+/// 1. Initializes backend (clone/fetch)
+/// 2. Starts `SyncEngine` (dirty tracking + periodic poll)
+/// 3. Creates `OmniFuseVfs` (implements async `UniFuseFilesystem`)
+/// 4. Mounts via `UniFuseHost`
+/// 5. On shutdown: flush + final sync
 ///
 /// # Errors
 ///
-/// Возвращает ошибку при невозможности инициализации или монтирования.
+/// Returns an error if initialization or mounting fails.
 pub async fn run_mount<B: Backend>(
   config: MountConfig,
   backend: B,
@@ -65,24 +65,24 @@ pub async fn run_mount<B: Backend>(
   let events: Arc<dyn VfsEventHandler> = Arc::new(events);
   let backend = Arc::new(backend);
 
-  // Проверить наличие FUSE
+  // Check FUSE availability
   if !unifuse::UniFuseHost::<OmniFuseVfs<B>>::is_available() {
-    anyhow::bail!("FUSE/WinFsp не установлен");
+    anyhow::bail!("FUSE/WinFsp is not installed");
   }
 
-  // Инициализировать backend
+  // Initialize backend
   let init_result = backend.init(&config.local_dir).await?;
-  info!(?init_result, "backend инициализирован");
+  info!(?init_result, "backend initialized");
   events.on_sync(&format!("{init_result:?}"));
 
-  // Запустить SyncEngine
+  // Start SyncEngine
   let (sync_engine, sync_handle) = SyncEngine::start(
     config.sync.clone(),
     Arc::clone(&backend),
     Arc::clone(&events)
   );
 
-  // Создать VFS
+  // Create VFS
   let vfs = OmniFuseVfs::new(
     config.local_dir.clone(),
     sync_engine.sender(),
@@ -91,7 +91,7 @@ pub async fn run_mount<B: Backend>(
     config.buffer.clone()
   );
 
-  // Монтировать
+  // Mount
   let host = unifuse::UniFuseHost::new(vfs);
   let mount_options = unifuse::MountOptions {
     fs_name: config.mount_options.fs_name.clone(),
@@ -103,12 +103,12 @@ pub async fn run_mount<B: Backend>(
   info!(
     mount_point = %config.mount_point.display(),
     backend = backend.name(),
-    "монтирование"
+    "mounting"
   );
 
   host.mount(&config.mount_point, &mount_options).await?;
 
-  // Завершение
+  // Shutdown
   events.on_unmounted();
   sync_engine.shutdown().await?;
   sync_handle.await?;
@@ -116,14 +116,14 @@ pub async fn run_mount<B: Backend>(
   Ok(())
 }
 
-/// Проверить доступность платформы FUSE/`WinFsp`.
+/// Check FUSE/`WinFsp` platform availability.
 #[must_use]
 pub fn is_fuse_available() -> bool {
-  // Используем фиктивный тип для проверки — нам нужен только статический метод
+  // Use a dummy type for the check — we only need the static method
   unifuse::UniFuseHost::<DummyFs>::is_available()
 }
 
-/// Фиктивная ФС для проверки доступности FUSE.
+/// Dummy filesystem for checking FUSE availability.
 struct DummyFs;
 
 impl unifuse::UniFuseFilesystem for DummyFs {

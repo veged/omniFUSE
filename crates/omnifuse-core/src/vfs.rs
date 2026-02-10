@@ -1,9 +1,9 @@
-//! `OmniFuseVfs` — реализация `UniFuseFilesystem`.
+//! `OmniFuseVfs` — `UniFuseFilesystem` implementation.
 //!
-//! Делегирует:
-//! - Файловые операции → local directory (`tokio::fs`) + `FileBufferManager`
-//! - Sync уведомления → `SyncEngine` (через канал `FsEvent`)
-//! - Фильтрацию → `Backend::should_track()`
+//! Delegates:
+//! - File operations -> local directory (`tokio::fs`) + `FileBufferManager`
+//! - Sync notifications -> `SyncEngine` (via `FsEvent` channel)
+//! - Filtering -> `Backend::should_track()`
 
 use std::{
   ffi::OsStr,
@@ -26,29 +26,29 @@ use crate::{
   sync_engine::FsEvent
 };
 
-/// Ядро файловой системы `OmniFuse`.
+/// `OmniFuse` filesystem core.
 ///
-/// Реализует async `UniFuseFilesystem`, делегируя:
-/// - Файловые операции → local directory (`tokio::fs`) + `FileBufferManager`
-/// - Sync уведомления → `SyncEngine` (через канал)
-/// - Фильтрацию → `Backend::should_track()`
+/// Implements async `UniFuseFilesystem`, delegating:
+/// - File operations -> local directory (`tokio::fs`) + `FileBufferManager`
+/// - Sync notifications -> `SyncEngine` (via channel)
+/// - Filtering -> `Backend::should_track()`
 pub struct OmniFuseVfs<B: Backend> {
-  /// Локальная директория (рабочая копия).
+  /// Local directory (working copy).
   local_dir: PathBuf,
-  /// Менеджер буферов файлов.
+  /// File buffer manager.
   buffer_manager: Arc<FileBufferManager>,
-  /// Канал для отправки событий в `SyncEngine`.
+  /// Channel for sending events to `SyncEngine`.
   sync_tx: mpsc::Sender<FsEvent>,
-  /// Backend для фильтрации.
+  /// Backend for filtering.
   backend: Arc<B>,
-  /// Обработчик событий (UI/логи).
+  /// Event handler (UI/logs).
   events: Arc<dyn VfsEventHandler>,
-  /// Счётчик file handle.
+  /// File handle counter.
   next_fh: AtomicU64
 }
 
 impl<B: Backend> OmniFuseVfs<B> {
-  /// Создать новый VFS.
+  /// Create a new VFS.
   pub fn new(
     local_dir: PathBuf,
     sync_tx: mpsc::Sender<FsEvent>,
@@ -66,33 +66,33 @@ impl<B: Backend> OmniFuseVfs<B> {
     }
   }
 
-  /// Полный путь на диске для FUSE-пути.
+  /// Full disk path for a FUSE path.
   fn full_path(&self, path: &Path) -> PathBuf {
     self.local_dir.join(path)
   }
 
-  /// Проверить, скрыт ли файл (`.git`, `.vfs`, или по правилам backend'а).
+  /// Check if a file is hidden (`.git`, `.vfs`, or by backend rules).
   fn is_hidden(&self, path: &Path, name: &OsStr) -> bool {
     let s = name.to_string_lossy();
     if s == ".git" || s == ".vfs" {
       return true;
     }
-    // Проверка backend'а (например, .gitignore)
+    // Backend check (e.g., .gitignore)
     !self.backend.should_track(&path.join(name))
   }
 
-  /// Выделить новый file handle.
+  /// Allocate a new file handle.
   fn alloc_fh(&self) -> FileHandle {
     FileHandle(self.next_fh.fetch_add(1, Ordering::Relaxed))
   }
 
-  /// Отправить событие в `SyncEngine` (без блокировки).
+  /// Send an event to `SyncEngine` (non-blocking).
   fn send_event(&self, event: FsEvent) {
     let _ = self.sync_tx.try_send(event);
   }
 }
 
-/// Преобразовать `tokio::fs::Metadata` → `FileAttr`.
+/// Convert `tokio::fs::Metadata` to `FileAttr`.
 fn metadata_to_attr(meta: &std::fs::Metadata) -> FileAttr {
   let kind = if meta.is_dir() {
     FileType::Directory
@@ -190,11 +190,11 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
     // Truncate
     if let Some(new_size) = size {
-      // Если есть буфер — обрезать в буфере
+      // If there is a buffer — truncate in the buffer
       if let Some(buffer) = self.buffer_manager.get(&full_path) {
         buffer.truncate(new_size).await;
       }
-      // Обрезать на диске
+      // Truncate on disk
       let file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(&full_path)
@@ -204,13 +204,13 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
       self.send_event(FsEvent::FileModified(path.to_path_buf()));
     }
 
-    // Установить время
+    // Set times
     #[cfg(unix)]
     if atime.is_some() || mtime.is_some() {
       set_times_unix(&full_path, atime, mtime)?;
     }
 
-    // Установить права
+    // Set permissions
     #[cfg(unix)]
     if let Some(mode_val) = mode {
       set_mode_unix(&full_path, mode_val)?;
@@ -236,7 +236,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   async fn open(&self, path: &Path, _flags: OpenFlags) -> Result<FileHandle, FsError> {
     let full_path = self.full_path(path);
 
-    // Загрузить файл в буфер
+    // Load file into buffer
     self
       .buffer_manager
       .get_or_load(&full_path)
@@ -254,7 +254,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   ) -> Result<(FileHandle, FileAttr), FsError> {
     let full_path = self.full_path(path);
 
-    // Создать файл
+    // Create file
     tokio::fs::write(&full_path, b"")
       .await
       .map_err(FsError::Io)?;
@@ -262,7 +262,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     #[cfg(unix)]
     set_mode_unix(&full_path, mode)?;
 
-    // Закэшировать пустой буфер
+    // Cache an empty buffer
     self.buffer_manager.cache(&full_path, Vec::new()).await;
 
     self.send_event(FsEvent::FileModified(path.to_path_buf()));
@@ -330,14 +330,14 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   async fn release(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
     let full_path = self.full_path(path);
 
-    // Flush на диск
+    // Flush to disk
     self
       .buffer_manager
       .flush(&full_path)
       .await
       .map_err(FsError::Io)?;
 
-    // Уведомить sync engine
+    // Notify sync engine
     self.send_event(FsEvent::FileClosed(path.to_path_buf()));
 
     Ok(())
@@ -366,7 +366,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
       .map_err(FsError::Io)?;
 
     while let Some(entry) = read_dir.next_entry().await.map_err(FsError::Io)? {
-      // Скрыть .git, .vfs
+      // Hide .git, .vfs
       if self.is_hidden(path, &entry.file_name()) {
         continue;
       }
@@ -415,7 +415,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   async fn unlink(&self, path: &Path) -> Result<(), FsError> {
     let full_path = self.full_path(path);
 
-    // Удалить из буфера
+    // Remove from buffer
     self.buffer_manager.remove(&full_path).await;
 
     tokio::fs::remove_file(&full_path)
@@ -436,7 +436,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
       .await
       .map_err(FsError::Io)?;
 
-    // Обновить буфер
+    // Update buffer
     self.buffer_manager.remove(&full_from).await;
 
     self.send_event(FsEvent::FileModified(from.to_path_buf()));
@@ -553,7 +553,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   }
 }
 
-/// Установить время файла (Unix) через `filetime`.
+/// Set file times (Unix) via `filetime`.
 #[cfg(unix)]
 fn set_times_unix(
   path: &Path,
@@ -562,8 +562,8 @@ fn set_times_unix(
 ) -> Result<(), FsError> {
   use std::fs;
 
-  // Используем std::fs для установки mtime (поддерживается через set_modified)
-  // Для полной поддержки atime+mtime используем nix::sys::stat::utimensat
+  // Use std::fs to set mtime (supported via set_modified)
+  // For full atime+mtime support, use nix::sys::stat::utimensat
   let file = fs::File::open(path).map_err(FsError::Io)?;
 
   if let Some(mt) = mtime {
@@ -571,14 +571,14 @@ fn set_times_unix(
   }
 
   if let Some(at) = atime {
-    // std не поддерживает set_accessed напрямую, но на практике mtime важнее
+    // std does not support set_accessed directly, but in practice mtime is more important
     let _ = at;
   }
 
   Ok(())
 }
 
-/// Установить права файла (Unix).
+/// Set file permissions (Unix).
 #[cfg(unix)]
 fn set_mode_unix(path: &Path, mode: u32) -> Result<(), FsError> {
   use std::os::unix::fs::PermissionsExt;
@@ -586,7 +586,7 @@ fn set_mode_unix(path: &Path, mode: u32) -> Result<(), FsError> {
   std::fs::set_permissions(path, perms).map_err(FsError::Io)
 }
 
-/// Получить statfs (Unix).
+/// Get statfs (Unix).
 #[cfg(unix)]
 fn statfs_unix(path: &Path) -> Result<StatFs, FsError> {
   let stat = nix::sys::statvfs::statvfs(path).map_err(|e| FsError::Other(e.to_string()))?;

@@ -1,9 +1,9 @@
-//! Движок синхронизации.
+//! Synchronization engine.
 //!
-//! Оркестрирует timing: собирает dirty файлы через debounce,
-//! триггерит sync на close, обрабатывает periodic poll remote.
+//! Orchestrates timing: collects dirty files via debounce,
+//! triggers sync on close, handles periodic remote polling.
 //!
-//! НЕ занимается merge — это ответственность `Backend`.
+//! Does NOT handle merge — that is `Backend`'s responsibility.
 
 use std::{
   collections::HashSet,
@@ -23,35 +23,35 @@ use crate::{
   events::{LogLevel, VfsEventHandler}
 };
 
-/// Событие от FUSE слоя.
+/// Event from the FUSE layer.
 #[derive(Debug, Clone)]
 pub enum FsEvent {
-  /// Файл изменён (запись в буфер).
+  /// File modified (write to buffer).
   FileModified(PathBuf),
-  /// Файл закрыт (после flush).
+  /// File closed (after flush).
   FileClosed(PathBuf),
-  /// Принудительный sync.
+  /// Force sync.
   Flush,
-  /// Завершение работы.
+  /// Shutdown.
   Shutdown
 }
 
-/// Движок синхронизации.
+/// Synchronization engine.
 ///
-/// Оркестрирует timing: собирает dirty файлы, батчит через debounce,
-/// триггерит sync на close, обрабатывает periodic poll.
+/// Orchestrates timing: collects dirty files, batches via debounce,
+/// triggers sync on close, handles periodic polling.
 ///
-/// НЕ занимается merge — это ответственность `Backend`.
+/// Does NOT handle merge — that is `Backend`'s responsibility.
 pub struct SyncEngine {
   event_tx: mpsc::Sender<FsEvent>
 }
 
 impl SyncEngine {
-  /// Создать и запустить `SyncEngine`.
+  /// Create and start `SyncEngine`.
   ///
-  /// Запускает два background worker'а:
-  /// 1. `dirty_worker` — собирает `FsEvent`, ведёт `DirtySet`, триггерит sync
-  /// 2. `poll_worker` — периодически вызывает `backend.poll_remote()`
+  /// Starts two background workers:
+  /// 1. `dirty_worker` — collects `FsEvent`, maintains `DirtySet`, triggers sync
+  /// 2. `poll_worker` — periodically calls `backend.poll_remote()`
   pub fn start<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
@@ -66,7 +66,7 @@ impl SyncEngine {
       event_rx
     ));
 
-    // Poll worker — отдельная задача
+    // Poll worker — separate task
     let poll_backend = backend;
     let poll_events = events;
     tokio::spawn(async move {
@@ -76,33 +76,33 @@ impl SyncEngine {
     (Self { event_tx }, handle)
   }
 
-  /// Получить `Sender` для отправки событий.
+  /// Get a `Sender` for sending events.
   #[must_use]
   pub fn sender(&self) -> mpsc::Sender<FsEvent> {
     self.event_tx.clone()
   }
 
-  /// Завершить работу `SyncEngine`.
+  /// Shut down the `SyncEngine`.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку если канал уже закрыт.
+  /// Returns an error if the channel is already closed.
   pub async fn shutdown(&self) -> anyhow::Result<()> {
     self
       .event_tx
       .send(FsEvent::Shutdown)
       .await
-      .map_err(|e| anyhow::anyhow!("ошибка отправки Shutdown: {e}"))
+      .map_err(|e| anyhow::anyhow!("error sending Shutdown: {e}"))
   }
 
-  /// Worker обработки dirty файлов.
+  /// Worker for processing dirty files.
   ///
-  /// Логика:
-  /// - `FileModified` → добавить в dirty set, установить debounce deadline
-  /// - `FileClosed` → добавить в dirty set, немедленный sync (не ждём debounce)
-  /// - `Flush` → немедленный sync
-  /// - `Shutdown` → финальный sync, выход
-  /// - debounce timeout → sync если dirty set не пуст
+  /// Logic:
+  /// - `FileModified` -> add to dirty set, set debounce deadline
+  /// - `FileClosed` -> add to dirty set, immediate sync (don't wait for debounce)
+  /// - `Flush` -> immediate sync
+  /// - `Shutdown` -> final sync, exit
+  /// - debounce timeout -> sync if dirty set is not empty
   async fn dirty_worker<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
@@ -113,7 +113,7 @@ impl SyncEngine {
     let mut trigger_sync = false;
     let debounce_duration = config.debounce_timeout();
 
-    // Deadline для debounce — далеко в будущем (не активен)
+    // Debounce deadline — far in the future (inactive)
     let far_future = Instant::now() + std::time::Duration::from_secs(365 * 24 * 3600);
     let mut debounce_deadline = far_future;
 
@@ -133,7 +133,7 @@ impl SyncEngine {
               trigger_sync = true;
             }
             Some(FsEvent::Shutdown) | None => {
-              // Финальный sync
+              // Final sync
               if !dirty_set.is_empty() {
                 Self::do_sync(&backend, &events, &mut dirty_set).await;
               }
@@ -153,10 +153,10 @@ impl SyncEngine {
       }
     }
 
-    debug!("dirty_worker завершён");
+    debug!("dirty_worker finished");
   }
 
-  /// Выполнить синхронизацию dirty файлов.
+  /// Synchronize dirty files.
   async fn do_sync<B: Backend>(
     backend: &Arc<B>,
     events: &Arc<dyn VfsEventHandler>,
@@ -168,12 +168,12 @@ impl SyncEngine {
       return;
     }
 
-    debug!(count = files.len(), "синхронизация dirty файлов");
+    debug!(count = files.len(), "syncing dirty files");
 
     match backend.sync(&files).await {
       Ok(SyncResult::Success { synced_files }) => {
         events.on_push(synced_files);
-        debug!(synced_files, "sync успешен");
+        debug!(synced_files, "sync successful");
       }
       Ok(SyncResult::Conflict {
         synced_files,
@@ -183,25 +183,25 @@ impl SyncEngine {
         warn!(
           synced_files,
           conflicts = conflict_files.len(),
-          "sync с конфликтами"
+          "sync with conflicts"
         );
         events.on_log(
           LogLevel::Warn,
-          &format!("конфликты: {conflict_files:?}")
+          &format!("conflicts: {conflict_files:?}")
         );
       }
       Ok(SyncResult::Offline) => {
-        warn!("remote недоступен, файлы будут синхронизированы позже");
-        events.on_log(LogLevel::Warn, "remote недоступен");
+        warn!("remote unavailable, files will be synced later");
+        events.on_log(LogLevel::Warn, "remote unavailable");
       }
       Err(e) => {
-        error!(error = %e, "ошибка sync");
-        events.on_log(LogLevel::Error, &format!("ошибка sync: {e}"));
+        error!(error = %e, "sync error");
+        events.on_log(LogLevel::Error, &format!("sync error: {e}"));
       }
     }
   }
 
-  /// Worker периодического опроса remote.
+  /// Worker for periodic remote polling.
   async fn poll_worker<B: Backend>(backend: Arc<B>, events: Arc<dyn VfsEventHandler>) {
     let interval = backend.poll_interval();
 
@@ -211,23 +211,23 @@ impl SyncEngine {
       match backend.poll_remote().await {
         Ok(changes) if !changes.is_empty() => {
           let count = changes.len();
-          debug!(count, "получены изменения с remote");
+          debug!(count, "received changes from remote");
 
           if let Err(e) = backend.apply_remote(changes).await {
-            warn!(error = %e, "ошибка применения remote изменений");
+            warn!(error = %e, "error applying remote changes");
             events.on_log(
               LogLevel::Warn,
-              &format!("ошибка применения remote изменений: {e}")
+              &format!("error applying remote changes: {e}")
             );
           } else {
             events.on_sync("updated");
           }
         }
         Ok(_) => {
-          // Нет изменений
+          // No changes
         }
         Err(e) => {
-          warn!(error = %e, "ошибка poll remote");
+          warn!(error = %e, "remote poll error");
           events.on_log(LogLevel::Warn, &format!("poll failed: {e}"));
         }
       }

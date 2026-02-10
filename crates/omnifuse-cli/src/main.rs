@@ -1,4 +1,4 @@
-//! CLI для `OmniFuse` — универсальная VFS-утилита.
+//! CLI for `OmniFuse` — a universal VFS utility.
 //!
 //! ```bash
 //! of mount git https://github.com/user/repo /mnt/repo --branch=main
@@ -14,79 +14,79 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-/// `OmniFuse` — универсальная VFS-утилита.
+/// `OmniFuse` — a universal VFS utility.
 ///
-/// Монтирует git-репозитории и другие источники как файловую систему.
+/// Mounts git repositories and other sources as a filesystem.
 #[derive(Parser)]
 #[command(name = "of", version, about)]
 struct Cli {
-  /// Подробный вывод (можно повторять: -v, -vv).
+  /// Verbose output (can be repeated: -v, -vv).
   #[arg(short, long, action = clap::ArgAction::Count, global = true)]
   verbose: u8,
 
-  /// Команда.
+  /// Command.
   #[command(subcommand)]
   command: Commands
 }
 
-/// Доступные команды.
+/// Available commands.
 #[derive(Subcommand)]
 enum Commands {
-  /// Смонтировать backend.
+  /// Mount a backend.
   Mount {
-    /// Тип backend'а.
+    /// Backend type.
     #[command(subcommand)]
     backend: MountBackend
   },
 
-  /// Проверить доступность FUSE/`WinFsp`.
+  /// Check FUSE/`WinFsp` availability.
   Check,
 
-  /// Сгенерировать пример конфигурации.
+  /// Generate a sample configuration.
   GenConfig
 }
 
-/// Backend для монтирования.
+/// Backend for mounting.
 #[derive(Subcommand)]
 enum MountBackend {
-  /// Смонтировать git-репозиторий.
+  /// Mount a git repository.
   Git {
-    /// Источник: URL или путь к локальному репозиторию.
+    /// Source: URL or path to a local repository.
     source: String,
-    /// Точка монтирования.
+    /// Mount point.
     mountpoint: PathBuf,
-    /// Ветка.
+    /// Branch.
     #[arg(short, long, default_value = "main")]
     branch: String,
-    /// Интервал опроса remote (секунды).
+    /// Remote polling interval (seconds).
     #[arg(long, default_value = "30")]
     poll_interval: u64,
-    /// Разрешить доступ другим пользователям.
+    /// Allow access by other users.
     #[arg(long)]
     allow_other: bool,
-    /// Монтировать только для чтения.
+    /// Mount as read-only.
     #[arg(long)]
     read_only: bool
   },
 
-  /// Смонтировать wiki.
+  /// Mount a wiki.
   Wiki {
-    /// Базовый URL wiki API.
+    /// Base URL of the wiki API.
     base_url: String,
-    /// Корневой slug.
+    /// Root slug.
     root_slug: String,
-    /// Точка монтирования.
+    /// Mount point.
     mountpoint: PathBuf,
-    /// Токен аутентификации.
+    /// Authentication token.
     #[arg(long, env = "OMNIFUSE_WIKI_TOKEN")]
     auth: String,
-    /// Интервал опроса remote (секунды).
+    /// Remote polling interval (seconds).
     #[arg(long, default_value = "60")]
     poll_interval: u64,
-    /// Разрешить доступ другим пользователям.
+    /// Allow access by other users.
     #[arg(long)]
     allow_other: bool,
-    /// Монтировать только для чтения.
+    /// Mount as read-only.
     #[arg(long)]
     read_only: bool
   }
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
   }
 }
 
-/// Команда mount.
+/// Mount command.
 async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
   match backend {
     MountBackend::Git {
@@ -130,11 +130,11 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       allow_other,
       read_only
     } => {
-      // Проверить FUSE
+      // Check FUSE availability
       if !omnifuse_core::is_fuse_available() {
         anyhow::bail!(
-          "FUSE не найден. Установите macFUSE (macOS) или libfuse3 (Linux).\n\
-           Проверка: of check"
+          "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
+           Check: of check"
         );
       }
 
@@ -142,7 +142,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
         source = %source,
         mountpoint = %mountpoint.display(),
         branch = %branch,
-        "монтирование git-репозитория"
+        "mounting git repository"
       );
 
       let git_config = omnifuse_git::GitConfig {
@@ -169,9 +169,9 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
 
       omnifuse_core::run_mount(mount_config, git_backend, omnifuse_core::NoopEventHandler)
         .await
-        .context("ошибка монтирования")?;
+        .context("mount error")?;
 
-      info!("размонтировано");
+      info!("unmounted");
       Ok(())
     }
     MountBackend::Wiki {
@@ -185,8 +185,8 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
     } => {
       if !omnifuse_core::is_fuse_available() {
         anyhow::bail!(
-          "FUSE не найден. Установите macFUSE (macOS) или libfuse3 (Linux).\n\
-           Проверка: of check"
+          "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
+           Check: of check"
         );
       }
 
@@ -194,7 +194,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
         base_url = %base_url,
         root_slug = %root_slug,
         mountpoint = %mountpoint.display(),
-        "монтирование wiki"
+        "mounting wiki"
       );
 
       let wiki_config = omnifuse_wiki::WikiConfig {
@@ -207,7 +207,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       };
 
       let wiki_backend =
-        omnifuse_wiki::WikiBackend::new(wiki_config).context("ошибка создания wiki backend")?;
+        omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
 
       let mount_config = omnifuse_core::MountConfig {
         mount_point: mountpoint.clone(),
@@ -224,33 +224,33 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
 
       omnifuse_core::run_mount(mount_config, wiki_backend, omnifuse_core::NoopEventHandler)
         .await
-        .context("ошибка монтирования")?;
+        .context("mount error")?;
 
-      info!("размонтировано");
+      info!("unmounted");
       Ok(())
     }
   }
 }
 
-/// Команда check — проверка FUSE.
+/// Check command — verify FUSE availability.
 fn cmd_check() -> anyhow::Result<()> {
   if omnifuse_core::is_fuse_available() {
-    println!("FUSE доступен");
+    println!("FUSE is available");
     Ok(())
   } else {
-    println!("FUSE не найден.");
+    println!("FUSE not found.");
     println!();
 
     #[cfg(target_os = "macos")]
     {
-      println!("macOS: установите macFUSE");
+      println!("macOS: install macFUSE");
       println!("  brew install --cask macfuse");
-      println!("  или: https://osxfuse.github.io/");
+      println!("  or: https://osxfuse.github.io/");
     }
 
     #[cfg(target_os = "linux")]
     {
-      println!("Linux: установите libfuse3");
+      println!("Linux: install libfuse3");
       println!("  sudo apt install libfuse3-dev fuse3    # Debian/Ubuntu");
       println!("  sudo dnf install fuse3-devel fuse3     # Fedora");
       println!("  sudo pacman -S fuse3                   # Arch");
@@ -258,20 +258,20 @@ fn cmd_check() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     {
-      println!("Windows: установите WinFsp");
+      println!("Windows: install WinFsp");
       println!("  winget install WinFsp.WinFsp");
-      println!("  или: https://winfsp.dev/");
+      println!("  or: https://winfsp.dev/");
     }
 
-    anyhow::bail!("FUSE не установлен")
+    anyhow::bail!("FUSE is not installed")
   }
 }
 
-/// Команда gen-config — пример конфигурации.
+/// Gen-config command — sample configuration.
 #[allow(clippy::unnecessary_wraps)]
 fn cmd_gen_config() -> anyhow::Result<()> {
-  let example = r#"# OmniFuse — пример конфигурации
-# Расположение: ~/.config/omnifuse/config.toml
+  let example = r#"# OmniFuse — sample configuration
+# Location: ~/.config/omnifuse/config.toml
 
 [backends.my-repo]
 type = "git"

@@ -1,7 +1,7 @@
-//! omnifuse-git — Git backend для `OmniFuse`.
+//! omnifuse-git — Git backend for `OmniFuse`.
 //!
-//! Реализует `omnifuse_core::Backend` trait через git CLI.
-//! Портировано из `SimpleGitFS`.
+//! Implements the `omnifuse_core::Backend` trait via git CLI.
+//! Ported from `SimpleGitFS`.
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
@@ -25,16 +25,16 @@ use crate::{
   ops::{GitOps, StartupSyncResult}
 };
 
-/// Конфигурация git backend'а.
+/// Git backend configuration.
 #[derive(Debug, Clone)]
 pub struct GitConfig {
-  /// Источник: URL или локальный путь.
+  /// Source: URL or local path.
   pub source: String,
-  /// Ветка.
+  /// Branch.
   pub branch: String,
-  /// Максимальное количество повторов push.
+  /// Maximum number of push retries.
   pub max_push_retries: u32,
-  /// Интервал опроса remote (секунды).
+  /// Remote polling interval (seconds).
   pub poll_interval_secs: u64
 }
 
@@ -49,22 +49,22 @@ impl Default for GitConfig {
   }
 }
 
-/// Git backend для `OmniFuse`.
+/// Git backend for `OmniFuse`.
 ///
-/// Реализует `Backend` trait: init → clone/fetch, sync → commit+push,
-/// poll → fetch+diff, apply → pull.
+/// Implements the `Backend` trait: init -> clone/fetch, sync -> commit+push,
+/// poll -> fetch+diff, apply -> pull.
 #[derive(Debug)]
 pub struct GitBackend {
-  /// Конфигурация.
+  /// Configuration.
   config: GitConfig,
-  /// Git-операции (инициализируется в `init`).
+  /// Git operations (initialized in `init`).
   ops: OnceLock<GitOps>,
-  /// Фильтр `.gitignore` (инициализируется в `init`).
+  /// `.gitignore` filter (initialized in `init`).
   filter: OnceLock<GitignoreFilter>
 }
 
 impl GitBackend {
-  /// Создать новый git backend.
+  /// Create a new git backend.
   #[must_use]
   pub const fn new(config: GitConfig) -> Self {
     Self {
@@ -74,19 +74,19 @@ impl GitBackend {
     }
   }
 
-  /// Получить `GitOps` (после инициализации).
+  /// Get `GitOps` (after initialization).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку если backend не инициализирован.
+  /// Returns an error if the backend is not initialized.
   fn ops(&self) -> anyhow::Result<&GitOps> {
     self
       .ops
       .get()
-      .ok_or_else(|| anyhow::anyhow!("backend не инициализирован"))
+      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
   }
 
-  /// Получить список изменённых файлов между local и remote HEAD.
+  /// Get the list of changed files between local and remote HEAD.
   async fn diff_remote_files(&self) -> anyhow::Result<Vec<PathBuf>> {
     let ops = self.ops()?;
     let repo_path = ops.repo_path();
@@ -124,15 +124,15 @@ impl GitBackend {
 
 impl Backend for GitBackend {
   async fn init(&self, _local_dir: &Path) -> anyhow::Result<InitResult> {
-    // Подготовить репозиторий (clone если remote)
+    // Prepare the repository (clone if remote)
     let source = crate::repo_source::RepoSource::parse(&self.config.source);
     let repo_path = source.ensure_available(&self.config.branch).await?;
 
-    // Инициализировать git-операции
+    // Initialize git operations
     let ops = GitOps::new(repo_path.clone(), self.config.branch.clone())?;
     let _ = self.ops.set(ops);
 
-    // Инициализировать фильтр .gitignore
+    // Initialize .gitignore filter
     let filter = GitignoreFilter::new(&repo_path);
     let _ = self.filter.set(filter);
 
@@ -149,29 +149,29 @@ impl Backend for GitBackend {
   async fn sync(&self, dirty_files: &[PathBuf]) -> anyhow::Result<SyncResult> {
     let ops = self.ops()?;
 
-    // Коммит dirty файлов
+    // Commit dirty files
     if let Err(e) = ops.auto_commit(dirty_files).await {
       let msg = e.to_string();
       if !msg.contains("nothing to commit") {
         return Err(e);
       }
-      debug!("sync: нет изменений для коммита");
+      debug!("sync: no changes to commit");
     }
 
-    // Push с retry (внутри: push → rejected → pull → retry)
+    // Push with retry (internally: push -> rejected -> pull -> retry)
     match ops.push_with_retry(self.config.max_push_retries).await {
       Ok(()) => Ok(SyncResult::Success {
         synced_files: dirty_files.len()
       }),
       Err(e) => {
         let msg = e.to_string();
-        if msg.contains("конфликт") || msg.contains("conflict") {
-          warn!("sync: конфликты при push");
+        if msg.contains("conflict") {
+          warn!("sync: conflicts during push");
           Ok(SyncResult::Conflict {
             synced_files: 0,
             conflict_files: dirty_files.to_vec()
           })
-        } else if msg.contains("сеть") || msg.contains("network") {
+        } else if msg.contains("network") {
           Ok(SyncResult::Offline)
         } else {
           Err(e)
@@ -183,21 +183,21 @@ impl Backend for GitBackend {
   async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
     let ops = self.ops()?;
 
-    // Fetch и проверить наличие новых коммитов
+    // Fetch and check for new commits
     if !ops.check_remote().await? {
       return Ok(Vec::new());
     }
 
-    // Получить список изменённых файлов
+    // Get the list of changed files
     let changed_files = self.diff_remote_files().await?;
 
     if changed_files.is_empty() {
       return Ok(Vec::new());
     }
 
-    info!(count = changed_files.len(), "обнаружены remote изменения");
+    info!(count = changed_files.len(), "remote changes detected");
 
-    // Возвращаем маркеры — содержимое подтянется через pull в apply_remote
+    // Return markers — content will be pulled via pull in apply_remote
     let changes = changed_files
       .into_iter()
       .map(|path| RemoteChange::Modified {
@@ -212,20 +212,20 @@ impl Backend for GitBackend {
   async fn apply_remote(&self, _changes: Vec<RemoteChange>) -> anyhow::Result<()> {
     let ops = self.ops()?;
 
-    // Git pull подтянет все изменения разом
+    // Git pull will fetch all changes at once
     let result = ops.engine().pull().await?;
-    debug!(?result, "apply_remote: pull завершён");
+    debug!(?result, "apply_remote: pull completed");
 
     Ok(())
   }
 
   fn should_track(&self, path: &Path) -> bool {
-    // Всегда скрывать .git/
+    // Always hide .git/
     if path.components().any(|c| c.as_os_str() == ".git") {
       return false;
     }
 
-    // Проверить gitignore (если фильтр инициализирован)
+    // Check gitignore (if filter is initialized)
     if let Some(filter) = self.filter.get() {
       return !filter.is_ignored(path);
     }

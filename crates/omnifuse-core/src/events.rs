@@ -1,67 +1,67 @@
-//! Обработчик событий VFS для UI (Tauri, CLI, логи).
+//! VFS event handler for UI (Tauri, CLI, logs).
 
 use std::path::Path;
 
-/// Уровень лога.
+/// Log level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
-  /// Отладочная информация.
+  /// Debug information.
   Debug,
-  /// Информационное сообщение.
+  /// Informational message.
   Info,
-  /// Предупреждение.
+  /// Warning.
   Warn,
-  /// Ошибка.
+  /// Error.
   Error
 }
 
-/// Обработчик событий для UI (Tauri, CLI, логи).
+/// Event handler for UI (Tauri, CLI, logs).
 ///
-/// Все методы имеют default-реализации (noop), поэтому
-/// реализатор может перегрузить только нужные.
+/// All methods have default implementations (noop), so
+/// the implementor can override only the ones needed.
 #[allow(unused_variables)]
 pub trait VfsEventHandler: Send + Sync + 'static {
-  /// Файловая система смонтирована.
+  /// Filesystem mounted.
   fn on_mounted(&self, source: &str, mount_point: &Path) {}
 
-  /// Файловая система размонтирована.
+  /// Filesystem unmounted.
   fn on_unmounted(&self) {}
 
-  /// Произошла ошибка.
+  /// An error occurred.
   fn on_error(&self, message: &str) {}
 
-  /// Лог-сообщение.
+  /// Log message.
   fn on_log(&self, level: LogLevel, message: &str) {}
 
-  /// Файл записан.
+  /// File written.
   fn on_file_written(&self, path: &Path, bytes: usize) {}
 
-  /// Файл помечен как грязный.
+  /// File marked as dirty.
   fn on_file_dirty(&self, path: &Path) {}
 
-  /// Файл создан.
+  /// File created.
   fn on_file_created(&self, path: &Path) {}
 
-  /// Файл удалён.
+  /// File deleted.
   fn on_file_deleted(&self, path: &Path) {}
 
-  /// Файл переименован.
+  /// File renamed.
   fn on_file_renamed(&self, old_path: &Path, new_path: &Path) {}
 
-  /// Выполнен коммит.
+  /// Commit performed.
   fn on_commit(&self, hash: &str, files_count: usize, message: &str) {}
 
-  /// Выполнен push.
+  /// Push performed.
   fn on_push(&self, items_count: usize) {}
 
-  /// Push отклонён.
+  /// Push rejected.
   fn on_push_rejected(&self) {}
 
-  /// Синхронизация завершена.
+  /// Synchronization completed.
   fn on_sync(&self, result: &str) {}
 }
 
-/// Пустой обработчик событий (для тестов и CLI без UI).
+/// No-op event handler (for tests and CLI without UI).
 pub struct NoopEventHandler;
 
 impl VfsEventHandler for NoopEventHandler {}

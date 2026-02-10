@@ -1,6 +1,6 @@
-//! Git engine — обёртка над git CLI.
+//! Git engine — wrapper over git CLI.
 //!
-//! Портировано из `SimpleGitFS` `core/src/git/engine.rs`.
+//! Ported from `SimpleGitFS` `core/src/git/engine.rs`.
 
 use std::{
   path::{Path, PathBuf},
@@ -10,71 +10,71 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-/// Результат fetch.
+/// Fetch result.
 #[derive(Debug, Clone)]
 pub enum FetchResult {
-  /// Нет изменений.
+  /// No changes.
   UpToDate,
-  /// Получены новые коммиты.
+  /// New commits received.
   Updated {
-    /// Количество коммитов.
+    /// Number of commits.
     commits: usize
   }
 }
 
-/// Результат push.
+/// Push result.
 #[derive(Debug, Clone)]
 pub enum PushResult {
-  /// Push успешен.
+  /// Push succeeded.
   Success,
-  /// Push отклонён (нужен pull).
+  /// Push rejected (pull required).
   Rejected,
-  /// Remote не настроен.
+  /// No remote configured.
   NoRemote
 }
 
-/// Результат merge.
+/// Merge result.
 #[derive(Debug, Clone)]
 pub enum MergeResult {
-  /// Уже актуально.
+  /// Already up to date.
   UpToDate,
   /// Fast-forward merge.
   FastForward,
-  /// Создан merge commit.
+  /// Merge commit created.
   Merged {
-    /// Хеш merge коммита.
+    /// Merge commit hash.
     commit: String
   },
-  /// Обнаружены конфликты.
+  /// Conflicts detected.
   Conflict {
-    /// Файлы с конфликтами.
+    /// Files with conflicts.
     files: Vec<PathBuf>
   }
 }
 
-/// Git engine для операций с репозиторием.
+/// Git engine for repository operations.
 #[derive(Debug)]
 pub struct GitEngine {
-  /// Путь к репозиторию.
+  /// Repository path.
   repo_path: PathBuf,
-  /// Отслеживаемая ветка.
+  /// Tracked branch.
   branch: String,
-  /// Имя remote.
+  /// Remote name.
   remote: String,
-  /// Lock для сериализации git операций.
+  /// Lock for serializing git operations.
   op_lock: Arc<RwLock<()>>
 }
 
 impl GitEngine {
-  /// Создать новый git engine.
+  /// Create a new git engine.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку если путь — не git-репозиторий.
+  /// Returns an error if the path is not a git repository.
   pub fn new(repo_path: PathBuf, branch: String) -> anyhow::Result<Self> {
     let git_dir = repo_path.join(".git");
     if !git_dir.exists() {
-      anyhow::bail!("не git-репозиторий: {}", repo_path.display());
+      anyhow::bail!("not a git repository: {}", repo_path.display());
     }
 
     Ok(Self {
@@ -85,23 +85,23 @@ impl GitEngine {
     })
   }
 
-  /// Путь к репозиторию.
+  /// Repository path.
   #[must_use]
   pub fn repo_path(&self) -> &Path {
     &self.repo_path
   }
 
-  /// Текущая ветка.
+  /// Current branch.
   #[must_use]
   pub fn branch(&self) -> &str {
     &self.branch
   }
 
-  /// Добавить файлы в staging area.
+  /// Add files to the staging area.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git add`.
+  /// Returns an error if `git add` fails.
   pub async fn stage(&self, files: &[PathBuf]) -> anyhow::Result<()> {
     let _lock = self.op_lock.write().await;
 
@@ -126,11 +126,11 @@ impl GitEngine {
     Ok(())
   }
 
-  /// Создать коммит.
+  /// Create a commit.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git commit`.
+  /// Returns an error if `git commit` fails.
   pub async fn commit(&self, message: &str) -> anyhow::Result<String> {
     let _lock = self.op_lock.write().await;
 
@@ -149,15 +149,15 @@ impl GitEngine {
     }
 
     let hash = self.get_head_commit().await?;
-    info!(hash = %hash, "создан коммит");
+    info!(hash = %hash, "commit created");
     Ok(hash)
   }
 
-  /// Получить хеш HEAD коммита.
+  /// Get the HEAD commit hash.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git rev-parse`.
+  /// Returns an error if `git rev-parse` fails.
   pub async fn get_head_commit(&self) -> anyhow::Result<String> {
     let output = tokio::process::Command::new("git")
       .current_dir(&self.repo_path)
@@ -173,11 +173,11 @@ impl GitEngine {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
   }
 
-  /// Получить хеш remote HEAD коммита.
+  /// Get the remote HEAD commit hash.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git rev-parse`.
+  /// Returns an error if `git rev-parse` fails.
   pub async fn get_remote_head(&self) -> anyhow::Result<Option<String>> {
     let ref_name = format!("{}/{}", self.remote, self.branch);
 
@@ -196,11 +196,11 @@ impl GitEngine {
     ))
   }
 
-  /// Fetch с remote.
+  /// Fetch from remote.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче fetch.
+  /// Returns an error if fetch fails.
   pub async fn fetch(&self) -> anyhow::Result<FetchResult> {
     let _lock = self.op_lock.write().await;
 
@@ -215,8 +215,8 @@ impl GitEngine {
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
       if stderr.contains("Could not resolve host") || stderr.contains("Connection refused") {
-        warn!("fetch failed (сеть): {}", stderr.trim());
-        anyhow::bail!("сеть недоступна: {}", stderr.trim());
+        warn!("fetch failed (network): {}", stderr.trim());
+        anyhow::bail!("network unavailable: {}", stderr.trim());
       }
       anyhow::bail!("git fetch failed: {stderr}");
     }
@@ -227,16 +227,16 @@ impl GitEngine {
       debug!("fetch: up to date");
       Ok(FetchResult::UpToDate)
     } else {
-      info!("fetch: новые коммиты");
+      info!("fetch: new commits received");
       Ok(FetchResult::Updated { commits: 1 })
     }
   }
 
-  /// Pull с remote (fetch + rebase).
+  /// Pull from remote (fetch + rebase).
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче pull.
+  /// Returns an error if pull fails.
   pub async fn pull(&self) -> anyhow::Result<MergeResult> {
     let _lock = self.op_lock.write().await;
 
@@ -255,7 +255,7 @@ impl GitEngine {
         || stdout.contains("CONFLICT")
         || stderr.contains("could not apply")
       {
-        // Отменить rebase при конфликтах
+        // Abort rebase on conflicts
         let _ = tokio::process::Command::new("git")
           .current_dir(&self.repo_path)
           .args(["rebase", "--abort"])
@@ -263,7 +263,7 @@ impl GitEngine {
           .await;
 
         let conflict_files = self.get_conflict_files().await.unwrap_or_default();
-        warn!(files = ?conflict_files, "pull/rebase: конфликты");
+        warn!(files = ?conflict_files, "pull/rebase: conflicts detected");
         return Ok(MergeResult::Conflict {
           files: conflict_files
         });
@@ -286,11 +286,11 @@ impl GitEngine {
     }
   }
 
-  /// Push на remote.
+  /// Push to remote.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче push.
+  /// Returns an error if push fails.
   pub async fn push(&self) -> anyhow::Result<PushResult> {
     let _lock = self.op_lock.write().await;
 
@@ -304,7 +304,7 @@ impl GitEngine {
 
     if !output.status.success() {
       if stderr.contains("rejected") || stderr.contains("non-fast-forward") {
-        warn!("push отклонён: нужен pull");
+        warn!("push rejected: pull required");
         return Ok(PushResult::Rejected);
       }
       if stderr.contains("No configured push destination") {
@@ -317,7 +317,7 @@ impl GitEngine {
     Ok(PushResult::Success)
   }
 
-  /// Получить список файлов с конфликтами.
+  /// Get the list of files with conflicts.
   async fn get_conflict_files(&self) -> anyhow::Result<Vec<PathBuf>> {
     let output = tokio::process::Command::new("git")
       .current_dir(&self.repo_path)
@@ -337,11 +337,11 @@ impl GitEngine {
     Ok(files)
   }
 
-  /// Проверить наличие незакоммиченных изменений.
+  /// Check for uncommitted changes.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git status`.
+  /// Returns an error if `git status` fails.
   pub async fn has_changes(&self) -> anyhow::Result<bool> {
     let output = tokio::process::Command::new("git")
       .current_dir(&self.repo_path)
@@ -357,11 +357,11 @@ impl GitEngine {
     Ok(!output.stdout.is_empty())
   }
 
-  /// Получить список изменённых файлов.
+  /// Get the list of modified files.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при неудаче `git status`.
+  /// Returns an error if `git status` fails.
   pub async fn modified_files(&self) -> anyhow::Result<Vec<PathBuf>> {
     let output = tokio::process::Command::new("git")
       .current_dir(&self.repo_path)

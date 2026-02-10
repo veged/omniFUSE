@@ -1,21 +1,21 @@
-//! Фильтрация файлов через `.gitignore`.
+//! File filtering via `.gitignore`.
 
 use std::path::Path;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use tracing::debug;
 
-/// Фильтр на основе `.gitignore`.
+/// Filter based on `.gitignore`.
 #[derive(Debug)]
 pub struct GitignoreFilter {
-  /// Парсер gitignore.
+  /// Gitignore parser.
   gitignore: Gitignore
 }
 
 impl GitignoreFilter {
-  /// Создать фильтр для директории.
+  /// Create a filter for a directory.
   ///
-  /// Ищет `.gitignore` в указанной директории.
+  /// Looks for `.gitignore` in the specified directory.
   #[must_use]
   pub fn new(repo_path: &Path) -> Self {
     let gitignore_path = repo_path.join(".gitignore");
@@ -24,11 +24,11 @@ impl GitignoreFilter {
     if gitignore_path.exists()
       && let Some(err) = builder.add(&gitignore_path)
     {
-      debug!(error = %err, "ошибка парсинга .gitignore");
+      debug!(error = %err, "error parsing .gitignore");
     }
 
     let gitignore = builder.build().unwrap_or_else(|_| {
-      // Пустой gitignore если парсинг не удался
+      // Empty gitignore if parsing failed
       GitignoreBuilder::new(repo_path)
         .build()
         .unwrap_or_else(|_| Gitignore::empty())
@@ -37,7 +37,7 @@ impl GitignoreFilter {
     Self { gitignore }
   }
 
-  /// Проверить, игнорируется ли файл.
+  /// Check whether a file is ignored.
   #[must_use]
   pub fn is_ignored(&self, path: &Path) -> bool {
     let is_dir = path.is_dir();
@@ -56,7 +56,7 @@ mod tests {
   #[test]
   fn test_empty_filter() {
     let filter = GitignoreFilter::new(Path::new("/nonexistent"));
-    // Без .gitignore ничего не игнорируется
+    // Without .gitignore nothing is ignored
     assert!(!filter.is_ignored(&PathBuf::from("/nonexistent/file.txt")));
   }
 }

@@ -1,7 +1,7 @@
-//! omnifuse-wiki — Wiki backend для `OmniFuse`.
+//! omnifuse-wiki — Wiki backend for `OmniFuse`.
 //!
-//! Реализует `omnifuse_core::Backend` trait через Wiki HTTP API.
-//! Портировано из `YaWikiFS`.
+//! Implements the `omnifuse_core::Backend` trait via Wiki HTTP API.
+//! Ported from `YaWikiFS`.
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
@@ -28,20 +28,20 @@ use crate::{
   models::PageTreeNodeSchema
 };
 
-/// Конфигурация wiki backend'а.
+/// Wiki backend configuration.
 #[derive(Debug, Clone)]
 pub struct WikiConfig {
-  /// Базовый URL wiki API.
+  /// Base URL of the wiki API.
   pub base_url: String,
-  /// Токен аутентификации.
+  /// Authentication token.
   pub auth_token: String,
-  /// Корневой slug (от него строится дерево).
+  /// Root slug (the tree is built from it).
   pub root_slug: String,
-  /// Интервал опроса remote (секунды).
+  /// Remote polling interval (seconds).
   pub poll_interval_secs: u64,
-  /// Максимальная глубина дерева.
+  /// Maximum tree depth.
   pub max_depth: u32,
-  /// Максимальное количество страниц при fetch дерева.
+  /// Maximum number of pages when fetching the tree.
   pub max_pages: u32
 }
 
@@ -58,27 +58,27 @@ impl Default for WikiConfig {
   }
 }
 
-/// Wiki backend для `OmniFuse`.
+/// Wiki backend for `OmniFuse`.
 ///
-/// Реализует `Backend` trait: init → fetch дерево, sync → merge+PUT,
-/// poll → сравнить `modified_at`, apply → скачать изменённые.
+/// Implements the `Backend` trait: init -> fetch tree, sync -> merge+PUT,
+/// poll -> compare `modified_at`, apply -> download modified pages.
 pub struct WikiBackend {
-  /// Конфигурация.
+  /// Configuration.
   config: WikiConfig,
-  /// HTTP-клиент (инициализируется в `new`).
+  /// HTTP client (initialized in `new`).
   client: Arc<Client>,
-  /// Хранилище метаданных (инициализируется в `init`).
+  /// Metadata store (initialized in `init`).
   meta_store: OnceLock<MetaStore>,
-  /// Локальная директория (инициализируется в `init`).
+  /// Local directory (initialized in `init`).
   local_dir: OnceLock<PathBuf>
 }
 
 impl WikiBackend {
-  /// Создать новый wiki backend.
+  /// Create a new wiki backend.
   ///
   /// # Errors
   ///
-  /// Возвращает ошибку при невозможности создать HTTP-клиент.
+  /// Returns an error if the HTTP client cannot be created.
   pub fn new(config: WikiConfig) -> anyhow::Result<Self> {
     let client = Client::new(&config.base_url, &config.auth_token)?;
 
@@ -90,24 +90,24 @@ impl WikiBackend {
     })
   }
 
-  /// Получить `MetaStore` (после инициализации).
+  /// Get the `MetaStore` (after initialization).
   fn meta(&self) -> anyhow::Result<&MetaStore> {
     self
       .meta_store
       .get()
-      .ok_or_else(|| anyhow::anyhow!("backend не инициализирован"))
+      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
   }
 
-  /// Получить `local_dir` (после инициализации).
+  /// Get `local_dir` (after initialization).
   fn local_dir(&self) -> anyhow::Result<&Path> {
     self
       .local_dir
       .get()
       .map(PathBuf::as_path)
-      .ok_or_else(|| anyhow::anyhow!("backend не инициализирован"))
+      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
   }
 
-  /// Рекурсивный обход дерева страниц → записать файлы + meta.
+  /// Recursively traverse the page tree -> write files + meta.
   fn write_tree<'a>(
     &'a self,
     node: &'a PageTreeNodeSchema,
@@ -118,19 +118,19 @@ impl WikiBackend {
     Box::pin(async move {
       let mut count = 0;
 
-      // Скачать контент страницы
+      // Download page content
       match self.client.get_page_by_slug(&node.slug).await {
         Ok(page) => {
           let content = page.content.as_deref().unwrap_or("");
 
-          // Записать .md файл
+          // Write .md file
           let file_path = local_dir.join(format!("{}.md", node.slug));
           if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;
           }
           std::fs::write(&file_path, content)?;
 
-          // Сохранить meta и base
+          // Save meta and base
           let meta = PageMeta {
             id: node.id,
             title: node.title.clone(),
@@ -141,14 +141,14 @@ impl WikiBackend {
           meta_store.save_base(&node.slug, content)?;
 
           count += 1;
-          debug!(slug = %node.slug, "страница загружена");
+          debug!(slug = %node.slug, "page downloaded");
         }
         Err(e) => {
-          warn!(slug = %node.slug, error = %e, "не удалось загрузить страницу");
+          warn!(slug = %node.slug, error = %e, "failed to download page");
         }
       }
 
-      // Рекурсивно обойти детей
+      // Recursively traverse children
       if let Some(children) = &node.children {
         for child in children {
           if depth < self.config.max_depth {
@@ -163,7 +163,7 @@ impl WikiBackend {
     })
   }
 
-  /// Синхронизировать один dirty файл.
+  /// Synchronize a single dirty file.
   async fn sync_file(
     &self,
     path: &Path,
@@ -174,14 +174,14 @@ impl WikiBackend {
       return Ok(false);
     };
 
-    // Прочитать локальный контент
+    // Read local content
     let local_content = std::fs::read_to_string(path)
-      .map_err(|e| anyhow::anyhow!("чтение {}: {e}", path.display()))?;
+      .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
 
-    // Загрузить base и meta
+    // Load base and meta
     let base_content = meta_store.load_base(&slug).unwrap_or_default();
     let Some(page_meta) = meta_store.load_meta(&slug) else {
-      // Новая страница — создать
+      // New page — create it
       let title = slug
         .rsplit('/')
         .next()
@@ -202,17 +202,17 @@ impl WikiBackend {
       meta_store.save_meta(&page.slug, &new_meta)?;
       meta_store.save_base(&page.slug, &local_content)?;
 
-      info!(slug = %slug, "страница создана");
+      info!(slug = %slug, "page created");
       return Ok(true);
     };
 
-    // Скачать текущую remote версию
+    // Download current remote version
     let remote_page = self.client.get_page_by_slug(&slug).await?;
     let remote_content = remote_page.content.as_deref().unwrap_or("");
 
-    // Проверить нужен ли merge
+    // Check if merge is needed
     if remote_page.modified_at == page_meta.modified_at {
-      // Remote не изменился — просто PUT
+      // Remote unchanged — just PUT
       let updated = self
         .client
         .update_page(page_meta.id, None, Some(&local_content), false)
@@ -227,14 +227,14 @@ impl WikiBackend {
       meta_store.save_meta(&slug, &new_meta)?;
       meta_store.save_base(&slug, &local_content)?;
 
-      debug!(slug = %slug, "страница обновлена (без конфликта)");
+      debug!(slug = %slug, "page updated (no conflict)");
       return Ok(true);
     }
 
-    // Remote изменился — three-way merge
+    // Remote changed — three-way merge
     match three_way_merge(&base_content, &local_content, remote_content) {
       MergeResult::NoConflict => {
-        // Обновить base до remote
+        // Update base to remote
         let new_meta = PageMeta {
           id: remote_page.id,
           title: remote_page.title,
@@ -244,11 +244,11 @@ impl WikiBackend {
         meta_store.save_meta(&slug, &new_meta)?;
         meta_store.save_base(&slug, remote_content)?;
 
-        debug!(slug = %slug, "нет конфликта (remote == local)");
+        debug!(slug = %slug, "no conflict (remote == local)");
         Ok(true)
       }
       MergeResult::Merged(merged) => {
-        // Залить смерженный контент
+        // Push merged content
         let updated = self
           .client
           .update_page(page_meta.id, None, Some(&merged), true)
@@ -263,15 +263,15 @@ impl WikiBackend {
         meta_store.save_meta(&slug, &new_meta)?;
         meta_store.save_base(&slug, &merged)?;
 
-        // Обновить локальный файл смерженным контентом
+        // Update local file with merged content
         std::fs::write(path, &merged)?;
 
-        info!(slug = %slug, "merge успешен");
+        info!(slug = %slug, "merge successful");
         Ok(true)
       }
       MergeResult::Failed { .. } => {
-        warn!(slug = %slug, "конфликт: local wins");
-        // Стратегия: local wins (записываем локальную версию)
+        warn!(slug = %slug, "conflict: local wins");
+        // Strategy: local wins (write local version)
         let updated = self
           .client
           .update_page(page_meta.id, None, Some(&local_content), true)
@@ -286,7 +286,7 @@ impl WikiBackend {
         meta_store.save_meta(&slug, &new_meta)?;
         meta_store.save_base(&slug, &local_content)?;
 
-        Ok(false) // Конфликт произошёл
+        Ok(false) // Conflict occurred
       }
     }
   }
@@ -294,20 +294,20 @@ impl WikiBackend {
 
 impl Backend for WikiBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
-    // Создать локальную директорию
+    // Create local directory
     std::fs::create_dir_all(local_dir)?;
 
-    // Инициализировать хранилища
+    // Initialize stores
     let meta_store = MetaStore::new(local_dir)?;
     let _ = self.meta_store.set(meta_store);
     let _ = self.local_dir.set(local_dir.to_path_buf());
 
     let meta_store = self.meta()?;
 
-    // Fetch дерево страниц
+    // Fetch page tree
     info!(
       root = %self.config.root_slug,
-      "загрузка дерева страниц"
+      "loading page tree"
     );
 
     match self
@@ -323,7 +323,7 @@ impl Backend for WikiBackend {
         let count = self
           .write_tree(&tree.root, local_dir, meta_store, 0)
           .await?;
-        info!(count, "дерево загружено");
+        info!(count, "tree loaded");
 
         if count > 0 {
           Ok(InitResult::Updated)
@@ -332,12 +332,12 @@ impl Backend for WikiBackend {
         }
       }
       Err(e) => {
-        warn!(error = %e, "не удалось загрузить дерево (offline?)");
+        warn!(error = %e, "failed to load tree (offline?)");
 
-        // Проверить есть ли локальные данные
+        // Check if there is local data
         let slugs = meta_store.all_slugs()?;
         if slugs.is_empty() {
-          anyhow::bail!("нет локальных данных и remote недоступен: {e}");
+          anyhow::bail!("no local data and remote is unavailable: {e}");
         }
 
         Ok(InitResult::Offline)
@@ -358,9 +358,9 @@ impl Backend for WikiBackend {
         Ok(false) => conflicts.push(path.clone()),
         Err(e) => {
           let msg = e.to_string();
-          if msg.contains("страница не найдена") || msg.contains("доступ запрещён") {
-            warn!(path = %path.display(), error = %e, "пропускаем файл");
-          } else if msg.contains("сеть") || msg.contains("Connection") {
+          if msg.contains("page not found") || msg.contains("access denied") {
+            warn!(path = %path.display(), error = %e, "skipping file");
+          } else if msg.contains("network") || msg.contains("Connection") {
             return Ok(SyncResult::Offline);
           } else {
             return Err(e);
@@ -385,7 +385,7 @@ impl Backend for WikiBackend {
     let meta_store = self.meta()?;
     let local_dir = self.local_dir()?;
 
-    // Fetch текущее дерево
+    // Fetch current tree
     let tree = self
       .client
       .get_page_tree(
@@ -399,7 +399,7 @@ impl Backend for WikiBackend {
     Self::collect_changes(&tree.root, meta_store, local_dir, &self.client, &mut changes).await;
 
     if !changes.is_empty() {
-      info!(count = changes.len(), "обнаружены remote изменения");
+      info!(count = changes.len(), "remote changes detected");
     }
 
     Ok(changes)
@@ -412,19 +412,19 @@ impl Backend for WikiBackend {
     for change in changes {
       match change {
         RemoteChange::Modified { path, content } => {
-          // Записать файл
+          // Write file
           if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
           }
           std::fs::write(&path, &content)?;
 
-          // Обновить base
+          // Update base
           if let Some(slug) = path_to_slug(&path, local_dir) {
             let content_str = String::from_utf8_lossy(&content);
             meta_store.save_base(&slug, &content_str)?;
           }
 
-          debug!(path = %path.display(), "remote изменение применено");
+          debug!(path = %path.display(), "remote change applied");
         }
         RemoteChange::Deleted { path } => {
           let _ = std::fs::remove_file(&path);
@@ -433,7 +433,7 @@ impl Backend for WikiBackend {
             meta_store.remove(&slug);
           }
 
-          debug!(path = %path.display(), "файл удалён (remote)");
+          debug!(path = %path.display(), "file deleted (remote)");
         }
       }
     }
@@ -442,9 +442,9 @@ impl Backend for WikiBackend {
   }
 
   fn should_track(&self, path: &Path) -> bool {
-    // Только .md файлы
+    // Only .md files
     let is_md = path.extension().is_some_and(|e| e == "md");
-    // Исключить .vfs/
+    // Exclude .vfs/
     let is_vfs = path
       .components()
       .any(|c| c.as_os_str() == ".vfs");
@@ -470,7 +470,7 @@ impl Backend for WikiBackend {
 }
 
 impl WikiBackend {
-  /// Рекурсивный сбор изменений из дерева.
+  /// Recursively collect changes from the tree.
   async fn collect_changes(
     node: &PageTreeNodeSchema,
     meta_store: &MetaStore,
@@ -480,13 +480,13 @@ impl WikiBackend {
   ) {
     let local_meta = meta_store.load_meta(&node.slug);
 
-    // Проверить изменился ли modified_at
+    // Check if modified_at has changed
     let needs_update = local_meta
       .as_ref()
       .is_none_or(|meta| meta.modified_at != node.modified_at);
 
     if needs_update {
-      // Скачать контент
+      // Download content
       if let Ok(page) = client.get_page_by_slug(&node.slug).await {
         let content = page.content.unwrap_or_default();
         let file_path = local_dir.join(format!("{}.md", node.slug));
@@ -496,7 +496,7 @@ impl WikiBackend {
           content: content.into_bytes()
         });
 
-        // Обновить meta
+        // Update meta
         let meta = PageMeta {
           id: node.id,
           title: node.title.clone(),
@@ -507,7 +507,7 @@ impl WikiBackend {
       }
     }
 
-    // Рекурсия по детям
+    // Recurse into children
     if let Some(children) = &node.children {
       for child in children {
         Box::pin(Self::collect_changes(
