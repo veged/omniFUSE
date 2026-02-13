@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
@@ -12,7 +12,9 @@ import {
   Group,
   Badge,
   SegmentedControl,
+  ActionIcon,
 } from '@mantine/core';
+import { useLocalStorage } from '@mantine/hooks';
 
 interface LogEntry {
   level: 'info' | 'warn' | 'error';
@@ -22,23 +24,51 @@ interface LogEntry {
 
 type BackendKind = 'git' | 'wiki';
 
+const MAX_LOG_ENTRIES = 500;
+
+function appendLog(prev: LogEntry[], entry: LogEntry): LogEntry[] {
+  const next = [...prev, entry];
+  return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
+}
+
+type LogLevel = 'all' | 'info' | 'warn' | 'error';
+
+interface FieldErrors {
+  gitSource?: string;
+  gitMountPoint?: string;
+  wikiUrl?: string;
+  wikiSlug?: string;
+  wikiToken?: string;
+  wikiMountPoint?: string;
+}
+
 function App() {
-  const [backend, setBackend] = useState<BackendKind>('git');
+  const [backend, setBackend] = useLocalStorage<BackendKind>({
+    key: 'omnifuse-backend',
+    defaultValue: 'git',
+  });
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [fuseAvailable, setFuseAvailable] = useState<boolean | null>(null);
+  const [logFilter, setLogFilter] = useState<LogLevel>('all');
+  const [errors, setErrors] = useState<FieldErrors>({});
 
-  // Git
-  const [gitSource, setGitSource] = useState('');
-  const [gitBranch, setGitBranch] = useState('main');
-  const [gitMountPoint, setGitMountPoint] = useState('');
+  // Git (persisted)
+  const [gitSource, setGitSource] = useLocalStorage({ key: 'omnifuse-git-source', defaultValue: '' });
+  const [gitBranch, setGitBranch] = useLocalStorage({ key: 'omnifuse-git-branch', defaultValue: 'main' });
+  const [gitMountPoint, setGitMountPoint] = useLocalStorage({ key: 'omnifuse-git-mount', defaultValue: '' });
 
-  // Wiki
-  const [wikiUrl, setWikiUrl] = useState('');
-  const [wikiSlug, setWikiSlug] = useState('');
+  // Wiki (persisted, except token)
+  const [wikiUrl, setWikiUrl] = useLocalStorage({ key: 'omnifuse-wiki-url', defaultValue: '' });
+  const [wikiSlug, setWikiSlug] = useLocalStorage({ key: 'omnifuse-wiki-slug', defaultValue: '' });
   const [wikiToken, setWikiToken] = useState('');
-  const [wikiMountPoint, setWikiMountPoint] = useState('');
+  const [wikiMountPoint, setWikiMountPoint] = useLocalStorage({ key: 'omnifuse-wiki-mount', defaultValue: '' });
+
+  const filteredLogs = useMemo(
+    () => logFilter === 'all' ? logs : logs.filter((l) => l.level === logFilter),
+    [logs, logFilter],
+  );
 
   // Check FUSE on startup
   useEffect(() => {
@@ -53,7 +83,7 @@ function App() {
             timestamp: new Date(),
           }]);
         }
-      } catch (e) {
+      } catch {
         setFuseAvailable(false);
       }
     };
@@ -72,35 +102,104 @@ function App() {
         setLoading(false);
       }),
       listen<{ level: string; message: string }>('vfs:log', (e) => {
-        setLogs((prev) => [
-          ...prev,
-          {
+        setLogs((prev) =>
+          appendLog(prev, {
             level: e.payload.level as 'info' | 'warn' | 'error',
             message: e.payload.message,
             timestamp: new Date(),
-          },
-        ]);
+          }),
+        );
       }),
       listen<{ message: string }>('vfs:error', (e) => {
-        setLogs((prev) => [
-          ...prev,
-          {
+        setLogs((prev) =>
+          appendLog(prev, {
             level: 'error',
             message: e.payload.message,
             timestamp: new Date(),
-          },
-        ]);
+          }),
+        );
         setLoading(false);
       }),
       listen<{ result: string }>('vfs:sync', (e) => {
-        setLogs((prev) => [
-          ...prev,
-          {
+        setLogs((prev) =>
+          appendLog(prev, {
             level: 'info',
             message: `sync: ${e.payload.result}`,
             timestamp: new Date(),
-          },
-        ]);
+          }),
+        );
+      }),
+      listen<{ path: string; bytes: number }>('vfs:file-written', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `written: ${e.payload.path} (${e.payload.bytes} bytes)`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ path: string }>('vfs:file-dirty', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `modified: ${e.payload.path}`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ path: string }>('vfs:file-created', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `created: ${e.payload.path}`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ path: string }>('vfs:file-deleted', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'warn',
+            message: `deleted: ${e.payload.path}`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ oldPath: string; newPath: string }>('vfs:file-renamed', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `renamed: ${e.payload.oldPath} -> ${e.payload.newPath}`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ hash: string; filesCount: number; message: string }>('vfs:commit', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `commit ${e.payload.hash.slice(0, 7)}: ${e.payload.message} (${e.payload.filesCount} files)`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen<{ commitsCount: number }>('vfs:push', (e) => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'info',
+            message: `push: ${e.payload.commitsCount} commit(s)`,
+            timestamp: new Date(),
+          }),
+        );
+      }),
+      listen('vfs:push-rejected', () => {
+        setLogs((prev) =>
+          appendLog(prev, {
+            level: 'warn',
+            message: 'push rejected — will retry after pull',
+            timestamp: new Date(),
+          }),
+        );
       }),
     ];
 
@@ -109,28 +208,47 @@ function App() {
     };
   }, []);
 
+  const validate = (): boolean => {
+    const e: FieldErrors = {};
+    if (backend === 'git') {
+      if (!gitSource.trim()) e.gitSource = 'Required';
+      if (!gitMountPoint.trim()) e.gitMountPoint = 'Required';
+    } else {
+      if (!wikiUrl.trim()) {
+        e.wikiUrl = 'Required';
+      } else {
+        try { new URL(wikiUrl); } catch { e.wikiUrl = 'Invalid URL'; }
+      }
+      if (!wikiSlug.trim()) e.wikiSlug = 'Required';
+      if (!wikiToken.trim()) e.wikiToken = 'Required';
+      if (!wikiMountPoint.trim()) e.wikiMountPoint = 'Required';
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
   const handleMount = async () => {
+    if (!validate()) return;
     setLoading(true);
     try {
       if (backend === 'git') {
         await invoke('mount_git', {
-          source: gitSource,
-          mountPoint: gitMountPoint,
-          branch: gitBranch || null,
+          source: gitSource.trim(),
+          mountPoint: gitMountPoint.trim(),
+          branch: gitBranch.trim() || null,
         });
       } else {
         await invoke('mount_wiki', {
-          baseUrl: wikiUrl,
-          rootSlug: wikiSlug,
+          baseUrl: wikiUrl.trim(),
+          rootSlug: wikiSlug.trim(),
           authToken: wikiToken,
-          mountPoint: wikiMountPoint,
+          mountPoint: wikiMountPoint.trim(),
         });
       }
     } catch (e) {
-      setLogs((prev) => [
-        ...prev,
-        { level: 'error', message: String(e), timestamp: new Date() },
-      ]);
+      setLogs((prev) =>
+        appendLog(prev, { level: 'error', message: String(e), timestamp: new Date() }),
+      );
       setLoading(false);
     }
   };
@@ -140,10 +258,9 @@ function App() {
     try {
       await invoke('unmount');
     } catch (e) {
-      setLogs((prev) => [
-        ...prev,
-        { level: 'error', message: String(e), timestamp: new Date() },
-      ]);
+      setLogs((prev) =>
+        appendLog(prev, { level: 'error', message: String(e), timestamp: new Date() }),
+      );
       setLoading(false);
     }
   };
@@ -205,8 +322,9 @@ function App() {
             label="Repository"
             placeholder="URL or local path"
             value={gitSource}
-            onChange={(e) => setGitSource(e.target.value)}
+            onChange={(e) => { setGitSource(e.target.value); setErrors((p) => ({ ...p, gitSource: undefined })); }}
             disabled={mounted || loading}
+            error={errors.gitSource}
           />
           <TextInput
             label="Branch"
@@ -220,9 +338,10 @@ function App() {
               label="Mount point"
               placeholder="/path/to/mount"
               value={gitMountPoint}
-              onChange={(e) => setGitMountPoint(e.target.value)}
+              onChange={(e) => { setGitMountPoint(e.target.value); setErrors((p) => ({ ...p, gitMountPoint: undefined })); }}
               disabled={mounted || loading}
               style={{ flex: 1 }}
+              error={errors.gitMountPoint}
             />
             <Button
               onClick={() => handlePickFolder(setGitMountPoint)}
@@ -239,31 +358,35 @@ function App() {
             label="Wiki API URL"
             placeholder="https://wiki.example.com"
             value={wikiUrl}
-            onChange={(e) => setWikiUrl(e.target.value)}
+            onChange={(e) => { setWikiUrl(e.target.value); setErrors((p) => ({ ...p, wikiUrl: undefined })); }}
             disabled={mounted || loading}
+            error={errors.wikiUrl}
           />
           <TextInput
             label="Root slug"
             placeholder="my/project"
             value={wikiSlug}
-            onChange={(e) => setWikiSlug(e.target.value)}
+            onChange={(e) => { setWikiSlug(e.target.value); setErrors((p) => ({ ...p, wikiSlug: undefined })); }}
             disabled={mounted || loading}
+            error={errors.wikiSlug}
           />
           <PasswordInput
             label="Token"
             placeholder="auth token"
             value={wikiToken}
-            onChange={(e) => setWikiToken(e.target.value)}
+            onChange={(e) => { setWikiToken(e.target.value); setErrors((p) => ({ ...p, wikiToken: undefined })); }}
             disabled={mounted || loading}
+            error={errors.wikiToken}
           />
           <Group align="end" gap="xs">
             <TextInput
               label="Mount point"
               placeholder="/path/to/mount"
               value={wikiMountPoint}
-              onChange={(e) => setWikiMountPoint(e.target.value)}
+              onChange={(e) => { setWikiMountPoint(e.target.value); setErrors((p) => ({ ...p, wikiMountPoint: undefined })); }}
               disabled={mounted || loading}
               style={{ flex: 1 }}
+              error={errors.wikiMountPoint}
             />
             <Button
               onClick={() => handlePickFolder(setWikiMountPoint)}
@@ -286,16 +409,39 @@ function App() {
       </Button>
 
       <Paper withBorder p="xs">
-        <Text size="sm" fw={500} mb="xs">
-          Log
-        </Text>
+        <Group justify="space-between" mb="xs">
+          <Text size="sm" fw={500}>
+            Log
+          </Text>
+          <Group gap="xs">
+            <SegmentedControl
+              size="xs"
+              value={logFilter}
+              onChange={(v) => setLogFilter(v as LogLevel)}
+              data={[
+                { label: 'All', value: 'all' },
+                { label: 'Info', value: 'info' },
+                { label: 'Warn', value: 'warn' },
+                { label: 'Error', value: 'error' },
+              ]}
+            />
+            <ActionIcon
+              variant="subtle"
+              size="sm"
+              onClick={() => setLogs([])}
+              title="Clear log"
+            >
+              &times;
+            </ActionIcon>
+          </Group>
+        </Group>
         <ScrollArea h={150}>
-          {logs.length === 0 ? (
+          {filteredLogs.length === 0 ? (
             <Text size="xs" c="dimmed">
               No events
             </Text>
           ) : (
-            logs.map((log, i) => (
+            filteredLogs.map((log, i) => (
               <Text key={i} size="xs" c={getLevelColor(log.level)}>
                 [{log.timestamp.toLocaleTimeString()}] {log.message}
               </Text>
