@@ -8,14 +8,18 @@
 use std::{
   collections::HashSet,
   path::PathBuf,
-  sync::Arc
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering}
+  },
+  time::Duration
 };
 
 use tokio::{
   sync::mpsc,
   time::{Instant, sleep, sleep_until}
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
   backend::{Backend, SyncResult},
@@ -36,6 +40,32 @@ pub enum FsEvent {
   Shutdown
 }
 
+/// Iteration counters for runtime monitoring.
+#[derive(Debug, Default)]
+pub struct WorkerMetrics {
+  /// Number of `poll_worker` iterations.
+  pub poll_iterations: AtomicU64,
+  /// Number of sync iterations (`dirty_worker`).
+  pub sync_iterations: AtomicU64,
+  /// Number of slow poll iterations (above threshold).
+  pub slow_poll_count: AtomicU64,
+  /// Number of slow sync iterations (above threshold).
+  pub slow_sync_count: AtomicU64
+}
+
+/// Threshold for slow iteration warning.
+const SLOW_ITERATION_THRESHOLD: Duration = Duration::from_secs(5);
+
+/// Safe `Duration` to milliseconds (u64) conversion.
+fn millis(d: Duration) -> u64 {
+  d.as_secs()
+    .saturating_mul(1000)
+    .saturating_add(u64::from(d.subsec_millis()))
+}
+
+/// Heartbeat logging interval (every N poll iterations).
+const POLL_HEARTBEAT_INTERVAL: u64 = 100;
+
 /// Synchronization engine.
 ///
 /// Orchestrates timing: collects dirty files, batches via debounce,
@@ -43,7 +73,11 @@ pub enum FsEvent {
 ///
 /// Does NOT handle merge — that is `Backend`'s responsibility.
 pub struct SyncEngine {
-  event_tx: mpsc::Sender<FsEvent>
+  event_tx: mpsc::Sender<FsEvent>,
+  /// Handle for stopping `poll_worker`.
+  poll_handle: tokio::task::JoinHandle<()>,
+  /// Runtime worker metrics.
+  metrics: Arc<WorkerMetrics>
 }
 
 impl SyncEngine {
@@ -58,22 +92,26 @@ impl SyncEngine {
     events: Arc<dyn VfsEventHandler>
   ) -> (Self, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel(256);
+    let metrics = Arc::new(WorkerMetrics::default());
 
+    let dirty_metrics = Arc::clone(&metrics);
     let handle = tokio::spawn(Self::dirty_worker(
       config,
       backend.clone(),
       events.clone(),
-      event_rx
+      event_rx,
+      dirty_metrics
     ));
 
-    // Poll worker — separate task
+    // Poll worker — separate task, JoinHandle stored for shutdown
     let poll_backend = backend;
     let poll_events = events;
-    tokio::spawn(async move {
-      Self::poll_worker(poll_backend, poll_events).await;
+    let poll_metrics = Arc::clone(&metrics);
+    let poll_handle = tokio::spawn(async move {
+      Self::poll_worker(poll_backend, poll_events, poll_metrics).await;
     });
 
-    (Self { event_tx }, handle)
+    (Self { event_tx, poll_handle, metrics }, handle)
   }
 
   /// Get a `Sender` for sending events.
@@ -82,12 +120,25 @@ impl SyncEngine {
     self.event_tx.clone()
   }
 
+  /// Runtime worker metrics.
+  #[must_use]
+  pub const fn metrics(&self) -> &Arc<WorkerMetrics> {
+    &self.metrics
+  }
+
   /// Shut down the `SyncEngine`.
+  ///
+  /// Aborts `poll_worker` and sends `Shutdown` to `dirty_worker`
+  /// for a final sync.
   ///
   /// # Errors
   ///
   /// Returns an error if the channel is already closed.
   pub async fn shutdown(&self) -> anyhow::Result<()> {
+    // Abort poll_worker first — it doesn't need graceful shutdown
+    self.poll_handle.abort();
+    info!("poll_worker stopped");
+
     self
       .event_tx
       .send(FsEvent::Shutdown)
@@ -107,8 +158,14 @@ impl SyncEngine {
     config: SyncConfig,
     backend: Arc<B>,
     events: Arc<dyn VfsEventHandler>,
-    mut event_rx: mpsc::Receiver<FsEvent>
+    mut event_rx: mpsc::Receiver<FsEvent>,
+    metrics: Arc<WorkerMetrics>
   ) {
+    info!(
+      debounce_secs = config.debounce_timeout_secs,
+      "dirty_worker started"
+    );
+
     let mut dirty_set: HashSet<PathBuf> = HashSet::new();
     let mut trigger_sync = false;
     let debounce_duration = config.debounce_timeout();
@@ -135,7 +192,11 @@ impl SyncEngine {
             Some(FsEvent::Shutdown) | None => {
               // Final sync
               if !dirty_set.is_empty() {
-                Self::do_sync(&backend, &events, &mut dirty_set).await;
+                info!(
+                  dirty_count = dirty_set.len(),
+                  "dirty_worker: final sync before shutdown"
+                );
+                Self::do_sync(&backend, &events, &mut dirty_set, &metrics).await;
               }
               break;
             }
@@ -148,19 +209,24 @@ impl SyncEngine {
       }
 
       if trigger_sync && !dirty_set.is_empty() {
-        Self::do_sync(&backend, &events, &mut dirty_set).await;
+        Self::do_sync(&backend, &events, &mut dirty_set, &metrics).await;
         trigger_sync = false;
       }
     }
 
-    debug!("dirty_worker finished");
+    info!(
+      total_syncs = metrics.sync_iterations.load(Ordering::Relaxed),
+      slow_syncs = metrics.slow_sync_count.load(Ordering::Relaxed),
+      "dirty_worker finished"
+    );
   }
 
   /// Synchronize dirty files.
   async fn do_sync<B: Backend>(
     backend: &Arc<B>,
     events: &Arc<dyn VfsEventHandler>,
-    dirty_set: &mut HashSet<PathBuf>
+    dirty_set: &mut HashSet<PathBuf>,
+    metrics: &WorkerMetrics
   ) {
     let files: Vec<PathBuf> = dirty_set.drain().filter(|f| backend.should_track(f)).collect();
 
@@ -168,7 +234,13 @@ impl SyncEngine {
       return;
     }
 
-    debug!(count = files.len(), "syncing dirty files");
+    let iteration = metrics
+      .sync_iterations
+      .fetch_add(1, Ordering::Relaxed)
+      + 1;
+    let start = Instant::now();
+
+    debug!(count = files.len(), iteration, "syncing dirty files");
 
     match backend.sync(&files).await {
       Ok(SyncResult::Success { synced_files }) => {
@@ -203,19 +275,45 @@ impl SyncEngine {
         events.on_log(LogLevel::Error, &format!("sync error: {e}"));
       }
     }
+
+    let elapsed = start.elapsed();
+    if elapsed > SLOW_ITERATION_THRESHOLD {
+      metrics.slow_sync_count.fetch_add(1, Ordering::Relaxed);
+      warn!(
+        iteration,
+        elapsed_ms = millis(elapsed),
+        "slow sync iteration"
+      );
+    }
   }
 
   /// Worker for periodic remote polling.
-  async fn poll_worker<B: Backend>(backend: Arc<B>, events: Arc<dyn VfsEventHandler>) {
+  ///
+  /// Terminated via `JoinHandle::abort()` when `shutdown()` is called.
+  async fn poll_worker<B: Backend>(
+    backend: Arc<B>,
+    events: Arc<dyn VfsEventHandler>,
+    metrics: Arc<WorkerMetrics>
+  ) {
     let interval = backend.poll_interval();
+    info!(
+      interval_ms = millis(interval),
+      "poll_worker started"
+    );
 
     loop {
       sleep(interval).await;
 
+      let iteration = metrics
+        .poll_iterations
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+      let start = Instant::now();
+
       match backend.poll_remote().await {
         Ok(changes) if !changes.is_empty() => {
           let count = changes.len();
-          debug!(count, "received changes from remote");
+          debug!(count, iteration, "received changes from remote");
 
           if let Err(e) = backend.apply_remote(changes).await {
             warn!(error = %e, "error applying remote changes");
@@ -231,9 +329,28 @@ impl SyncEngine {
           // No changes
         }
         Err(e) => {
-          warn!(error = %e, "remote poll error");
+          warn!(error = %e, iteration, "remote poll error");
           events.on_log(LogLevel::Warn, &format!("poll failed: {e}"));
         }
+      }
+
+      let elapsed = start.elapsed();
+      if elapsed > SLOW_ITERATION_THRESHOLD {
+        metrics.slow_poll_count.fetch_add(1, Ordering::Relaxed);
+        warn!(
+          iteration,
+          elapsed_ms = millis(elapsed),
+          "slow poll iteration"
+        );
+      }
+
+      // Heartbeat: log status every N iterations
+      if iteration % POLL_HEARTBEAT_INTERVAL == 0 {
+        info!(
+          iteration,
+          slow_polls = metrics.slow_poll_count.load(Ordering::Relaxed),
+          "poll_worker heartbeat"
+        );
       }
     }
   }
@@ -1545,5 +1662,105 @@ mod tests {
       events.push_count() > 0,
       "on_push should be called after final sync"
     );
+  }
+
+  /// Regression test: poll_worker with short interval is properly stopped
+  /// on shutdown and does not cause 100% CPU.
+  ///
+  /// Before the fix, poll_worker was an orphaned task with no cancellation
+  /// mechanism, causing busy-wait when the tokio runtime shuts down.
+  #[tokio::test]
+  async fn test_poll_worker_stops_on_shutdown() {
+    eprintln!("[TEST] test_poll_worker_stops_on_shutdown");
+    crate::test_utils::with_timeout("test_poll_worker_stops_on_shutdown", async {
+      let backend = Arc::new(MockBackend {
+        poll_interval_dur: Duration::from_millis(10), // aggressive interval
+        ..MockBackend::new()
+      });
+      let events = Arc::new(TestEventHandler::new());
+
+      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let (engine, handle) = SyncEngine::start(
+        SyncConfig::default(),
+        Arc::clone(&backend),
+        events_dyn
+      );
+
+      // Let poll_worker run and accumulate iterations
+      tokio::time::sleep(Duration::from_millis(100)).await;
+
+      let polls_before = backend.poll_call_count();
+      assert!(polls_before >= 3, "poll_worker should have polled: {polls_before}");
+
+      // Shutdown should stop poll_worker
+      safe_shutdown(&engine).await;
+      safe_join(handle).await;
+
+      // Capture counter immediately after shutdown
+      let polls_at_shutdown = backend.poll_call_count();
+
+      // Wait — if poll_worker is still running, counter will grow
+      tokio::time::sleep(Duration::from_millis(200)).await;
+
+      let polls_after = backend.poll_call_count();
+      assert_eq!(
+        polls_at_shutdown, polls_after,
+        "poll_worker must NOT poll after shutdown: \
+         at_shutdown={polls_at_shutdown}, after_wait={polls_after}"
+      );
+
+      // Verify metrics
+      let metrics = engine.metrics();
+      assert!(
+        metrics.poll_iterations.load(std::sync::atomic::Ordering::Relaxed) >= 3,
+        "metrics should reflect completed iterations"
+      );
+    }).await;
+  }
+
+  /// Regression test: multiple SyncEngines with aggressive poll_interval
+  /// are created and destroyed — no leaked tasks.
+  ///
+  /// Before the fix, each start() left an orphaned poll_worker,
+  /// accumulating background tasks and CPU load.
+  #[tokio::test]
+  async fn test_no_leaked_poll_workers_on_repeated_start_shutdown() {
+    eprintln!("[TEST] test_no_leaked_poll_workers_on_repeated_start_shutdown");
+    crate::test_utils::with_timeout(
+      "test_no_leaked_poll_workers_on_repeated_start_shutdown",
+      async {
+        let backend = Arc::new(MockBackend {
+          poll_interval_dur: Duration::from_millis(5),
+          ..MockBackend::new()
+        });
+
+        // Create and destroy 10 engines in a row
+        for i in 0..10 {
+          let events = Arc::new(TestEventHandler::new());
+          let events_dyn: Arc<dyn crate::events::VfsEventHandler> = events;
+          let (engine, handle) = SyncEngine::start(
+            SyncConfig::default(),
+            Arc::clone(&backend),
+            events_dyn
+          );
+
+          tokio::time::sleep(Duration::from_millis(20)).await;
+          safe_shutdown(&engine).await;
+          safe_join(handle).await;
+          eprintln!("  engine {i} shutdown OK");
+        }
+
+        // Wait — if there are leaked tasks, counter will grow
+        let polls_before = backend.poll_call_count();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let polls_after = backend.poll_call_count();
+
+        assert_eq!(
+          polls_before, polls_after,
+          "no background polls should remain after all engines shut down: \
+           before={polls_before}, after={polls_after}"
+        );
+      }
+    ).await;
   }
 }

@@ -41,7 +41,7 @@ pub use backend::{Backend, InitResult, RemoteChange, SyncResult};
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
 pub use events::{LogLevel, NoopEventHandler, VfsEventHandler};
-pub use sync_engine::{FsEvent, SyncEngine};
+pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
 pub use vfs::OmniFuseVfs;
 
 use std::{path::Path, sync::Arc};
