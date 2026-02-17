@@ -12,13 +12,13 @@ on:
 workflows:
   check:
     tasks:
-      - name: clippy
-      - name: fmt
+      - clippy
+      - fmt
 
   test:
     tasks:
-      - name: unit-tests
-      - name: integration-tests
+      - unit-tests
+      - integration-tests
 
 tasks:
   - name: clippy
