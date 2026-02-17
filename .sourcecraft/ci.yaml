@@ -22,6 +22,8 @@ workflows:
 
 tasks:
   - name: clippy
+    env:
+      RUSTUP_PERMIT_COPY_RENAME: "1"
     cubes:
       - name: run-clippy
         image: rustlang/rust:nightly
@@ -29,6 +31,8 @@ tasks:
           - cargo clippy --workspace -- -D warnings
 
   - name: fmt
+    env:
+      RUSTUP_PERMIT_COPY_RENAME: "1"
     cubes:
       - name: run-fmt
         image: rustlang/rust:nightly
@@ -36,6 +40,8 @@ tasks:
           - cargo fmt --all -- --check
 
   - name: unit-tests
+    env:
+      RUSTUP_PERMIT_COPY_RENAME: "1"
     cubes:
       - name: run-tests
         image: rustlang/rust:nightly
@@ -44,6 +50,8 @@ tasks:
           - cargo test --workspace -- --skip fuse_mount --skip real_api
 
   - name: integration-tests
+    env:
+      RUSTUP_PERMIT_COPY_RENAME: "1"
     cubes:
       - name: run-fuse-tests
         image: rustlang/rust:nightly
