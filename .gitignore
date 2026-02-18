@@ -8,5 +8,5 @@ Cargo.lock
 .vscode/
 node_modules/
 dist/
-.claude/settings.local.json
+.claude/
 .codeassistant/mcp.json

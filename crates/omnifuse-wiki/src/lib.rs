@@ -158,9 +158,7 @@ impl WikiBackend {
       if let Some(children) = &node.children {
         for child in children {
           if depth < self.config.max_depth {
-            count += self
-              .write_tree(child, local_dir, meta_store, depth + 1)
-              .await?;
+            count += self.write_tree(child, local_dir, meta_store, depth + 1).await?;
           }
         }
       }
@@ -170,29 +168,20 @@ impl WikiBackend {
   }
 
   /// Synchronize a single dirty file.
-  async fn sync_file(
-    &self,
-    path: &Path,
-    meta_store: &MetaStore,
-    local_dir: &Path
-  ) -> anyhow::Result<bool> {
+  async fn sync_file(&self, path: &Path, meta_store: &MetaStore, local_dir: &Path) -> anyhow::Result<bool> {
     let Some(slug) = path_to_slug(path, local_dir) else {
       return Ok(false);
     };
 
     // Read local content
-    let local_content = std::fs::read_to_string(path)
-      .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let local_content =
+      std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
 
     // Load base and meta
     let base_content = meta_store.load_base(&slug).unwrap_or_default();
     let Some(page_meta) = meta_store.load_meta(&slug) else {
       // New page — create it
-      let title = slug
-        .rsplit('/')
-        .next()
-        .unwrap_or(&slug)
-        .replace(['-', '_'], " ");
+      let title = slug.rsplit('/').next().unwrap_or(&slug).replace(['-', '_'], " ");
 
       let page = self
         .client
@@ -255,10 +244,7 @@ impl WikiBackend {
       }
       MergeResult::Merged(merged) => {
         // Push merged content
-        let updated = self
-          .client
-          .update_page(page_meta.id, None, Some(&merged), true)
-          .await?;
+        let updated = self.client.update_page(page_meta.id, None, Some(&merged), true).await?;
 
         let new_meta = PageMeta {
           id: updated.id,
@@ -318,17 +304,11 @@ impl Backend for WikiBackend {
 
     match self
       .client
-      .get_page_tree(
-        &self.config.root_slug,
-        self.config.max_pages,
-        self.config.max_depth
-      )
+      .get_page_tree(&self.config.root_slug, self.config.max_pages, self.config.max_depth)
       .await
     {
       Ok(tree) => {
-        let count = self
-          .write_tree(&tree.root, local_dir, meta_store, 0)
-          .await?;
+        let count = self.write_tree(&tree.root, local_dir, meta_store, 0).await?;
         info!(count, "tree loaded");
 
         if count > 0 {
@@ -376,9 +356,7 @@ impl Backend for WikiBackend {
     }
 
     if conflicts.is_empty() {
-      Ok(SyncResult::Success {
-        synced_files: synced
-      })
+      Ok(SyncResult::Success { synced_files: synced })
     } else {
       Ok(SyncResult::Conflict {
         synced_files: synced,
@@ -394,11 +372,7 @@ impl Backend for WikiBackend {
     // Fetch current tree
     let tree = self
       .client
-      .get_page_tree(
-        &self.config.root_slug,
-        self.config.max_pages,
-        self.config.max_depth
-      )
+      .get_page_tree(&self.config.root_slug, self.config.max_pages, self.config.max_depth)
       .await?;
 
     let mut changes = Vec::new();
@@ -451,9 +425,7 @@ impl Backend for WikiBackend {
     // Only .md files
     let is_md = path.extension().is_some_and(|e| e == "md");
     // Exclude .vfs/
-    let is_vfs = path
-      .components()
-      .any(|c| c.as_os_str() == ".vfs");
+    let is_vfs = path.components().any(|c| c.as_os_str() == ".vfs");
 
     is_md && !is_vfs
   }
@@ -463,11 +435,7 @@ impl Backend for WikiBackend {
   }
 
   async fn is_online(&self) -> bool {
-    self
-      .client
-      .get_page_tree(&self.config.root_slug, 1, 0)
-      .await
-      .is_ok()
+    self.client.get_page_tree(&self.config.root_slug, 1, 0).await.is_ok()
   }
 
   fn name(&self) -> &'static str {
@@ -516,10 +484,7 @@ impl WikiBackend {
     // Recurse into children
     if let Some(children) = &node.children {
       for child in children {
-        Box::pin(Self::collect_changes(
-          child, meta_store, local_dir, client, changes
-        ))
-        .await;
+        Box::pin(Self::collect_changes(child, meta_store, local_dir, client, changes)).await;
       }
     }
   }

@@ -119,6 +119,12 @@ impl FileBuffer {
     *mtime = SystemTime::now();
   }
 
+  /// Update mtime to the given value (used after flush to sync with disk).
+  pub async fn sync_mtime(&self, mtime: SystemTime) {
+    let mut m = self.mtime.write().await;
+    *m = mtime;
+  }
+
   /// Whether the buffer has been modified (pending flush).
   #[must_use]
   pub fn is_dirty(&self) -> bool {
@@ -183,12 +189,7 @@ impl FileBufferManager {
   }
 
   /// Add a file to the cache with the specified modification time.
-  pub async fn cache_with_mtime(
-    &self,
-    path: &Path,
-    content: Vec<u8>,
-    mtime: SystemTime
-  ) -> Arc<FileBuffer> {
+  pub async fn cache_with_mtime(&self, path: &Path, content: Vec<u8>, mtime: SystemTime) -> Arc<FileBuffer> {
     let size = content.len();
 
     // Evict old buffers if needed
@@ -307,9 +308,7 @@ impl FileBufferManager {
         self.buffers.remove(&oldest);
         self
           .memory_usage
-          .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
-            Some(cur.saturating_sub(size))
-          })
+          .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| Some(cur.saturating_sub(size)))
           .ok();
 
         debug!(path = %oldest.display(), size, "buffer evicted");
@@ -323,9 +322,7 @@ impl FileBufferManager {
       let size = buffer.size() as usize;
       self
         .memory_usage
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
-          Some(cur.saturating_sub(size))
-        })
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| Some(cur.saturating_sub(size)))
         .ok();
 
       let mut lru = self.lru_order.write().await;
@@ -366,6 +363,14 @@ impl FileBufferManager {
     tokio::fs::write(path, &content).await?;
     buffer.mark_clean();
 
+    // Sync cached mtime with disk so get_or_load won't treat the file as
+    // externally modified and reload it on the next access.
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+      if let Ok(disk_mtime) = meta.modified() {
+        buffer.sync_mtime(disk_mtime).await;
+      }
+    }
+
     debug!(path = %path.display(), size = content.len(), "buffer flushed to disk");
 
     Ok(())
@@ -383,6 +388,12 @@ impl FileBufferManager {
       let content = buffer.content().await;
       tokio::fs::write(&buffer.path, &content).await?;
       buffer.mark_clean();
+
+      if let Ok(meta) = tokio::fs::metadata(&buffer.path).await {
+        if let Ok(disk_mtime) = meta.modified() {
+          buffer.sync_mtime(disk_mtime).await;
+        }
+      }
 
       debug!(path = %buffer.path.display(), size = content.len(), "buffer flushed");
     }
@@ -524,7 +535,7 @@ mod tests {
     // LRU evicts old buffers when memory limit is exceeded
     let config = BufferConfig {
       max_memory_mb: 0, // 0 MB, but min = 1 buffer
-      lru_eviction_enabled: true,
+      lru_eviction_enabled: true
     };
     // max_memory_bytes() = 0, so each cache call triggers eviction
     let manager = FileBufferManager::new(config);
@@ -548,7 +559,7 @@ mod tests {
     // Dirty buffers are not evicted during LRU eviction
     let config = BufferConfig {
       max_memory_mb: 0,
-      lru_eviction_enabled: true,
+      lru_eviction_enabled: true
     };
     let manager = FileBufferManager::new(config);
 
@@ -653,10 +664,7 @@ mod tests {
   async fn test_concurrent_writes_to_same_buffer() {
     eprintln!("[TEST] test_concurrent_writes_to_same_buffer");
     // 10 tokio tasks with 50 writes each to one buffer — no panic/deadlock
-    let buffer = Arc::new(FileBuffer::new(
-      PathBuf::from("/test/concurrent.txt"),
-      vec![0u8; 1024]
-    ));
+    let buffer = Arc::new(FileBuffer::new(PathBuf::from("/test/concurrent.txt"), vec![0u8; 1024]));
 
     let mut handles = Vec::new();
     for task_id in 0..10u8 {
@@ -670,19 +678,14 @@ mod tests {
     }
 
     // Wait for all tasks with timeout (deadlock protection)
-    let result = tokio::time::timeout(
-      crate::test_utils::TEST_TIMEOUT,
-      async {
-        for h in handles {
-          h.await.expect("join");
-        }
+    let result = tokio::time::timeout(crate::test_utils::TEST_TIMEOUT, async {
+      for h in handles {
+        h.await.expect("join");
       }
-    ).await;
+    })
+    .await;
 
-    assert!(
-      result.is_ok(),
-      "concurrent writes should not cause deadlock"
-    );
+    assert!(result.is_ok(), "concurrent writes should not cause deadlock");
 
     // Verify buffer is not corrupted — size >= 1024
     assert!(
@@ -755,7 +758,9 @@ mod tests {
 
     // External process updates file on disk
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    tokio::fs::write(&path, b"disk_v2_external").await.expect("write disk_v2");
+    tokio::fs::write(&path, b"disk_v2_external")
+      .await
+      .expect("write disk_v2");
 
     // Repeated get_or_load should NOT overwrite dirty buffer
     let reloaded = manager.get_or_load(&path).await.expect("get_or_load 2");

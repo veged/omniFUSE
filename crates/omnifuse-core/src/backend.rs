@@ -26,17 +26,12 @@ pub trait Backend: Send + Sync + 'static {
   fn sync(&self, dirty_files: &[PathBuf]) -> impl Future<Output = anyhow::Result<SyncResult>> + Send;
 
   /// Check remote for changes (periodic poll).
-  fn poll_remote(
-    &self
-  ) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send;
+  fn poll_remote(&self) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send;
 
   /// Apply remote changes to the local directory.
   ///
   /// Does NOT overwrite dirty files (`SyncEngine` checks for that).
-  fn apply_remote(
-    &self,
-    changes: Vec<RemoteChange>
-  ) -> impl Future<Output = anyhow::Result<()>> + Send;
+  fn apply_remote(&self, changes: Vec<RemoteChange>) -> impl Future<Output = anyhow::Result<()>> + Send;
 
   /// Should this file be synchronized with remote?
   ///

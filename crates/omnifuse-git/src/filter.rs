@@ -41,18 +41,16 @@ impl GitignoreFilter {
   #[must_use]
   pub fn is_ignored(&self, path: &Path) -> bool {
     let is_dir = path.is_dir();
-    self
-      .gitignore
-      .matched(path, is_dir)
-      .is_ignore()
+    self.gitignore.matched(path, is_dir).is_ignore()
   }
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-  use super::*;
   use std::path::PathBuf;
+
+  use super::*;
 
   #[test]
   fn test_empty_filter() {
@@ -98,10 +96,7 @@ mod tests {
     std::fs::write(path.join("build/output.js"), "data").expect("write file");
 
     let filter = GitignoreFilter::new(path);
-    assert!(
-      filter.is_ignored(&path.join("build")),
-      "build/ should be ignored"
-    );
+    assert!(filter.is_ignored(&path.join("build")), "build/ should be ignored");
   }
 
   /// macOS system files in gitignore.
@@ -112,9 +107,18 @@ mod tests {
     std::fs::write(path.join(".gitignore"), ".DS_Store\n._*\n").expect("write");
 
     let filter = GitignoreFilter::new(path);
-    assert!(filter.is_ignored(&path.join(".DS_Store")), ".DS_Store should be ignored");
-    assert!(filter.is_ignored(&path.join("._test.txt")), "._test.txt should be ignored");
-    assert!(!filter.is_ignored(&path.join("normal.txt")), "normal.txt should not be ignored");
+    assert!(
+      filter.is_ignored(&path.join(".DS_Store")),
+      ".DS_Store should be ignored"
+    );
+    assert!(
+      filter.is_ignored(&path.join("._test.txt")),
+      "._test.txt should be ignored"
+    );
+    assert!(
+      !filter.is_ignored(&path.join("normal.txt")),
+      "normal.txt should not be ignored"
+    );
   }
 
   /// Editor temporary files in gitignore.
@@ -127,7 +131,10 @@ mod tests {
     let filter = GitignoreFilter::new(path);
     assert!(filter.is_ignored(&path.join(".file.swp")), ".swp should be ignored");
     assert!(filter.is_ignored(&path.join("file.txt~")), "backup~ should be ignored");
-    assert!(!filter.is_ignored(&path.join("file.txt")), "file.txt should not be ignored");
+    assert!(
+      !filter.is_ignored(&path.join("file.txt")),
+      "file.txt should not be ignored"
+    );
   }
 
   /// Multiple patterns in gitignore.
@@ -141,10 +148,16 @@ mod tests {
     std::fs::create_dir(path.join("target")).expect("mkdir");
 
     let filter = GitignoreFilter::new(path);
-    assert!(filter.is_ignored(&path.join("debug.log")), "debug.log should be ignored");
+    assert!(
+      filter.is_ignored(&path.join("debug.log")),
+      "debug.log should be ignored"
+    );
     assert!(filter.is_ignored(&path.join("temp.tmp")), "temp.tmp should be ignored");
     assert!(filter.is_ignored(&path.join("target")), "target/ should be ignored");
-    assert!(!filter.is_ignored(&path.join("src/main.rs")), "main.rs should not be ignored");
+    assert!(
+      !filter.is_ignored(&path.join("src/main.rs")),
+      "main.rs should not be ignored"
+    );
   }
 
   /// .git (directory) — hidden (filtered), .gitignore — NOT hidden.

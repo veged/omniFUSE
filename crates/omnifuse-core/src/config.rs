@@ -183,8 +183,9 @@ impl Default for LoggingConfig {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-  use super::*;
   use std::time::Duration;
+
+  use super::*;
 
   #[test]
   fn test_sync_config_defaults() {
@@ -346,9 +347,6 @@ mod tests {
 
     // Logging
     assert_eq!(restored.logging.level, "debug");
-    assert_eq!(
-      restored.logging.log_file,
-      Some(PathBuf::from("/var/log/omnifuse.log"))
-    );
+    assert_eq!(restored.logging.log_file, Some(PathBuf::from("/var/log/omnifuse.log")));
   }
 }

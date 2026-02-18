@@ -7,9 +7,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tracing::{debug, error, trace};
 
 use crate::models::{
-  AsyncOperationStatusSchema, Collection, CreatePageSchema, ErrorResponse, MoveCluster,
-  MoveClusterRequest, OperationCreatedSchema, PageFullDetailsSchema, PageSchema,
-  PageTreeResponseSchema, PageUpdateSchema, Status
+  AsyncOperationStatusSchema, Collection, CreatePageSchema, ErrorResponse, MoveCluster, MoveClusterRequest,
+  OperationCreatedSchema, PageFullDetailsSchema, PageSchema, PageTreeResponseSchema, PageUpdateSchema, Status
 };
 
 /// Wiki API HTTP client.
@@ -37,16 +36,12 @@ impl Client {
     let mut h = HeaderMap::new();
     h.insert(
       AUTHORIZATION,
-      HeaderValue::from_str(&format!("Bearer {auth_token}"))
-        .map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
+      HeaderValue::from_str(&format!("Bearer {auth_token}")).map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
     );
     h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     Ok(Self {
-      c: reqwest::Client::builder()
-        .default_headers(h)
-        .no_proxy()
-        .build()?,
+      c: reqwest::Client::builder().default_headers(h).no_proxy().build()?,
       base: base_url.trim_end_matches('/').to_string()
     })
   }
@@ -143,11 +138,7 @@ impl Client {
   /// Returns a network/HTTP error.
   pub async fn delete_page(&self, idx: u64) -> anyhow::Result<()> {
     self
-      .send_ok(
-        self
-          .c
-          .delete(format!("{}/api/v2/public/pages/{idx}", self.base))
-      )
+      .send_ok(self.c.delete(format!("{}/api/v2/public/pages/{idx}", self.base)))
       .await
   }
 
@@ -163,10 +154,7 @@ impl Client {
     loop {
       let mut r = self
         .c
-        .get(format!(
-          "{}/api/v2/public/pages/{idx}/descendants",
-          self.base
-        ))
+        .get(format!("{}/api/v2/public/pages/{idx}/descendants", self.base))
         .query(&[("page_size", 100u32)]);
 
       if let Some(c) = cursor.as_deref() {
@@ -197,17 +185,12 @@ impl Client {
     max_depth: u32
   ) -> anyhow::Result<PageTreeResponseSchema> {
     self
-      .get_json(
-        self
-          .c
-          .get(format!("{}/api/v2/public/pages/tree", self.base))
-          .query(&[
-            ("slug", slug),
-            ("order_by", "modified_at"),
-            ("max_pages", &max_pages.to_string()),
-            ("max_depth", &max_depth.to_string())
-          ])
-      )
+      .get_json(self.c.get(format!("{}/api/v2/public/pages/tree", self.base)).query(&[
+        ("slug", slug),
+        ("order_by", "modified_at"),
+        ("max_pages", &max_pages.to_string()),
+        ("max_depth", &max_depth.to_string())
+      ]))
       .await
   }
 
@@ -216,11 +199,7 @@ impl Client {
   /// # Errors
   ///
   /// Returns a network/HTTP/deserialization error.
-  pub async fn move_cluster(
-    &self,
-    source: &str,
-    target: &str
-  ) -> anyhow::Result<OperationCreatedSchema> {
+  pub async fn move_cluster(&self, source: &str, target: &str) -> anyhow::Result<OperationCreatedSchema> {
     self
       .get_json(
         self
@@ -243,11 +222,7 @@ impl Client {
   /// # Errors
   ///
   /// Returns a network/HTTP/deserialization error.
-  pub async fn poll_status_url(
-    &self,
-    url: &str,
-    timeout: std::time::Duration
-  ) -> anyhow::Result<Status> {
+  pub async fn poll_status_url(&self, url: &str, timeout: std::time::Duration) -> anyhow::Result<Status> {
     let url = if url.starts_with("http://") || url.starts_with("https://") {
       url.to_string()
     } else if url.starts_with('/') {
@@ -275,10 +250,7 @@ impl Client {
   }
 
   /// Execute a request and deserialize the JSON response.
-  async fn get_json<T: serde::de::DeserializeOwned>(
-    &self,
-    r: reqwest::RequestBuilder
-  ) -> anyhow::Result<T> {
+  async fn get_json<T: serde::de::DeserializeOwned>(&self, r: reqwest::RequestBuilder) -> anyhow::Result<T> {
     let rq = r
       .try_clone()
       .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
@@ -304,8 +276,7 @@ impl Client {
     }
 
     if st.is_success() {
-      return serde_json::from_str(&txt)
-        .map_err(|e| anyhow::anyhow!("deserialization ({st}): {e}"));
+      return serde_json::from_str(&txt).map_err(|e| anyhow::anyhow!("deserialization ({st}): {e}"));
     }
 
     let e: Option<ErrorResponse> = serde_json::from_str(&txt).ok();
@@ -350,12 +321,7 @@ impl Client {
   ) -> anyhow::Result<T> {
     let error_code = e.map(|x| x.error_code.as_str());
 
-    error!(
-      status,
-      error_code,
-      ms = elapsed_ms,
-      "wiki error"
-    );
+    error!(status, error_code, ms = elapsed_ms, "wiki error");
 
     if status == 404 {
       anyhow::bail!("page not found");

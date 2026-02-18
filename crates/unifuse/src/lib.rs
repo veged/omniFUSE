@@ -80,20 +80,12 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
   }
 
   /// Look up a file in a directory by name.
-  fn lookup(
-    &self,
-    parent: &Path,
-    name: &OsStr
-  ) -> impl Future<Output = Result<FileAttr, FsError>> + Send;
+  fn lookup(&self, parent: &Path, name: &OsStr) -> impl Future<Output = Result<FileAttr, FsError>> + Send;
 
   // --- File operations ---
 
   /// Open a file.
-  fn open(
-    &self,
-    path: &Path,
-    flags: OpenFlags
-  ) -> impl Future<Output = Result<FileHandle, FsError>> + Send;
+  fn open(&self, path: &Path, flags: OpenFlags) -> impl Future<Output = Result<FileHandle, FsError>> + Send;
 
   /// Create and open a file.
   fn create(
@@ -126,28 +118,15 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
   }
 
   /// Flush file buffers.
-  fn flush(
-    &self,
-    _path: &Path,
-    _fh: FileHandle
-  ) -> impl Future<Output = Result<(), FsError>> + Send {
+  fn flush(&self, _path: &Path, _fh: FileHandle) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Ok(()) }
   }
 
   /// Close a file.
-  fn release(
-    &self,
-    path: &Path,
-    fh: FileHandle
-  ) -> impl Future<Output = Result<(), FsError>> + Send;
+  fn release(&self, path: &Path, fh: FileHandle) -> impl Future<Output = Result<(), FsError>> + Send;
 
   /// Sync a file to disk.
-  fn fsync(
-    &self,
-    _path: &Path,
-    _fh: FileHandle,
-    _datasync: bool
-  ) -> impl Future<Output = Result<(), FsError>> + Send {
+  fn fsync(&self, _path: &Path, _fh: FileHandle, _datasync: bool) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Ok(()) }
   }
 
@@ -157,11 +136,7 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
   fn readdir(&self, path: &Path) -> impl Future<Output = Result<Vec<DirEntry>, FsError>> + Send;
 
   /// Create a directory.
-  fn mkdir(
-    &self,
-    _path: &Path,
-    _mode: u32
-  ) -> impl Future<Output = Result<FileAttr, FsError>> + Send {
+  fn mkdir(&self, _path: &Path, _mode: u32) -> impl Future<Output = Result<FileAttr, FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
@@ -178,23 +153,14 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
   }
 
   /// Rename a file or directory.
-  fn rename(
-    &self,
-    _from: &Path,
-    _to: &Path,
-    _flags: u32
-  ) -> impl Future<Output = Result<(), FsError>> + Send {
+  fn rename(&self, _from: &Path, _to: &Path, _flags: u32) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
   // --- Symbolic links ---
 
   /// Create a symbolic link.
-  fn symlink(
-    &self,
-    _target: &Path,
-    _link: &Path
-  ) -> impl Future<Output = Result<FileAttr, FsError>> + Send {
+  fn symlink(&self, _target: &Path, _link: &Path) -> impl Future<Output = Result<FileAttr, FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
@@ -217,28 +183,17 @@ pub trait UniFuseFilesystem: Send + Sync + 'static {
   }
 
   /// Get an extended attribute.
-  fn getxattr(
-    &self,
-    _path: &Path,
-    _name: &OsStr
-  ) -> impl Future<Output = Result<Vec<u8>, FsError>> + Send {
+  fn getxattr(&self, _path: &Path, _name: &OsStr) -> impl Future<Output = Result<Vec<u8>, FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
   /// List extended attributes.
-  fn listxattr(
-    &self,
-    _path: &Path
-  ) -> impl Future<Output = Result<Vec<std::ffi::OsString>, FsError>> + Send {
+  fn listxattr(&self, _path: &Path) -> impl Future<Output = Result<Vec<std::ffi::OsString>, FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
   /// Remove an extended attribute.
-  fn removexattr(
-    &self,
-    _path: &Path,
-    _name: &OsStr
-  ) -> impl Future<Output = Result<(), FsError>> + Send {
+  fn removexattr(&self, _path: &Path, _name: &OsStr) -> impl Future<Output = Result<(), FsError>> + Send {
     async { Err(FsError::NotSupported) }
   }
 
@@ -320,8 +275,8 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
   /// Returns an error if mounting fails.
   #[cfg(windows)]
   pub async fn mount(&self, mountpoint: &Path, options: &MountOptions) -> Result<(), FsError> {
-    use winfsp_adapter::WinfspAdapter;
     use winfsp::host::{FileSystemHost, VolumeParams};
+    use winfsp_adapter::WinfspAdapter;
 
     let rt = tokio::runtime::Handle::current();
     let adapter = WinfspAdapter::new(Arc::clone(&self.fs), rt);
@@ -368,8 +323,7 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
     }
     #[cfg(target_os = "macos")]
     {
-      Path::new("/Library/Filesystems/macfuse.fs").exists()
-        || Path::new("/usr/local/lib/libfuse.dylib").exists()
+      Path::new("/Library/Filesystems/macfuse.fs").exists() || Path::new("/usr/local/lib/libfuse.dylib").exists()
     }
     #[cfg(windows)]
     {

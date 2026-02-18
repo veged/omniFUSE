@@ -100,9 +100,7 @@ fn init_tracing(verbose: u8) {
   };
 
   tracing_subscriber::fmt()
-    .with_env_filter(
-      EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter))
-    )
+    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
     .compact()
     .init();
 }
@@ -206,8 +204,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
         max_pages: 500
       };
 
-      let wiki_backend =
-        omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
+      let wiki_backend = omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
 
       let mount_config = omnifuse_core::MountConfig {
         mount_point: mountpoint.clone(),

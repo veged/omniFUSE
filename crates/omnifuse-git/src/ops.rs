@@ -227,10 +227,7 @@ mod tests {
       .await
       .expect("git log");
     let message = String::from_utf8_lossy(&output.stdout);
-    assert!(
-      message.contains("[auto]"),
-      "message should contain [auto]: {message}"
-    );
+    assert!(message.contains("[auto]"), "message should contain [auto]: {message}");
     assert!(
       message.contains("1 file(s) changed"),
       "message should indicate file count: {message}"
@@ -249,7 +246,9 @@ mod tests {
       ops.commit_changes(&[file], "push test").await.expect("commit");
 
       ops.push_with_retry(3).await.expect("push_with_retry");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   #[tokio::test]
@@ -269,10 +268,7 @@ mod tests {
       // clone2 commits a change (to a different file, no conflict)
       let file2 = clone2.join("from_clone2.txt");
       tokio::fs::write(&file2, "data from clone2").await.expect("write");
-      ops2
-        .commit_changes(&[file2], "from clone2")
-        .await
-        .expect("commit2");
+      ops2.commit_changes(&[file2], "from clone2").await.expect("commit2");
 
       // push_with_retry should: push — rejected — pull — retry — success
       ops2.push_with_retry(3).await.expect("push_with_retry");
@@ -282,7 +278,9 @@ mod tests {
         clone2.join("from_clone1.txt").exists(),
         "file from clone1 should exist after retry"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   #[tokio::test]
@@ -293,11 +291,10 @@ mod tests {
       let ops = GitOps::new(clone1, "main".to_string()).expect("ops");
 
       let result = ops.startup_sync().await.expect("startup_sync");
-      assert!(
-        matches!(result, StartupSyncResult::UpToDate),
-        "clean repo: {result:?}"
-      );
-    }).await.expect("test timed out — possible deadlock");
+      assert!(matches!(result, StartupSyncResult::UpToDate), "clean repo: {result:?}");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Full commit_changes flow: create file — commit_changes — git log shows the commit.
@@ -384,10 +381,7 @@ mod tests {
     let message = String::from_utf8_lossy(&output.stdout);
     let message = message.trim();
 
-    assert!(
-      message.contains("[auto]"),
-      "message should contain '[auto]': {message}"
-    );
+    assert!(message.contains("[auto]"), "message should contain '[auto]': {message}");
     assert!(
       message.contains("3 file(s) changed"),
       "message should contain '3 file(s) changed': {message}"
@@ -483,7 +477,9 @@ mod tests {
         log_line.contains("full cycle"),
         "commit should be in bare repo: {log_line}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Bare + clone1. File is added in clone1, commit, push.
@@ -498,8 +494,13 @@ mod tests {
       // Add a file to clone1, commit, push
       let ops1 = GitOps::new(clone1.clone(), "main".to_string()).expect("ops1");
       let file = clone1.join("synced_file.txt");
-      tokio::fs::write(&file, "content for synchronization").await.expect("write");
-      ops1.commit_changes(&[file], "add synced_file.txt").await.expect("commit");
+      tokio::fs::write(&file, "content for synchronization")
+        .await
+        .expect("write");
+      ops1
+        .commit_changes(&[file], "add synced_file.txt")
+        .await
+        .expect("commit");
       ops1.push_with_retry(1).await.expect("push");
 
       // Create a new clone (clone3) from bare
@@ -530,7 +531,10 @@ mod tests {
       let ops3 = GitOps::new(clone3_path.clone(), "main".to_string()).expect("ops3");
       let result = ops3.startup_sync().await.expect("startup_sync");
       assert!(
-        matches!(result, StartupSyncResult::UpToDate | StartupSyncResult::Updated | StartupSyncResult::Merged),
+        matches!(
+          result,
+          StartupSyncResult::UpToDate | StartupSyncResult::Updated | StartupSyncResult::Merged
+        ),
         "startup_sync should be UpToDate/Updated/Merged: {result:?}"
       );
 
@@ -539,7 +543,9 @@ mod tests {
         clone3_path.join("synced_file.txt").exists(),
         "synced_file.txt should be in the new clone after startup_sync"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Create 3 files, commit_changes with all three — one commit.
@@ -593,7 +599,8 @@ mod tests {
     assert_eq!(
       after_count - before_count,
       1,
-      "should be exactly 1 new commit, not {}", after_count - before_count
+      "should be exactly 1 new commit, not {}",
+      after_count - before_count
     );
 
     // Verify the latest commit message

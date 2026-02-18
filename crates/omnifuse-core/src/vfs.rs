@@ -19,11 +19,7 @@ use tokio::sync::mpsc;
 use unifuse::{DirEntry, FileAttr, FileHandle, FileType, FsError, OpenFlags, StatFs};
 
 use crate::{
-  backend::Backend,
-  buffer::FileBufferManager,
-  config::BufferConfig,
-  events::VfsEventHandler,
-  sync_engine::FsEvent
+  backend::Backend, buffer::FileBufferManager, config::BufferConfig, events::VfsEventHandler, sync_engine::FsEvent
 };
 
 /// `OmniFuse` filesystem core.
@@ -172,9 +168,7 @@ const fn unix_gid(_meta: &std::fs::Metadata) -> u32 {
 impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   async fn getattr(&self, path: &Path) -> Result<FileAttr, FsError> {
     let full_path = self.full_path(path);
-    let meta = tokio::fs::symlink_metadata(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
     Ok(metadata_to_attr(&meta))
   }
 
@@ -216,9 +210,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
       set_mode_unix(&full_path, mode_val)?;
     }
 
-    let meta = tokio::fs::symlink_metadata(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
     Ok(metadata_to_attr(&meta))
   }
 
@@ -237,27 +229,16 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     let full_path = self.full_path(path);
 
     // Load file into buffer
-    self
-      .buffer_manager
-      .get_or_load(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
 
     Ok(self.alloc_fh())
   }
 
-  async fn create(
-    &self,
-    path: &Path,
-    _flags: OpenFlags,
-    mode: u32
-  ) -> Result<(FileHandle, FileAttr), FsError> {
+  async fn create(&self, path: &Path, _flags: OpenFlags, mode: u32) -> Result<(FileHandle, FileAttr), FsError> {
     let full_path = self.full_path(path);
 
     // Create file
-    tokio::fs::write(&full_path, b"")
-      .await
-      .map_err(FsError::Io)?;
+    tokio::fs::write(&full_path, b"").await.map_err(FsError::Io)?;
 
     #[cfg(unix)]
     set_mode_unix(&full_path, mode)?;
@@ -268,45 +249,23 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     self.send_event(FsEvent::FileModified(path.to_path_buf()));
     self.events.on_file_created(path);
 
-    let meta = tokio::fs::symlink_metadata(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
 
     Ok((self.alloc_fh(), metadata_to_attr(&meta)))
   }
 
-  async fn read(
-    &self,
-    path: &Path,
-    _fh: FileHandle,
-    offset: u64,
-    size: u32
-  ) -> Result<Vec<u8>, FsError> {
+  async fn read(&self, path: &Path, _fh: FileHandle, offset: u64, size: u32) -> Result<Vec<u8>, FsError> {
     let full_path = self.full_path(path);
 
-    let buffer = self
-      .buffer_manager
-      .get_or_load(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let buffer = self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
 
     Ok(buffer.read(offset, size).await)
   }
 
-  async fn write(
-    &self,
-    path: &Path,
-    _fh: FileHandle,
-    offset: u64,
-    data: &[u8]
-  ) -> Result<u32, FsError> {
+  async fn write(&self, path: &Path, _fh: FileHandle, offset: u64, data: &[u8]) -> Result<u32, FsError> {
     let full_path = self.full_path(path);
 
-    let buffer = self
-      .buffer_manager
-      .get_or_load(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let buffer = self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
 
     let written = buffer.write(offset, data).await;
 
@@ -320,22 +279,14 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
   async fn flush(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
     let full_path = self.full_path(path);
-    self
-      .buffer_manager
-      .flush(&full_path)
-      .await
-      .map_err(FsError::Io)
+    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)
   }
 
   async fn release(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
     let full_path = self.full_path(path);
 
     // Flush to disk
-    self
-      .buffer_manager
-      .flush(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
 
     // Notify sync engine
     self.send_event(FsEvent::FileClosed(path.to_path_buf()));
@@ -343,27 +294,16 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     Ok(())
   }
 
-  async fn fsync(
-    &self,
-    path: &Path,
-    _fh: FileHandle,
-    _datasync: bool
-  ) -> Result<(), FsError> {
+  async fn fsync(&self, path: &Path, _fh: FileHandle, _datasync: bool) -> Result<(), FsError> {
     let full_path = self.full_path(path);
-    self
-      .buffer_manager
-      .flush(&full_path)
-      .await
-      .map_err(FsError::Io)
+    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)
   }
 
   async fn readdir(&self, path: &Path) -> Result<Vec<DirEntry>, FsError> {
     let full_path = self.full_path(path);
     let mut entries = Vec::new();
 
-    let mut read_dir = tokio::fs::read_dir(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let mut read_dir = tokio::fs::read_dir(&full_path).await.map_err(FsError::Io)?;
 
     while let Some(entry) = read_dir.next_entry().await.map_err(FsError::Io)? {
       // Hide .git, .vfs
@@ -392,24 +332,18 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   async fn mkdir(&self, path: &Path, mode: u32) -> Result<FileAttr, FsError> {
     let full_path = self.full_path(path);
 
-    tokio::fs::create_dir(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    tokio::fs::create_dir(&full_path).await.map_err(FsError::Io)?;
 
     #[cfg(unix)]
     set_mode_unix(&full_path, mode)?;
 
-    let meta = tokio::fs::symlink_metadata(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
     Ok(metadata_to_attr(&meta))
   }
 
   async fn rmdir(&self, path: &Path) -> Result<(), FsError> {
     let full_path = self.full_path(path);
-    tokio::fs::remove_dir(&full_path)
-      .await
-      .map_err(FsError::Io)
+    tokio::fs::remove_dir(&full_path).await.map_err(FsError::Io)
   }
 
   async fn unlink(&self, path: &Path) -> Result<(), FsError> {
@@ -418,9 +352,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     // Remove from buffer
     self.buffer_manager.remove(&full_path).await;
 
-    tokio::fs::remove_file(&full_path)
-      .await
-      .map_err(FsError::Io)?;
+    tokio::fs::remove_file(&full_path).await.map_err(FsError::Io)?;
 
     self.send_event(FsEvent::FileModified(path.to_path_buf()));
     self.events.on_file_deleted(path);
@@ -432,9 +364,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     let full_from = self.full_path(from);
     let full_to = self.full_path(to);
 
-    tokio::fs::rename(&full_from, &full_to)
-      .await
-      .map_err(FsError::Io)?;
+    tokio::fs::rename(&full_from, &full_to).await.map_err(FsError::Io)?;
 
     // Update buffer
     self.buffer_manager.remove(&full_from).await;
@@ -450,16 +380,12 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     let full_link = self.full_path(link);
 
     #[cfg(unix)]
-    tokio::fs::symlink(target, &full_link)
-      .await
-      .map_err(FsError::Io)?;
+    tokio::fs::symlink(target, &full_link).await.map_err(FsError::Io)?;
 
     #[cfg(not(unix))]
     return Err(FsError::NotSupported);
 
-    let meta = tokio::fs::symlink_metadata(&full_link)
-      .await
-      .map_err(FsError::Io)?;
+    let meta = tokio::fs::symlink_metadata(&full_link).await.map_err(FsError::Io)?;
 
     self.send_event(FsEvent::FileModified(link.to_path_buf()));
     Ok(metadata_to_attr(&meta))
@@ -467,9 +393,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
   async fn readlink(&self, path: &Path) -> Result<PathBuf, FsError> {
     let full_path = self.full_path(path);
-    tokio::fs::read_link(&full_path)
-      .await
-      .map_err(FsError::Io)
+    tokio::fs::read_link(&full_path).await.map_err(FsError::Io)
   }
 
   async fn statfs(&self, _path: &Path) -> Result<StatFs, FsError> {
@@ -492,25 +416,13 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   }
 
   #[cfg(unix)]
-  async fn setxattr(
-    &self,
-    path: &Path,
-    name: &OsStr,
-    value: &[u8],
-    _flags: i32
-  ) -> Result<(), FsError> {
+  async fn setxattr(&self, path: &Path, name: &OsStr, value: &[u8], _flags: i32) -> Result<(), FsError> {
     let full_path = self.full_path(path);
     xattr::set(&full_path, name, value).map_err(FsError::Io)
   }
 
   #[cfg(not(unix))]
-  async fn setxattr(
-    &self,
-    _path: &Path,
-    _name: &OsStr,
-    _value: &[u8],
-    _flags: i32
-  ) -> Result<(), FsError> {
+  async fn setxattr(&self, _path: &Path, _name: &OsStr, _value: &[u8], _flags: i32) -> Result<(), FsError> {
     Err(FsError::NotSupported)
   }
 
@@ -530,9 +442,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   #[cfg(unix)]
   async fn listxattr(&self, path: &Path) -> Result<Vec<std::ffi::OsString>, FsError> {
     let full_path = self.full_path(path);
-    let attrs: Vec<_> = xattr::list(&full_path)
-      .map_err(FsError::Io)?
-      .collect();
+    let attrs: Vec<_> = xattr::list(&full_path).map_err(FsError::Io)?.collect();
     Ok(attrs)
   }
 
@@ -555,11 +465,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
 /// Set file times (Unix) via `filetime`.
 #[cfg(unix)]
-fn set_times_unix(
-  path: &Path,
-  atime: Option<SystemTime>,
-  mtime: Option<SystemTime>
-) -> Result<(), FsError> {
+fn set_times_unix(path: &Path, atime: Option<SystemTime>, mtime: Option<SystemTime>) -> Result<(), FsError> {
   use std::fs;
 
   // Use std::fs to set mtime (supported via set_modified)
@@ -588,6 +494,7 @@ fn set_mode_unix(path: &Path, mode: u32) -> Result<(), FsError> {
 
 /// Get statfs (Unix).
 #[cfg(unix)]
+#[allow(clippy::useless_conversion)] // statvfs fields are u32 on macOS, u64 on Linux
 fn statfs_unix(path: &Path) -> Result<StatFs, FsError> {
   let stat = nix::sys::statvfs::statvfs(path).map_err(|e| FsError::Other(e.to_string()))?;
 
@@ -607,15 +514,13 @@ fn statfs_unix(path: &Path) -> Result<StatFs, FsError> {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-  use super::*;
-  use crate::{
-    config::BufferConfig,
-    sync_engine::FsEvent,
-    test_utils::MockBackend
-  };
   use std::{ffi::OsStr, path::Path, sync::Arc};
+
   use tokio::sync::mpsc;
   use unifuse::UniFuseFilesystem;
+
+  use super::*;
+  use crate::{config::BufferConfig, sync_engine::FsEvent, test_utils::MockBackend};
 
   /// Helper: create VFS with MockBackend and tempdir.
   fn create_test_vfs(
@@ -623,15 +528,8 @@ mod tests {
     backend: Arc<MockBackend>
   ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>) {
     let (tx, rx) = mpsc::channel(256);
-    let events: Arc<dyn crate::events::VfsEventHandler> =
-      Arc::new(crate::events::NoopEventHandler);
-    let vfs = OmniFuseVfs::new(
-      dir.to_path_buf(),
-      tx,
-      backend,
-      events,
-      BufferConfig::default()
-    );
+    let events: Arc<dyn crate::events::VfsEventHandler> = Arc::new(crate::events::NoopEventHandler);
+    let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx, backend, events, BufferConfig::default());
     (vfs, rx)
   }
 
@@ -687,12 +585,17 @@ mod tests {
   async fn test_lookup_existing() {
     eprintln!("[TEST] test_lookup_existing");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("child.txt"), "data").await.expect("write");
+    tokio::fs::write(tmp.path().join("child.txt"), "data")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let attr = vfs.lookup(Path::new(""), OsStr::new("child.txt")).await.expect("lookup");
+    let attr = vfs
+      .lookup(Path::new(""), OsStr::new("child.txt"))
+      .await
+      .expect("lookup");
     assert_eq!(attr.kind, FileType::RegularFile);
   }
 
@@ -732,10 +635,7 @@ mod tests {
     assert_eq!(written, 11);
 
     // read
-    let data = vfs
-      .read(Path::new("new.txt"), fh, 0, 100)
-      .await
-      .expect("read");
+    let data = vfs.read(Path::new("new.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"hello world");
   }
 
@@ -743,12 +643,17 @@ mod tests {
   async fn test_write_extends_file() {
     eprintln!("[TEST] test_write_extends_file");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("small.txt"), "abc").await.expect("write");
+    tokio::fs::write(tmp.path().join("small.txt"), "abc")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("small.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("small.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
 
     // Write at offset 10 (beyond current file size)
     vfs.write(Path::new("small.txt"), fh, 10, b"xyz").await.expect("write");
@@ -767,11 +672,16 @@ mod tests {
     let backend = Arc::new(MockBackend::new());
     let (vfs, mut rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("a.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("a.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
     vfs.write(Path::new("a.txt"), fh, 0, b"data").await.expect("write");
 
     let events = drain_events(&mut rx);
-    let has_modified = events.iter().any(|e| matches!(e, FsEvent::FileModified(p) if p == Path::new("a.txt")));
+    let has_modified = events
+      .iter()
+      .any(|e| matches!(e, FsEvent::FileModified(p) if p == Path::new("a.txt")));
     assert!(has_modified, "write should send FileModified");
   }
 
@@ -779,16 +689,23 @@ mod tests {
   async fn test_release_sends_file_closed() {
     eprintln!("[TEST] test_release_sends_file_closed");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("b.txt"), "content").await.expect("write");
+    tokio::fs::write(tmp.path().join("b.txt"), "content")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, mut rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("b.txt"), OpenFlags::read_only()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("b.txt"), OpenFlags::read_only())
+      .await
+      .expect("open");
     vfs.release(Path::new("b.txt"), fh).await.expect("release");
 
     let events = drain_events(&mut rx);
-    let has_closed = events.iter().any(|e| matches!(e, FsEvent::FileClosed(p) if p == Path::new("b.txt")));
+    let has_closed = events
+      .iter()
+      .any(|e| matches!(e, FsEvent::FileClosed(p) if p == Path::new("b.txt")));
     assert!(has_closed, "release should send FileClosed");
   }
 
@@ -802,8 +719,14 @@ mod tests {
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("flush.txt"), OpenFlags::read_write()).await.expect("open");
-    vfs.write(Path::new("flush.txt"), fh, 0, b"persisted").await.expect("write");
+    let fh = vfs
+      .open(Path::new("flush.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
+    vfs
+      .write(Path::new("flush.txt"), fh, 0, b"persisted")
+      .await
+      .expect("write");
     vfs.flush(Path::new("flush.txt"), fh).await.expect("flush");
 
     // Verify that data is persisted on disk
@@ -816,7 +739,9 @@ mod tests {
     eprintln!("[TEST] test_readdir_hides_git_dir");
     let tmp = tempfile::tempdir().expect("tempdir");
     tokio::fs::create_dir(tmp.path().join(".git")).await.expect("mkdir");
-    tokio::fs::write(tmp.path().join("visible.txt"), "").await.expect("write");
+    tokio::fs::write(tmp.path().join("visible.txt"), "")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
@@ -846,8 +771,12 @@ mod tests {
   async fn test_readdir_filters_untracked() {
     eprintln!("[TEST] test_readdir_filters_untracked");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("tracked.txt"), "").await.expect("write");
-    tokio::fs::write(tmp.path().join("ignored.log"), "").await.expect("write");
+    tokio::fs::write(tmp.path().join("tracked.txt"), "")
+      .await
+      .expect("write");
+    tokio::fs::write(tmp.path().join("ignored.log"), "")
+      .await
+      .expect("write");
 
     // should_track returns false for .log files
     let backend = Arc::new(MockBackend {
@@ -907,13 +836,18 @@ mod tests {
   async fn test_unlink_removes_file_and_buffer() {
     eprintln!("[TEST] test_unlink_removes_file_and_buffer");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("del.txt"), "data").await.expect("write");
+    tokio::fs::write(tmp.path().join("del.txt"), "data")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, mut rx) = create_test_vfs(tmp.path(), backend);
 
     // Open the file (load into buffer)
-    let fh = vfs.open(Path::new("del.txt"), OpenFlags::read_only()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("del.txt"), OpenFlags::read_only())
+      .await
+      .expect("open");
     vfs.release(Path::new("del.txt"), fh).await.expect("release");
 
     // Delete
@@ -922,7 +856,9 @@ mod tests {
     assert!(!tmp.path().join("del.txt").exists(), "file should be deleted");
 
     let events = drain_events(&mut rx);
-    let has_modified = events.iter().any(|e| matches!(e, FsEvent::FileModified(p) if p == Path::new("del.txt")));
+    let has_modified = events
+      .iter()
+      .any(|e| matches!(e, FsEvent::FileModified(p) if p == Path::new("del.txt")));
     assert!(has_modified, "unlink should send FileModified");
   }
 
@@ -930,12 +866,17 @@ mod tests {
   async fn test_rename_moves_file() {
     eprintln!("[TEST] test_rename_moves_file");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("old.txt"), "content").await.expect("write");
+    tokio::fs::write(tmp.path().join("old.txt"), "content")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, mut rx) = create_test_vfs(tmp.path(), backend);
 
-    vfs.rename(Path::new("old.txt"), Path::new("new.txt"), 0).await.expect("rename");
+    vfs
+      .rename(Path::new("old.txt"), Path::new("new.txt"), 0)
+      .await
+      .expect("rename");
 
     assert!(!tmp.path().join("old.txt").exists(), "old file should not exist");
     assert!(tmp.path().join("new.txt").exists(), "new file should exist");
@@ -948,13 +889,18 @@ mod tests {
   async fn test_setattr_truncate() {
     eprintln!("[TEST] test_setattr_truncate");
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("trunc.txt"), "long content").await.expect("write");
+    tokio::fs::write(tmp.path().join("trunc.txt"), "long content")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
     // Open to load into buffer
-    let fh = vfs.open(Path::new("trunc.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("trunc.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
 
     // Truncate to 4 bytes
     let attr = vfs
@@ -988,7 +934,9 @@ mod tests {
     crate::test_utils::with_timeout("test_mtime_stable_on_read", async {
       // SimpleGitFS: test_mtime_stable_on_read — mtime does not change on read
       let tmp = tempfile::tempdir().expect("tempdir");
-      tokio::fs::write(tmp.path().join("stable.txt"), "content").await.expect("write");
+      tokio::fs::write(tmp.path().join("stable.txt"), "content")
+        .await
+        .expect("write");
 
       let backend = Arc::new(MockBackend::new());
       let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
@@ -997,12 +945,16 @@ mod tests {
       // Pause to ensure mtime does not change
       tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-      let fh = vfs.open(Path::new("stable.txt"), OpenFlags::read_only()).await.expect("open");
+      let fh = vfs
+        .open(Path::new("stable.txt"), OpenFlags::read_only())
+        .await
+        .expect("open");
       let _data = vfs.read(Path::new("stable.txt"), fh, 0, 100).await.expect("read");
 
       let attr2 = vfs.getattr(Path::new("stable.txt")).await.expect("getattr 2");
       assert_eq!(attr1.mtime, attr2.mtime, "mtime should not change on read");
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1018,7 +970,10 @@ mod tests {
       .await
       .expect("create");
 
-    vfs.write(Path::new("sized.txt"), fh, 0, b"hello world 123").await.expect("write");
+    vfs
+      .write(Path::new("sized.txt"), fh, 0, b"hello world 123")
+      .await
+      .expect("write");
     vfs.flush(Path::new("sized.txt"), fh).await.expect("flush");
 
     let attr = vfs.getattr(Path::new("sized.txt")).await.expect("getattr");
@@ -1030,15 +985,23 @@ mod tests {
     eprintln!("[TEST] test_truncate_then_write_shorter");
     // SimpleGitFS: test_truncate_then_write — echo "x" > file (truncate + write)
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("trunc2.txt"), "long original content").await.expect("write");
+    tokio::fs::write(tmp.path().join("trunc2.txt"), "long original content")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("trunc2.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("trunc2.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
 
     // Truncate to 0 (like echo "x" > file)
-    vfs.setattr(Path::new("trunc2.txt"), Some(0), None, None, None).await.expect("truncate");
+    vfs
+      .setattr(Path::new("trunc2.txt"), Some(0), None, None, None)
+      .await
+      .expect("truncate");
 
     // Write short content
     vfs.write(Path::new("trunc2.txt"), fh, 0, b"x\n").await.expect("write");
@@ -1052,15 +1015,23 @@ mod tests {
     eprintln!("[TEST] test_append_without_truncate");
     // SimpleGitFS: test_append_without_truncate — echo "x" >> file
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("append.txt"), "original").await.expect("write");
+    tokio::fs::write(tmp.path().join("append.txt"), "original")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("append.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("append.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
 
     // Append: write(offset=8, " appended")
-    vfs.write(Path::new("append.txt"), fh, 8, b" appended").await.expect("write");
+    vfs
+      .write(Path::new("append.txt"), fh, 8, b" appended")
+      .await
+      .expect("write");
 
     let data = vfs.read(Path::new("append.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"original appended", "append should add data to the end");
@@ -1071,12 +1042,17 @@ mod tests {
     eprintln!("[TEST] test_partial_overwrite_keeps_tail");
     // SimpleGitFS: test_partial_overwrite_keeps_tail
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("partial.txt"), "ABCDEFGH").await.expect("write");
+    tokio::fs::write(tmp.path().join("partial.txt"), "ABCDEFGH")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    let fh = vfs.open(Path::new("partial.txt"), OpenFlags::read_write()).await.expect("open");
+    let fh = vfs
+      .open(Path::new("partial.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
 
     // Overwrite 3 bytes at offset 2 (without truncate)
     vfs.write(Path::new("partial.txt"), fh, 2, b"xxx").await.expect("write");
@@ -1090,7 +1066,9 @@ mod tests {
     eprintln!("[TEST] test_atomic_save_temp_rename");
     // SimpleGitFS: test_atomic_save_temp_rename — vim/VSCode pattern
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("file.txt"), "original").await.expect("write");
+    tokio::fs::write(tmp.path().join("file.txt"), "original")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
@@ -1102,15 +1080,23 @@ mod tests {
       .expect("create temp");
 
     // 2) Write new content
-    vfs.write(Path::new("file.txt.tmp"), fh, 0, b"new content").await.expect("write");
+    vfs
+      .write(Path::new("file.txt.tmp"), fh, 0, b"new content")
+      .await
+      .expect("write");
     vfs.flush(Path::new("file.txt.tmp"), fh).await.expect("flush");
     vfs.release(Path::new("file.txt.tmp"), fh).await.expect("release");
 
     // 3) Rename tmp -> file
-    vfs.rename(Path::new("file.txt.tmp"), Path::new("file.txt"), 0).await.expect("rename");
+    vfs
+      .rename(Path::new("file.txt.tmp"), Path::new("file.txt"), 0)
+      .await
+      .expect("rename");
 
     // 4) Verify result on disk
-    let content = tokio::fs::read_to_string(tmp.path().join("file.txt")).await.expect("read");
+    let content = tokio::fs::read_to_string(tmp.path().join("file.txt"))
+      .await
+      .expect("read");
     assert_eq!(content, "new content", "atomic save via rename should work");
     assert!(!tmp.path().join("file.txt.tmp").exists(), "temp file should not remain");
   }
@@ -1121,7 +1107,9 @@ mod tests {
     // SimpleGitFS: test_rmdir_nonempty_fails
     let tmp = tempfile::tempdir().expect("tempdir");
     tokio::fs::create_dir(tmp.path().join("nonempty")).await.expect("mkdir");
-    tokio::fs::write(tmp.path().join("nonempty/file.txt"), "data").await.expect("write");
+    tokio::fs::write(tmp.path().join("nonempty/file.txt"), "data")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
@@ -1140,14 +1128,20 @@ mod tests {
 
     // Create nested directories
     vfs.mkdir(Path::new("level1"), 0o755).await.expect("mkdir level1");
-    vfs.mkdir(Path::new("level1/level2"), 0o755).await.expect("mkdir level2");
+    vfs
+      .mkdir(Path::new("level1/level2"), 0o755)
+      .await
+      .expect("mkdir level2");
 
     // Create file in deep directory
     let (fh, _) = vfs
       .create(Path::new("level1/level2/deep.txt"), OpenFlags::read_write(), 0o644)
       .await
       .expect("create deep");
-    vfs.write(Path::new("level1/level2/deep.txt"), fh, 0, b"deep content").await.expect("write");
+    vfs
+      .write(Path::new("level1/level2/deep.txt"), fh, 0, b"deep content")
+      .await
+      .expect("write");
     vfs.flush(Path::new("level1/level2/deep.txt"), fh).await.expect("flush");
 
     // Verify readdir on level2
@@ -1163,15 +1157,26 @@ mod tests {
     let tmp = tempfile::tempdir().expect("tempdir");
     tokio::fs::create_dir(tmp.path().join("dir_a")).await.expect("mkdir");
     tokio::fs::create_dir(tmp.path().join("dir_b")).await.expect("mkdir");
-    tokio::fs::write(tmp.path().join("dir_a/moved.txt"), "data").await.expect("write");
+    tokio::fs::write(tmp.path().join("dir_a/moved.txt"), "data")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-    vfs.rename(Path::new("dir_a/moved.txt"), Path::new("dir_b/moved.txt"), 0).await.expect("rename");
+    vfs
+      .rename(Path::new("dir_a/moved.txt"), Path::new("dir_b/moved.txt"), 0)
+      .await
+      .expect("rename");
 
-    assert!(!tmp.path().join("dir_a/moved.txt").exists(), "file should not remain in dir_a");
-    assert!(tmp.path().join("dir_b/moved.txt").exists(), "file should appear in dir_b");
+    assert!(
+      !tmp.path().join("dir_a/moved.txt").exists(),
+      "file should not remain in dir_a"
+    );
+    assert!(
+      tmp.path().join("dir_b/moved.txt").exists(),
+      "file should appear in dir_b"
+    );
   }
 
   #[tokio::test]
@@ -1204,7 +1209,9 @@ mod tests {
     eprintln!("[TEST] test_symlink_create_and_readlink");
     // SimpleGitFS: test_symlink_create + test_symlink_read_through
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("target.txt"), "symlink target").await.expect("write");
+    tokio::fs::write(tmp.path().join("target.txt"), "symlink target")
+      .await
+      .expect("write");
 
     let backend = Arc::new(MockBackend::new());
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
@@ -1225,12 +1232,17 @@ mod tests {
     crate::test_utils::with_timeout("test_concurrent_reads_no_panic", async {
       // rclone: test_concurrent_read_write — parallel reads without race conditions
       let tmp = tempfile::tempdir().expect("tempdir");
-      tokio::fs::write(tmp.path().join("shared.txt"), "shared content").await.expect("write");
+      tokio::fs::write(tmp.path().join("shared.txt"), "shared content")
+        .await
+        .expect("write");
 
       let backend = Arc::new(MockBackend::new());
       let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
-      let fh = vfs.open(Path::new("shared.txt"), OpenFlags::read_only()).await.expect("open");
+      let fh = vfs
+        .open(Path::new("shared.txt"), OpenFlags::read_only())
+        .await
+        .expect("open");
 
       // 10 parallel reads
       let mut handles = Vec::new();
@@ -1242,7 +1254,8 @@ mod tests {
       for data in &handles {
         assert_eq!(data, b"shared content", "all reads should return the same result");
       }
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1267,7 +1280,8 @@ mod tests {
         mtime_after_create, attr2.mtime,
         "mtime should not change between create and first write"
       );
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1286,10 +1300,7 @@ mod tests {
       .lookup(Path::new(""), OsStr::new("same_mtime.txt"))
       .await
       .expect("lookup");
-    let getattr_attr = vfs
-      .getattr(Path::new("same_mtime.txt"))
-      .await
-      .expect("getattr");
+    let getattr_attr = vfs.getattr(Path::new("same_mtime.txt")).await.expect("getattr");
 
     assert_eq!(
       lookup_attr.mtime, getattr_attr.mtime,
@@ -1320,17 +1331,15 @@ mod tests {
         .write(Path::new("mtime_wr.txt"), fh, 0, b"new data")
         .await
         .expect("write");
-      vfs
-        .flush(Path::new("mtime_wr.txt"), fh)
-        .await
-        .expect("flush");
+      vfs.flush(Path::new("mtime_wr.txt"), fh).await.expect("flush");
 
       let attr_after = vfs.getattr(Path::new("mtime_wr.txt")).await.expect("getattr after");
       assert!(
         attr_after.mtime >= attr_before.mtime,
         "mtime should update after write+flush"
       );
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1360,10 +1369,7 @@ mod tests {
     let content = tokio::fs::read_to_string(tmp.path().join("dst.txt"))
       .await
       .expect("read dst");
-    assert_eq!(
-      content, "new content",
-      "target file should contain data from source"
-    );
+    assert_eq!(content, "new content", "target file should contain data from source");
   }
 
   #[tokio::test]
@@ -1371,9 +1377,7 @@ mod tests {
     eprintln!("[TEST] test_rename_directory");
     // SimpleGitFS: rename directory
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::create_dir(tmp.path().join("old_dir"))
-      .await
-      .expect("mkdir");
+    tokio::fs::create_dir(tmp.path().join("old_dir")).await.expect("mkdir");
     tokio::fs::write(tmp.path().join("old_dir/inside.txt"), "inner")
       .await
       .expect("write");
@@ -1386,14 +1390,8 @@ mod tests {
       .await
       .expect("rename dir");
 
-    assert!(
-      !tmp.path().join("old_dir").exists(),
-      "old directory should not exist"
-    );
-    assert!(
-      tmp.path().join("new_dir").is_dir(),
-      "new directory should exist"
-    );
+    assert!(!tmp.path().join("old_dir").exists(), "old directory should not exist");
+    assert!(tmp.path().join("new_dir").is_dir(), "new directory should exist");
     let content = tokio::fs::read_to_string(tmp.path().join("new_dir/inside.txt"))
       .await
       .expect("read inner");
@@ -1455,10 +1453,7 @@ mod tests {
       .await
       .expect("write");
 
-    let data = vfs
-      .read(Path::new("rewrite.txt"), fh, 0, 100)
-      .await
-      .expect("read");
+    let data = vfs.read(Path::new("rewrite.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"brand new", "file should contain only the new content");
   }
 
@@ -1480,16 +1475,10 @@ mod tests {
       .expect("open");
 
     // First read — loads into buffer
-    let data1 = vfs
-      .read(Path::new("cached.txt"), fh, 0, 100)
-      .await
-      .expect("read 1");
+    let data1 = vfs.read(Path::new("cached.txt"), fh, 0, 100).await.expect("read 1");
 
     // Second read — from buffer (cache)
-    let data2 = vfs
-      .read(Path::new("cached.txt"), fh, 0, 100)
-      .await
-      .expect("read 2");
+    let data2 = vfs.read(Path::new("cached.txt"), fh, 0, 100).await.expect("read 2");
 
     assert_eq!(data1, data2, "repeated read should return the same data from buffer");
     assert_eq!(data1, b"cached data");
@@ -1514,10 +1503,7 @@ mod tests {
       .expect("write");
 
     // read without flush — data should be in buffer
-    let data = vfs
-      .read(Path::new("buf.txt"), fh, 0, 100)
-      .await
-      .expect("read");
+    let data = vfs.read(Path::new("buf.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"buffered", "read after write should return data from buffer");
   }
 
@@ -1559,7 +1545,10 @@ mod tests {
         .create(Path::new("idem.txt"), OpenFlags::read_write(), 0o644)
         .await
         .expect("create");
-      vfs.write(Path::new("idem.txt"), fh, 0, b"hello").await.expect("write 1");
+      vfs
+        .write(Path::new("idem.txt"), fh, 0, b"hello")
+        .await
+        .expect("write 1");
       vfs.flush(Path::new("idem.txt"), fh).await.expect("flush 1");
 
       // Remember mtime
@@ -1570,7 +1559,10 @@ mod tests {
       tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
       // Write the same content again
-      vfs.write(Path::new("idem.txt"), fh, 0, b"hello").await.expect("write 2");
+      vfs
+        .write(Path::new("idem.txt"), fh, 0, b"hello")
+        .await
+        .expect("write 2");
       vfs.flush(Path::new("idem.txt"), fh).await.expect("flush 2");
 
       let attr2 = vfs.getattr(Path::new("idem.txt")).await.expect("getattr 2");
@@ -1579,11 +1571,15 @@ mod tests {
       // Note: the buffer updates mtime on every write (even if data is the same).
       // This test verifies that flush writes to disk and mtime updates,
       // but the file size stays the same.
-      assert_eq!(attr1.size, attr2.size, "file size should not change when writing the same data");
+      assert_eq!(
+        attr1.size, attr2.size,
+        "file size should not change when writing the same data"
+      );
       // mtime may update (buffer does not check data identity),
       // so we verify that mtime2 >= mtime1 (correct behavior)
       assert!(mtime2 >= mtime1, "mtime should not go backwards");
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1620,9 +1616,18 @@ mod tests {
       .create(Path::new("target_wt.txt"), OpenFlags::read_write(), 0o644)
       .await
       .expect("create target");
-    vfs.write(Path::new("target_wt.txt"), fh_target, 0, b"hello").await.expect("write target");
-    vfs.flush(Path::new("target_wt.txt"), fh_target).await.expect("flush target");
-    vfs.release(Path::new("target_wt.txt"), fh_target).await.expect("release target");
+    vfs
+      .write(Path::new("target_wt.txt"), fh_target, 0, b"hello")
+      .await
+      .expect("write target");
+    vfs
+      .flush(Path::new("target_wt.txt"), fh_target)
+      .await
+      .expect("flush target");
+    vfs
+      .release(Path::new("target_wt.txt"), fh_target)
+      .await
+      .expect("release target");
 
     // Create symlink
     vfs
@@ -1635,8 +1640,14 @@ mod tests {
       .open(Path::new("link_wt.txt"), OpenFlags::read_write())
       .await
       .expect("open link");
-    vfs.setattr(Path::new("link_wt.txt"), Some(0), None, None, None).await.expect("truncate link");
-    vfs.write(Path::new("link_wt.txt"), fh_link, 0, b"updated").await.expect("write through link");
+    vfs
+      .setattr(Path::new("link_wt.txt"), Some(0), None, None, None)
+      .await
+      .expect("truncate link");
+    vfs
+      .write(Path::new("link_wt.txt"), fh_link, 0, b"updated")
+      .await
+      .expect("write through link");
     vfs.flush(Path::new("link_wt.txt"), fh_link).await.expect("flush link");
 
     // Read original file — data should be updated
@@ -1664,7 +1675,10 @@ mod tests {
       .create(Path::new("file.txt"), OpenFlags::read_write(), 0o644)
       .await
       .expect("create file");
-    vfs.write(Path::new("file.txt"), fh, 0, b"content").await.expect("write file");
+    vfs
+      .write(Path::new("file.txt"), fh, 0, b"content")
+      .await
+      .expect("write file");
     vfs.flush(Path::new("file.txt"), fh).await.expect("flush file");
 
     // Create .file.txt.swp
@@ -1672,7 +1686,10 @@ mod tests {
       .create(Path::new(".file.txt.swp"), OpenFlags::read_write(), 0o644)
       .await
       .expect("create swp");
-    vfs.write(Path::new(".file.txt.swp"), fh_swp, 0, b"swp data").await.expect("write swp");
+    vfs
+      .write(Path::new(".file.txt.swp"), fh_swp, 0, b"swp data")
+      .await
+      .expect("write swp");
     vfs.flush(Path::new(".file.txt.swp"), fh_swp).await.expect("flush swp");
 
     // should_track for original = true
@@ -1699,8 +1716,12 @@ mod tests {
     eprintln!("[TEST] test_backup_file_filtered");
     // backup files (file.txt~) are filtered from readdir
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("file.txt"), "content").await.expect("write");
-    tokio::fs::write(tmp.path().join("file.txt~"), "backup").await.expect("write backup");
+    tokio::fs::write(tmp.path().join("file.txt"), "content")
+      .await
+      .expect("write");
+    tokio::fs::write(tmp.path().join("file.txt~"), "backup")
+      .await
+      .expect("write backup");
 
     // should_track returns false for *~
     let backend = Arc::new(MockBackend {
@@ -1721,13 +1742,20 @@ mod tests {
     eprintln!("[TEST] test_macos_dotunderscore_filtered");
     // ._ files (macOS resource forks) are filtered from readdir
     let tmp = tempfile::tempdir().expect("tempdir");
-    tokio::fs::write(tmp.path().join("file.txt"), "content").await.expect("write");
-    tokio::fs::write(tmp.path().join("._file.txt"), "resource fork").await.expect("write ._");
+    tokio::fs::write(tmp.path().join("file.txt"), "content")
+      .await
+      .expect("write");
+    tokio::fs::write(tmp.path().join("._file.txt"), "resource fork")
+      .await
+      .expect("write ._");
 
     // should_track returns false for ._ files
     let backend = Arc::new(MockBackend {
       track_fn: Arc::new(|path| {
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_default();
         !name.starts_with("._")
       }),
       ..MockBackend::new()
@@ -1738,7 +1766,10 @@ mod tests {
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
 
     assert!(names.contains(&"file.txt"), "file.txt should be visible");
-    assert!(!names.contains(&"._file.txt"), "._file.txt should be hidden from readdir");
+    assert!(
+      !names.contains(&"._file.txt"),
+      "._file.txt should be hidden from readdir"
+    );
   }
 
   #[tokio::test]
@@ -1754,11 +1785,17 @@ mod tests {
       .await
       .expect("create");
 
-    vfs.write(Path::new("immediate.txt"), fh, 0, b"buffered data").await.expect("write");
+    vfs
+      .write(Path::new("immediate.txt"), fh, 0, b"buffered data")
+      .await
+      .expect("write");
 
     // Read without flush — data from buffer
     let data = vfs.read(Path::new("immediate.txt"), fh, 0, 100).await.expect("read");
-    assert_eq!(data, b"buffered data", "read after write without flush should return data from buffer");
+    assert_eq!(
+      data, b"buffered data",
+      "read after write without flush should return data from buffer"
+    );
   }
 
   #[tokio::test]
@@ -1774,8 +1811,14 @@ mod tests {
       .await
       .expect("create");
 
-    vfs.write(Path::new("accum.txt"), fh, 0, b"hello").await.expect("write 1");
-    vfs.write(Path::new("accum.txt"), fh, 5, b"world").await.expect("write 2");
+    vfs
+      .write(Path::new("accum.txt"), fh, 0, b"hello")
+      .await
+      .expect("write 1");
+    vfs
+      .write(Path::new("accum.txt"), fh, 5, b"world")
+      .await
+      .expect("write 2");
 
     let data = vfs.read(Path::new("accum.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"helloworld", "two writes should accumulate");
@@ -1787,7 +1830,9 @@ mod tests {
     crate::test_utils::with_timeout("test_unlink_sends_event", async {
       // unlink of file sends FsEvent::FileModified to channel
       let tmp = tempfile::tempdir().expect("tempdir");
-      tokio::fs::write(tmp.path().join("event_del.txt"), "data").await.expect("write");
+      tokio::fs::write(tmp.path().join("event_del.txt"), "data")
+        .await
+        .expect("write");
 
       let backend = Arc::new(MockBackend::new());
       let (vfs, mut rx) = create_test_vfs(tmp.path(), backend);
@@ -1795,10 +1840,7 @@ mod tests {
       vfs.unlink(Path::new("event_del.txt")).await.expect("unlink");
 
       // Verify via recv (with timeout)
-      let event = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        rx.recv()
-      )
+      let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("timeout waiting for event")
         .expect("channel closed");
@@ -1807,7 +1849,8 @@ mod tests {
         matches!(event, FsEvent::FileModified(ref p) if p == Path::new("event_del.txt")),
         "unlink should send FileModified: {event:?}"
       );
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1834,12 +1877,20 @@ mod tests {
     assert_eq!(attr.kind, FileType::RegularFile);
 
     // Verify that file is on disk in work_dir
-    assert!(work_dir.join("init_test.txt").exists(), "file should be created in work_dir");
+    assert!(
+      work_dir.join("init_test.txt").exists(),
+      "file should be created in work_dir"
+    );
 
-    vfs.write(Path::new("init_test.txt"), fh, 0, b"test").await.expect("write");
+    vfs
+      .write(Path::new("init_test.txt"), fh, 0, b"test")
+      .await
+      .expect("write");
     vfs.flush(Path::new("init_test.txt"), fh).await.expect("flush");
 
-    let content = tokio::fs::read_to_string(work_dir.join("init_test.txt")).await.expect("read");
+    let content = tokio::fs::read_to_string(work_dir.join("init_test.txt"))
+      .await
+      .expect("read");
     assert_eq!(content, "test", "file content should be correct");
   }
 
@@ -1882,7 +1933,10 @@ mod tests {
       .read(Path::new("link_read.txt"), fh_link, 0, 100)
       .await
       .expect("read link");
-    assert_eq!(data, b"symlink content", "read through symlink should return target content");
+    assert_eq!(
+      data, b"symlink content",
+      "read through symlink should return target content"
+    );
   }
 
   #[cfg(unix)]
@@ -1907,10 +1961,7 @@ mod tests {
     // Delete symlink
     vfs.unlink(Path::new("link_del.txt")).await.expect("unlink link");
 
-    assert!(
-      !tmp.path().join("link_del.txt").exists(),
-      "symlink should be deleted"
-    );
+    assert!(!tmp.path().join("link_del.txt").exists(), "symlink should be deleted");
     assert!(
       tmp.path().join("target_keep.txt").exists(),
       "target file should remain after symlink deletion"
@@ -1937,15 +1988,9 @@ mod tests {
         let name = format!("par_{i}.txt");
         handles.push(tokio::spawn(async move {
           let path = PathBuf::from(&name);
-          let (fh, _) = vfs
-            .create(&path, OpenFlags::read_write(), 0o644)
-            .await
-            .expect("create");
+          let (fh, _) = vfs.create(&path, OpenFlags::read_write(), 0o644).await.expect("create");
           let payload = vec![b'A' + i; 1024];
-          vfs
-            .write(&path, fh, 0, &payload)
-            .await
-            .expect("write");
+          vfs.write(&path, fh, 0, &payload).await.expect("write");
           vfs.flush(&path, fh).await.expect("flush");
         }));
       }
@@ -1957,10 +2002,7 @@ mod tests {
       // Verify data correctness
       for i in 0..5u8 {
         let path = PathBuf::from(format!("par_{i}.txt"));
-        let fh = vfs
-          .open(&path, OpenFlags::read_only())
-          .await
-          .expect("open");
+        let fh = vfs.open(&path, OpenFlags::read_only()).await.expect("open");
         let data = vfs.read(&path, fh, 0, 2048).await.expect("read");
         let expected = vec![b'A' + i; 1024];
         assert_eq!(
@@ -1968,7 +2010,8 @@ mod tests {
           "data of par_{i}.txt should be correct after parallel write"
         );
       }
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -1984,17 +2027,17 @@ mod tests {
     let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
 
     // Verify that file exists
-    vfs.getattr(Path::new("doomed.txt")).await.expect("getattr before unlink");
+    vfs
+      .getattr(Path::new("doomed.txt"))
+      .await
+      .expect("getattr before unlink");
 
     // Delete
     vfs.unlink(Path::new("doomed.txt")).await.expect("unlink");
 
     // getattr after deletion should return error
     let result = vfs.getattr(Path::new("doomed.txt")).await;
-    assert!(
-      result.is_err(),
-      "getattr after unlink should return error"
-    );
+    assert!(result.is_err(), "getattr after unlink should return error");
   }
 
   // -- Tests from SimpleGitFS/YaWikiFS patterns --
@@ -2024,10 +2067,7 @@ mod tests {
     assert_eq!(written, 14);
 
     // Read
-    let data = vfs
-      .read(Path::new("crud.txt"), fh, 0, 100)
-      .await
-      .expect("read");
+    let data = vfs.read(Path::new("crud.txt"), fh, 0, 100).await.expect("read");
     assert_eq!(data, b"crud test data", "read should return written data");
 
     // Getattr
@@ -2221,17 +2261,17 @@ mod tests {
     }
 
     // Verify count — exactly 10
-    assert_eq!(entries.len(), file_count, "readdir should return exactly {file_count} files");
+    assert_eq!(
+      entries.len(),
+      file_count,
+      "readdir should return exactly {file_count} files"
+    );
 
     // Verify no duplicates
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
-    assert_eq!(
-      sorted.len(),
-      names.len(),
-      "readdir should not contain duplicates"
-    );
+    assert_eq!(sorted.len(), names.len(), "readdir should not contain duplicates");
   }
 
   #[tokio::test]
@@ -2269,10 +2309,7 @@ mod tests {
       .await
       .expect("read after truncate");
     assert_eq!(data.len(), 50, "after truncate there should be exactly 50 bytes");
-    assert!(
-      data.iter().all(|&b| b == b'X'),
-      "all remaining bytes should be 'X'"
-    );
+    assert!(data.iter().all(|&b| b == b'X'), "all remaining bytes should be 'X'");
   }
 
   #[tokio::test]
@@ -2344,11 +2381,7 @@ mod tests {
     let entries_a = vfs.readdir(Path::new("a")).await.expect("readdir a");
     let names_a: Vec<&str> = entries_a.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names_a, vec!["b"], "readdir 'a' should contain only 'b'");
-    assert_eq!(
-      entries_a[0].kind,
-      FileType::Directory,
-      "'b' should be a directory"
-    );
+    assert_eq!(entries_a[0].kind, FileType::Directory, "'b' should be a directory");
 
     // readdir "a/b" -> should contain only "file.txt"
     let entries_ab = vfs.readdir(Path::new("a/b")).await.expect("readdir a/b");
@@ -2385,10 +2418,7 @@ mod tests {
       .write(Path::new("xattr_test.txt"), fh, 0, b"xattr content")
       .await
       .expect("write");
-    vfs
-      .flush(Path::new("xattr_test.txt"), fh)
-      .await
-      .expect("flush");
+    vfs.flush(Path::new("xattr_test.txt"), fh).await.expect("flush");
 
     // setxattr — set extended attribute
     vfs
@@ -2406,20 +2436,11 @@ mod tests {
       .getxattr(Path::new("xattr_test.txt"), OsStr::new("user.test_key"))
       .await
       .expect("getxattr");
-    assert_eq!(
-      value, b"test_value",
-      "getxattr should return the set value"
-    );
+    assert_eq!(value, b"test_value", "getxattr should return the set value");
 
     // listxattr — attribute should be in the list
-    let attrs = vfs
-      .listxattr(Path::new("xattr_test.txt"))
-      .await
-      .expect("listxattr");
-    let attr_names: Vec<String> = attrs
-      .iter()
-      .map(|a| a.to_string_lossy().to_string())
-      .collect();
+    let attrs = vfs.listxattr(Path::new("xattr_test.txt")).await.expect("listxattr");
+    let attr_names: Vec<String> = attrs.iter().map(|a| a.to_string_lossy().to_string()).collect();
     assert!(
       attr_names.iter().any(|n| n.contains("user.test_key")),
       "listxattr should contain 'user.test_key': {attr_names:?}"
@@ -2436,10 +2457,7 @@ mod tests {
       .await
       .expect("setxattr second");
 
-    let attrs2 = vfs
-      .listxattr(Path::new("xattr_test.txt"))
-      .await
-      .expect("listxattr 2");
+    let attrs2 = vfs.listxattr(Path::new("xattr_test.txt")).await.expect("listxattr 2");
     assert!(
       attrs2.len() >= 2,
       "listxattr should contain at least 2 attributes: {attrs2:?}"
@@ -2455,10 +2473,7 @@ mod tests {
     let result = vfs
       .getxattr(Path::new("xattr_test.txt"), OsStr::new("user.test_key"))
       .await;
-    assert!(
-      result.is_err(),
-      "getxattr after removexattr should return error"
-    );
+    assert!(result.is_err(), "getxattr after removexattr should return error");
 
     // Second attribute is still available
     let remaining = vfs
@@ -2526,10 +2541,7 @@ mod tests {
       .write(Path::new("new_file.txt"), fh, 0, b"new content via VFS")
       .await
       .expect("write");
-    vfs
-      .flush(Path::new("new_file.txt"), fh)
-      .await
-      .expect("flush");
+    vfs.flush(Path::new("new_file.txt"), fh).await.expect("flush");
 
     // git status --porcelain -> should contain new_file.txt
     let output = std::process::Command::new("git")
@@ -2556,10 +2568,7 @@ mod tests {
       .write(Path::new("initial.txt"), fh2, 0, b"modified via VFS")
       .await
       .expect("write modified");
-    vfs
-      .flush(Path::new("initial.txt"), fh2)
-      .await
-      .expect("flush modified");
+    vfs.flush(Path::new("initial.txt"), fh2).await.expect("flush modified");
 
     let output2 = std::process::Command::new("git")
       .args(["status", "--porcelain"])

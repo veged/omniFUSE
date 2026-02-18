@@ -80,10 +80,7 @@ impl GitBackend {
   ///
   /// Returns an error if the backend is not initialized.
   fn ops(&self) -> anyhow::Result<&GitOps> {
-    self
-      .ops
-      .get()
-      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
+    self.ops.get().ok_or_else(|| anyhow::anyhow!("backend not initialized"))
   }
 
   /// Get the list of changed files between local and remote HEAD.

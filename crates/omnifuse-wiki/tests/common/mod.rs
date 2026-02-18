@@ -31,7 +31,7 @@ pub struct StoredPage {
   pub page_type: String,
   pub content: String,
   pub modified_at: String,
-  pub parent_id: Option<u64>,
+  pub parent_id: Option<u64>
 }
 
 /// Internal state of the fake API.
@@ -40,7 +40,7 @@ pub struct FakeState {
   pub pages: RwLock<HashMap<u64, StoredPage>>,
   pub slug_to_id: RwLock<HashMap<String, u64>>,
   next_id: AtomicU64,
-  pub op_statuses: RwLock<HashMap<String, String>>,
+  pub op_statuses: RwLock<HashMap<String, String>>
 }
 
 impl FakeState {
@@ -49,7 +49,7 @@ impl FakeState {
       pages: RwLock::new(HashMap::new()),
       slug_to_id: RwLock::new(HashMap::new()),
       next_id: AtomicU64::new(1),
-      op_statuses: RwLock::new(HashMap::new()),
+      op_statuses: RwLock::new(HashMap::new())
     }
   }
 
@@ -60,7 +60,7 @@ impl FakeState {
     title: &str,
     content: &str,
     modified_at: &str,
-    parent_id: Option<u64>,
+    parent_id: Option<u64>
   ) -> u64 {
     let id = self.next_id.fetch_add(1, Ordering::SeqCst);
     let page = StoredPage {
@@ -70,7 +70,7 @@ impl FakeState {
       page_type: "page".to_string(),
       content: content.to_string(),
       modified_at: modified_at.to_string(),
-      parent_id,
+      parent_id
     };
     self.pages.write().await.insert(id, page);
     self.slug_to_id.write().await.insert(slug.to_string(), id);
@@ -78,8 +78,13 @@ impl FakeState {
   }
 
   /// Set operation status for polling.
+  #[allow(dead_code)]
   pub async fn set_op_status(&self, op_id: &str, status: &str) {
-    self.op_statuses.write().await.insert(op_id.to_string(), status.to_string());
+    self
+      .op_statuses
+      .write()
+      .await
+      .insert(op_id.to_string(), status.to_string());
   }
 }
 
@@ -97,20 +102,13 @@ impl FakeWikiApi {
       .route("/api/v2/public/pages/:id/descendants", get(handle_descendants))
       .route(
         "/api/v2/public/pages/:id",
-        get(handle_get_by_id)
-          .post(handle_update)
-          .delete(handle_delete),
+        get(handle_get_by_id).post(handle_update).delete(handle_delete)
       )
-      .route(
-        "/api/v2/public/pages",
-        get(handle_get_by_slug).post(handle_create),
-      )
+      .route("/api/v2/public/pages", get(handle_get_by_slug).post(handle_create))
       .route("/api/status/:id", get(handle_status))
       .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-      .await
-      .expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let base_url = format!("http://{addr}");
 
@@ -134,7 +132,7 @@ struct PageResponse {
   slug: String,
   page_type: String,
   content: Option<String>,
-  modified_at: String,
+  modified_at: String
 }
 
 impl From<&StoredPage> for PageResponse {
@@ -145,7 +143,7 @@ impl From<&StoredPage> for PageResponse {
       slug: p.slug.clone(),
       page_type: p.page_type.clone(),
       content: Some(p.content.clone()),
-      modified_at: p.modified_at.clone(),
+      modified_at: p.modified_at.clone()
     }
   }
 }
@@ -153,7 +151,7 @@ impl From<&StoredPage> for PageResponse {
 #[derive(Serialize)]
 struct PageBrief {
   id: u64,
-  slug: String,
+  slug: String
 }
 
 #[derive(Serialize)]
@@ -161,7 +159,7 @@ struct CollectionResponse<T: Serialize> {
   results: Vec<T>,
   next_cursor: Option<String>,
   has_next: bool,
-  metadata: Option<serde_json::Value>,
+  metadata: Option<serde_json::Value>
 }
 
 #[derive(Serialize)]
@@ -170,30 +168,30 @@ struct TreeNode {
   slug: String,
   title: String,
   modified_at: String,
-  children: Option<Vec<TreeNode>>,
+  children: Option<Vec<TreeNode>>
 }
 
 #[derive(Serialize)]
 struct TreeResponse {
-  root: TreeNode,
+  root: TreeNode
 }
 
 #[derive(Serialize)]
 struct OpCreated {
   operation: OpIdentity,
-  status_url: Option<String>,
+  status_url: Option<String>
 }
 
 #[derive(Serialize)]
 struct OpIdentity {
   #[serde(rename = "type")]
   ty: String,
-  id: String,
+  id: String
 }
 
 #[derive(Serialize)]
 struct StatusResponse {
-  status: String,
+  status: String
 }
 
 // -- Handlers --
@@ -202,16 +200,19 @@ struct StatusResponse {
 struct SlugQuery {
   slug: Option<String>,
   #[allow(dead_code)]
-  fields: Option<String>,
+  fields: Option<String>
 }
 
-async fn handle_get_by_slug(
-  State(state): State<Arc<FakeState>>,
-  Query(q): Query<SlugQuery>,
-) -> impl IntoResponse {
+async fn handle_get_by_slug(State(state): State<Arc<FakeState>>, Query(q): Query<SlugQuery>) -> impl IntoResponse {
   let slug = match q.slug {
     Some(s) => s,
-    None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "slug required"}))).into_response(),
+    None => {
+      return (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "slug required"}))
+      )
+        .into_response()
+    }
   };
 
   let slug_map = state.slug_to_id.read().await;
@@ -222,8 +223,9 @@ async fn handle_get_by_slug(
         "error_code": "NOT_FOUND",
         "debug_message": "page not found",
         "details": null
-      })),
-    ).into_response();
+      }))
+    )
+      .into_response();
   };
 
   let pages = state.pages.read().await;
@@ -231,10 +233,7 @@ async fn handle_get_by_slug(
   Json(PageResponse::from(page)).into_response()
 }
 
-async fn handle_get_by_id(
-  State(state): State<Arc<FakeState>>,
-  Path(id): Path<u64>,
-) -> impl IntoResponse {
+async fn handle_get_by_id(State(state): State<Arc<FakeState>>, Path(id): Path<u64>) -> impl IntoResponse {
   let pages = state.pages.read().await;
   match pages.get(&id) {
     Some(page) => Json(PageResponse::from(page)).into_response(),
@@ -244,8 +243,9 @@ async fn handle_get_by_id(
         "error_code": "NOT_FOUND",
         "debug_message": "page not found",
         "details": null
-      })),
-    ).into_response(),
+      }))
+    )
+      .into_response()
   }
 }
 
@@ -254,13 +254,10 @@ struct CreateBody {
   page_type: String,
   title: String,
   slug: String,
-  content: Option<String>,
+  content: Option<String>
 }
 
-async fn handle_create(
-  State(state): State<Arc<FakeState>>,
-  Json(body): Json<CreateBody>,
-) -> impl IntoResponse {
+async fn handle_create(State(state): State<Arc<FakeState>>, Json(body): Json<CreateBody>) -> impl IntoResponse {
   let id = state.next_id.fetch_add(1, Ordering::SeqCst);
   let now = chrono_now();
 
@@ -271,7 +268,7 @@ async fn handle_create(
     page_type: body.page_type,
     content: body.content.unwrap_or_default(),
     modified_at: now,
-    parent_id: None,
+    parent_id: None
   };
 
   state.slug_to_id.write().await.insert(body.slug, id);
@@ -284,13 +281,13 @@ async fn handle_create(
 #[derive(Deserialize)]
 struct UpdateBody {
   title: Option<String>,
-  content: Option<String>,
+  content: Option<String>
 }
 
 async fn handle_update(
   State(state): State<Arc<FakeState>>,
   Path(id): Path<u64>,
-  Json(body): Json<UpdateBody>,
+  Json(body): Json<UpdateBody>
 ) -> impl IntoResponse {
   let mut pages = state.pages.write().await;
   match pages.get_mut(&id) {
@@ -310,15 +307,13 @@ async fn handle_update(
         "error_code": "NOT_FOUND",
         "debug_message": "page not found",
         "details": null
-      })),
-    ).into_response(),
+      }))
+    )
+      .into_response()
   }
 }
 
-async fn handle_delete(
-  State(state): State<Arc<FakeState>>,
-  Path(id): Path<u64>,
-) -> impl IntoResponse {
+async fn handle_delete(State(state): State<Arc<FakeState>>, Path(id): Path<u64>) -> impl IntoResponse {
   let mut pages = state.pages.write().await;
   if let Some(page) = pages.remove(&id) {
     state.slug_to_id.write().await.remove(&page.slug);
@@ -328,10 +323,7 @@ async fn handle_delete(
   }
 }
 
-async fn handle_descendants(
-  State(state): State<Arc<FakeState>>,
-  Path(parent_id): Path<u64>,
-) -> impl IntoResponse {
+async fn handle_descendants(State(state): State<Arc<FakeState>>, Path(parent_id): Path<u64>) -> impl IntoResponse {
   let pages = state.pages.read().await;
 
   let descendants: Vec<PageBrief> = pages
@@ -339,7 +331,7 @@ async fn handle_descendants(
     .filter(|p| p.parent_id == Some(parent_id))
     .map(|p| PageBrief {
       id: p.id,
-      slug: p.slug.clone(),
+      slug: p.slug.clone()
     })
     .collect();
 
@@ -347,7 +339,7 @@ async fn handle_descendants(
     results: descendants,
     next_cursor: None,
     has_next: false,
-    metadata: None,
+    metadata: None
   })
 }
 
@@ -359,7 +351,7 @@ struct TreeQuery {
   #[allow(dead_code)]
   max_pages: Option<u32>,
   #[allow(dead_code)]
-  max_depth: Option<u32>,
+  max_depth: Option<u32>
 }
 
 /// Recursively build a tree node with children.
@@ -375,14 +367,11 @@ fn build_tree_node(page: &StoredPage, all_pages: &HashMap<u64, StoredPage>) -> T
     slug: page.slug.clone(),
     title: page.title.clone(),
     modified_at: page.modified_at.clone(),
-    children: Some(children),
+    children: Some(children)
   }
 }
 
-async fn handle_tree(
-  State(state): State<Arc<FakeState>>,
-  Query(q): Query<TreeQuery>,
-) -> impl IntoResponse {
+async fn handle_tree(State(state): State<Arc<FakeState>>, Query(q): Query<TreeQuery>) -> impl IntoResponse {
   let slug = q.slug.unwrap_or_default();
   let slug_map = state.slug_to_id.read().await;
 
@@ -393,8 +382,9 @@ async fn handle_tree(
         "error_code": "NOT_FOUND",
         "debug_message": "page not found",
         "details": null
-      })),
-    ).into_response();
+      }))
+    )
+      .into_response();
   };
 
   let pages = state.pages.read().await;
@@ -413,7 +403,7 @@ struct MoveBody {
   #[allow(dead_code)]
   copy_inherited_access: Option<bool>,
   #[allow(dead_code)]
-  check_inheritance: Option<bool>,
+  check_inheritance: Option<bool>
 }
 
 #[derive(Deserialize)]
@@ -421,13 +411,10 @@ struct MoveOp {
   #[allow(dead_code)]
   source: String,
   #[allow(dead_code)]
-  target: String,
+  target: String
 }
 
-async fn handle_move(
-  State(state): State<Arc<FakeState>>,
-  Json(_body): Json<MoveBody>,
-) -> impl IntoResponse {
+async fn handle_move(State(state): State<Arc<FakeState>>, Json(_body): Json<MoveBody>) -> impl IntoResponse {
   let op_id = "move-op-1".to_string();
   state
     .op_statuses
@@ -438,21 +425,15 @@ async fn handle_move(
   Json(OpCreated {
     operation: OpIdentity {
       ty: "move".to_string(),
-      id: op_id.clone(),
+      id: op_id.clone()
     },
-    status_url: Some(format!("/api/status/{op_id}")),
+    status_url: Some(format!("/api/status/{op_id}"))
   })
 }
 
-async fn handle_status(
-  State(state): State<Arc<FakeState>>,
-  Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn handle_status(State(state): State<Arc<FakeState>>, Path(id): Path<String>) -> impl IntoResponse {
   let statuses = state.op_statuses.read().await;
-  let status = statuses
-    .get(&id)
-    .cloned()
-    .unwrap_or_else(|| "success".to_string());
+  let status = statuses.get(&id).cloned().unwrap_or_else(|| "success".to_string());
 
   Json(StatusResponse { status })
 }

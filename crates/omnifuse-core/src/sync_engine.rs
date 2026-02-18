@@ -111,7 +111,14 @@ impl SyncEngine {
       Self::poll_worker(poll_backend, poll_events, poll_metrics).await;
     });
 
-    (Self { event_tx, poll_handle, metrics }, handle)
+    (
+      Self {
+        event_tx,
+        poll_handle,
+        metrics
+      },
+      handle
+    )
   }
 
   /// Get a `Sender` for sending events.
@@ -161,10 +168,7 @@ impl SyncEngine {
     mut event_rx: mpsc::Receiver<FsEvent>,
     metrics: Arc<WorkerMetrics>
   ) {
-    info!(
-      debounce_secs = config.debounce_timeout_secs,
-      "dirty_worker started"
-    );
+    info!(debounce_secs = config.debounce_timeout_secs, "dirty_worker started");
 
     let mut dirty_set: HashSet<PathBuf> = HashSet::new();
     let mut trigger_sync = false;
@@ -234,10 +238,7 @@ impl SyncEngine {
       return;
     }
 
-    let iteration = metrics
-      .sync_iterations
-      .fetch_add(1, Ordering::Relaxed)
-      + 1;
+    let iteration = metrics.sync_iterations.fetch_add(1, Ordering::Relaxed) + 1;
     let start = Instant::now();
 
     debug!(count = files.len(), iteration, "syncing dirty files");
@@ -252,15 +253,8 @@ impl SyncEngine {
         conflict_files
       }) => {
         events.on_push(synced_files);
-        warn!(
-          synced_files,
-          conflicts = conflict_files.len(),
-          "sync with conflicts"
-        );
-        events.on_log(
-          LogLevel::Warn,
-          &format!("conflicts: {conflict_files:?}")
-        );
+        warn!(synced_files, conflicts = conflict_files.len(), "sync with conflicts");
+        events.on_log(LogLevel::Warn, &format!("conflicts: {conflict_files:?}"));
       }
       Ok(SyncResult::Offline) => {
         // Return files to dirty set — will sync on next attempt
@@ -279,35 +273,21 @@ impl SyncEngine {
     let elapsed = start.elapsed();
     if elapsed > SLOW_ITERATION_THRESHOLD {
       metrics.slow_sync_count.fetch_add(1, Ordering::Relaxed);
-      warn!(
-        iteration,
-        elapsed_ms = millis(elapsed),
-        "slow sync iteration"
-      );
+      warn!(iteration, elapsed_ms = millis(elapsed), "slow sync iteration");
     }
   }
 
   /// Worker for periodic remote polling.
   ///
   /// Terminated via `JoinHandle::abort()` when `shutdown()` is called.
-  async fn poll_worker<B: Backend>(
-    backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
-    metrics: Arc<WorkerMetrics>
-  ) {
+  async fn poll_worker<B: Backend>(backend: Arc<B>, events: Arc<dyn VfsEventHandler>, metrics: Arc<WorkerMetrics>) {
     let interval = backend.poll_interval();
-    info!(
-      interval_ms = millis(interval),
-      "poll_worker started"
-    );
+    info!(interval_ms = millis(interval), "poll_worker started");
 
     loop {
       sleep(interval).await;
 
-      let iteration = metrics
-        .poll_iterations
-        .fetch_add(1, Ordering::Relaxed)
-        + 1;
+      let iteration = metrics.poll_iterations.fetch_add(1, Ordering::Relaxed) + 1;
       let start = Instant::now();
 
       match backend.poll_remote().await {
@@ -317,10 +297,7 @@ impl SyncEngine {
 
           if let Err(e) = backend.apply_remote(changes).await {
             warn!(error = %e, "error applying remote changes");
-            events.on_log(
-              LogLevel::Warn,
-              &format!("error applying remote changes: {e}")
-            );
+            events.on_log(LogLevel::Warn, &format!("error applying remote changes: {e}"));
           } else {
             events.on_sync("updated");
           }
@@ -337,11 +314,7 @@ impl SyncEngine {
       let elapsed = start.elapsed();
       if elapsed > SLOW_ITERATION_THRESHOLD {
         metrics.slow_poll_count.fetch_add(1, Ordering::Relaxed);
-        warn!(
-          iteration,
-          elapsed_ms = millis(elapsed),
-          "slow poll iteration"
-        );
+        warn!(iteration, elapsed_ms = millis(elapsed), "slow poll iteration");
       }
 
       // Heartbeat: log status every N iterations
@@ -359,6 +332,8 @@ impl SyncEngine {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+  use std::{path::PathBuf, sync::Arc, time::Duration};
+
   use super::*;
   use crate::{
     backend::SyncResult,
@@ -366,7 +341,6 @@ mod tests {
     events::LogLevel,
     test_utils::{MockBackend, TestEventHandler}
   };
-  use std::{path::PathBuf, sync::Arc, time::Duration};
 
   /// Helper: create SyncEngine with short debounce.
   fn start_engine(
@@ -391,25 +365,19 @@ mod tests {
   /// Helper: shutdown engine with timeout (prevents deadlock hangs).
   async fn safe_shutdown(engine: &SyncEngine) {
     eprintln!("  [shutdown] engine...");
-    tokio::time::timeout(
-      crate::test_utils::TEST_TIMEOUT,
-      engine.shutdown()
-    )
-    .await
-    .expect("shutdown timed out — possible deadlock")
-    .expect("shutdown failed");
+    tokio::time::timeout(crate::test_utils::TEST_TIMEOUT, engine.shutdown())
+      .await
+      .expect("shutdown timed out — possible deadlock")
+      .expect("shutdown failed");
     eprintln!("  [shutdown] complete");
   }
 
   /// Helper: join handle with timeout (prevents deadlock hangs).
   async fn safe_join(handle: tokio::task::JoinHandle<()>) {
-    tokio::time::timeout(
-      crate::test_utils::TEST_TIMEOUT,
-      handle
-    )
-    .await
-    .expect("join timed out — possible deadlock")
-    .expect("join failed");
+    tokio::time::timeout(crate::test_utils::TEST_TIMEOUT, handle)
+      .await
+      .expect("join timed out — possible deadlock")
+      .expect("join failed");
   }
 
   #[tokio::test]
@@ -424,8 +392,12 @@ mod tests {
 
     // Send multiple FileModified events
     let tx = engine.sender();
-    tx.send(FsEvent::FileModified(PathBuf::from("a.txt"))).await.expect("send");
-    tx.send(FsEvent::FileModified(PathBuf::from("b.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("b.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
 
@@ -445,7 +417,9 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileClosed(PathBuf::from("file.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("file.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
 
@@ -466,7 +440,9 @@ mod tests {
 
     let tx = engine.sender();
     // First add a file to dirty set, then Flush
-    tx.send(FsEvent::FileModified(PathBuf::from("x.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("x.txt")))
+      .await
+      .expect("send");
     tx.send(FsEvent::Flush).await.expect("send");
 
     wait_processing().await;
@@ -492,7 +468,9 @@ mod tests {
     let (engine, handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileModified(PathBuf::from("pending.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("pending.txt")))
+      .await
+      .expect("send");
     // Allow time for event processing (no sync due to debounce)
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -515,7 +493,11 @@ mod tests {
     safe_join(handle).await;
 
     // No dirty files — sync should not be called
-    assert_eq!(backend.sync_call_count(), 0, "sync should not be called without dirty files");
+    assert_eq!(
+      backend.sync_call_count(),
+      0,
+      "sync should not be called without dirty files"
+    );
   }
 
   #[tokio::test]
@@ -530,9 +512,13 @@ mod tests {
     let tx = engine.sender();
     // Same path 3 times
     for _ in 0..3 {
-      tx.send(FsEvent::FileModified(PathBuf::from("same.txt"))).await.expect("send");
+      tx.send(FsEvent::FileModified(PathBuf::from("same.txt")))
+        .await
+        .expect("send");
     }
-    tx.send(FsEvent::FileClosed(PathBuf::from("trigger.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("trigger.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -555,7 +541,9 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -578,7 +566,9 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -596,7 +586,9 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -614,7 +606,9 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -636,8 +630,12 @@ mod tests {
 
     let tx = engine.sender();
     // One tracked, one not
-    tx.send(FsEvent::FileClosed(PathBuf::from(".git/config"))).await.expect("send");
-    tx.send(FsEvent::FileClosed(PathBuf::from("readme.md"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from(".git/config")))
+      .await
+      .expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("readme.md")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -662,8 +660,12 @@ mod tests {
     let (engine, _handle) = start_engine(Arc::clone(&backend), Arc::clone(&events), 0);
 
     let tx = engine.sender();
-    tx.send(FsEvent::FileModified(PathBuf::from("a.txt"))).await.expect("send");
-    tx.send(FsEvent::FileClosed(PathBuf::from("b.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("b.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -682,7 +684,10 @@ mod tests {
 
     // Clone sender and send from the clone
     let tx_clone = engine.sender();
-    tx_clone.send(FsEvent::FileClosed(PathBuf::from("via_clone.txt"))).await.expect("send");
+    tx_clone
+      .send(FsEvent::FileClosed(PathBuf::from("via_clone.txt")))
+      .await
+      .expect("send");
 
     wait_processing().await;
     safe_shutdown(&engine).await;
@@ -701,17 +706,17 @@ mod tests {
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
-      let (_engine, _handle) = SyncEngine::start(
-        SyncConfig::default(),
-        Arc::clone(&backend),
-        events_dyn
-      );
+      let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       // Wait for 3-4 poll intervals
       tokio::time::sleep(Duration::from_millis(200)).await;
 
-      assert!(backend.poll_call_count() >= 2, "poll_remote should be called periodically");
-    }).await;
+      assert!(
+        backend.poll_call_count() >= 2,
+        "poll_remote should be called periodically"
+      );
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -722,20 +727,14 @@ mod tests {
         poll_interval_dur: Duration::from_millis(50),
         ..MockBackend::new()
       });
-      backend.set_poll_result(vec![
-        crate::backend::RemoteChange::Modified {
-          path: PathBuf::from("remote.txt"),
-          content: b"hello".to_vec()
-        }
-      ]);
+      backend.set_poll_result(vec![crate::backend::RemoteChange::Modified {
+        path: PathBuf::from("remote.txt"),
+        content: b"hello".to_vec()
+      }]);
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
-      let (_engine, _handle) = SyncEngine::start(
-        SyncConfig::default(),
-        Arc::clone(&backend),
-        events_dyn
-      );
+      let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -743,8 +742,12 @@ mod tests {
       assert!(!apply_calls.is_empty(), "apply_remote should have been called");
 
       let sync_events = events.sync_calls.lock().expect("lock");
-      assert!(sync_events.contains(&"updated".to_string()), "on_sync(\"updated\") expected");
-    }).await;
+      assert!(
+        sync_events.contains(&"updated".to_string()),
+        "on_sync(\"updated\") expected"
+      );
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -759,16 +762,13 @@ mod tests {
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
-      let (_engine, _handle) = SyncEngine::start(
-        SyncConfig::default(),
-        Arc::clone(&backend),
-        events_dyn
-      );
+      let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(200)).await;
 
       assert!(events.log_count(LogLevel::Warn) >= 1, "poll error should log Warn");
-    }).await;
+    })
+    .await;
   }
 
   #[tokio::test]
@@ -785,7 +785,9 @@ mod tests {
     for i in 0..10 {
       let tx = engine.sender();
       tasks.push(tokio::spawn(async move {
-        tx.send(FsEvent::FileModified(PathBuf::from(format!("file_{i}.txt")))).await.ok();
+        tx.send(FsEvent::FileModified(PathBuf::from(format!("file_{i}.txt"))))
+          .await
+          .ok();
       }));
     }
 
@@ -827,7 +829,11 @@ mod tests {
 
     // Wait 50ms — debounce hasn't expired yet (1 second), sync should not have triggered
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(backend.sync_call_count(), 0, "sync should not trigger before debounce expires");
+    assert_eq!(
+      backend.sync_call_count(),
+      0,
+      "sync should not trigger before debounce expires"
+    );
 
     // Shutdown triggers final sync for all accumulated dirty files
     safe_shutdown(&engine).await;
@@ -865,7 +871,9 @@ mod tests {
     let tx = engine.sender();
 
     // First batch: FileClosed triggers immediate sync
-    tx.send(FsEvent::FileClosed(PathBuf::from("first.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("first.txt")))
+      .await
+      .expect("send");
 
     // Wait for first batch processing (200ms — guaranteed gap)
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -874,7 +882,9 @@ mod tests {
     assert!(count_after_first >= 1, "first FileClosed should trigger sync");
 
     // Second batch: separate FileClosed after pause
-    tx.send(FsEvent::FileClosed(PathBuf::from("second.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("second.txt")))
+      .await
+      .expect("send");
 
     // Wait for second batch processing
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -906,14 +916,13 @@ mod tests {
     let tx = engine.sender();
 
     // Send event in offline mode
-    tx.send(FsEvent::FileClosed(PathBuf::from("offline_file.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("offline_file.txt")))
+      .await
+      .expect("send");
     wait_processing().await;
 
     // Verify: warning logged due to Offline
-    assert!(
-      events.log_count(LogLevel::Warn) >= 1,
-      "Offline should log Warn"
-    );
+    assert!(events.log_count(LogLevel::Warn) >= 1, "Offline should log Warn");
     // push should not have occurred (Offline does not call on_push)
     assert_eq!(events.push_count(), 0, "Offline should not call on_push");
 
@@ -921,16 +930,15 @@ mod tests {
     backend.set_sync_result(SyncResult::Success { synced_files: 1 });
 
     // Send new event — backend is now available
-    tx.send(FsEvent::FileClosed(PathBuf::from("recovered_file.txt"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("recovered_file.txt")))
+      .await
+      .expect("send");
     wait_processing().await;
 
     safe_shutdown(&engine).await;
 
     // After recovery push_count should be > 0
-    assert!(
-      events.push_count() > 0,
-      "on_push should be called after recovery"
-    );
+    assert!(events.push_count() > 0, "on_push should be called after recovery");
   }
 
   #[tokio::test]
@@ -946,18 +954,23 @@ mod tests {
     let tx = engine.sender();
 
     // First FileModified
-    tx.send(FsEvent::FileModified(PathBuf::from("file.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("file.txt")))
+      .await
+      .expect("send");
     // Wait 500ms (less than debounce)
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Second FileModified — debounce timer resets
-    tx.send(FsEvent::FileModified(PathBuf::from("file.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("file.txt")))
+      .await
+      .expect("send");
     // Wait another 500ms — 1000ms total from start, but only 500ms since last event
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Sync should not have triggered: timer was reset
     assert_eq!(
-      backend.sync_call_count(), 0,
+      backend.sync_call_count(),
+      0,
       "sync should not trigger — debounce timer was reset"
     );
 
@@ -981,7 +994,9 @@ mod tests {
 
     // 5 FileClosed for the same file
     for _ in 0..5 {
-      tx.send(FsEvent::FileClosed(PathBuf::from("same.txt"))).await.expect("send");
+      tx.send(FsEvent::FileClosed(PathBuf::from("same.txt")))
+        .await
+        .expect("send");
     }
 
     wait_processing().await;
@@ -1014,9 +1029,15 @@ mod tests {
     let tx = engine.sender();
 
     // Add 3 files to dirty set
-    tx.send(FsEvent::FileModified(PathBuf::from("a.txt"))).await.expect("send");
-    tx.send(FsEvent::FileModified(PathBuf::from("b.txt"))).await.expect("send");
-    tx.send(FsEvent::FileModified(PathBuf::from("c.txt"))).await.expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("a.txt")))
+      .await
+      .expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("b.txt")))
+      .await
+      .expect("send");
+    tx.send(FsEvent::FileModified(PathBuf::from("c.txt")))
+      .await
+      .expect("send");
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Flush triggers sync for all dirty files
@@ -1064,7 +1085,10 @@ mod tests {
     assert!(found, "pipeline_test.txt should be passed to sync()");
 
     // Verify: on_push called (end-to-end pipeline to event handler)
-    assert!(events.push_count() >= 1, "on_push should be called after successful sync");
+    assert!(
+      events.push_count() >= 1,
+      "on_push should be called after successful sync"
+    );
   }
 
   /// Race condition: write during flush.
@@ -1102,14 +1126,8 @@ mod tests {
     // Both files should be synced (in one or multiple calls)
     let calls = backend.sync_calls.lock().expect("lock");
     let all_synced: Vec<&PathBuf> = calls.iter().flat_map(|batch| batch.iter()).collect();
-    assert!(
-      all_synced.contains(&&file_a),
-      "race_a.txt should be synced"
-    );
-    assert!(
-      all_synced.contains(&&file_b),
-      "race_b.txt should be synced"
-    );
+    assert!(all_synced.contains(&&file_a), "race_a.txt should be synced");
+    assert!(all_synced.contains(&&file_b), "race_b.txt should be synced");
   }
 
   /// Sync error retains files in dirty set for re-synchronization.
@@ -1136,10 +1154,7 @@ mod tests {
 
     // Verify: sync was called and error was logged
     assert_eq!(backend.sync_call_count(), 1, "first sync should be called");
-    assert!(
-      events.log_count(LogLevel::Error) >= 1,
-      "sync error should be logged"
-    );
+    assert!(events.log_count(LogLevel::Error) >= 1, "sync error should be logged");
 
     // Remove error — next sync will succeed
     *backend.sync_error.lock().expect("lock") = None;
@@ -1159,14 +1174,8 @@ mod tests {
 
     // File retry_me.txt should be in the second sync call
     let calls = backend.sync_calls.lock().expect("lock");
-    let second_call_has_file = calls
-      .iter()
-      .skip(1)
-      .any(|batch| batch.contains(&target));
-    assert!(
-      second_call_has_file,
-      "retry_me.txt should be re-synced after error"
-    );
+    let second_call_has_file = calls.iter().skip(1).any(|batch| batch.contains(&target));
+    assert!(second_call_has_file, "retry_me.txt should be re-synced after error");
   }
 
   /// FileClosed for a file with should_track=false does not trigger sync.
@@ -1178,9 +1187,7 @@ mod tests {
     eprintln!("[TEST] test_close_event_with_untracked_file");
     let backend = Arc::new(MockBackend {
       // Track only .txt files
-      track_fn: Arc::new(|path| {
-        path.extension().and_then(|e| e.to_str()) == Some("txt")
-      }),
+      track_fn: Arc::new(|path| path.extension().and_then(|e| e.to_str()) == Some("txt")),
       ..MockBackend::new()
     });
     backend.set_sync_result(SyncResult::Success { synced_files: 0 });
@@ -1191,7 +1198,9 @@ mod tests {
     let tx = engine.sender();
 
     // FileClosed for untracked file (.tmp — not .txt)
-    tx.send(FsEvent::FileClosed(PathBuf::from("temp.tmp"))).await.expect("send");
+    tx.send(FsEvent::FileClosed(PathBuf::from("temp.tmp")))
+      .await
+      .expect("send");
     wait_processing().await;
 
     safe_shutdown(&engine).await;
@@ -1208,7 +1217,8 @@ mod tests {
 
     // on_push should not be called (nothing to sync)
     assert_eq!(
-      events.push_count(), 0,
+      events.push_count(),
+      0,
       "on_push should not be called for untracked file"
     );
   }
@@ -1248,7 +1258,8 @@ mod tests {
 
     // sync should not have triggered — debounce is still far away
     assert_eq!(
-      backend.sync_call_count(), 0,
+      backend.sync_call_count(),
+      0,
       "sync should not trigger before debounce expires"
     );
 
@@ -1258,16 +1269,14 @@ mod tests {
 
     // One sync call (final on shutdown)
     assert_eq!(
-      backend.sync_call_count(), 1,
+      backend.sync_call_count(),
+      1,
       "there should be exactly one sync call (final on shutdown)"
     );
 
     // Verify: all 5 files in one batch
     let calls = backend.sync_calls.lock().expect("lock");
-    assert_eq!(
-      calls[0].len(), 5,
-      "sync batch should contain all 5 files"
-    );
+    assert_eq!(calls[0].len(), 5, "sync batch should contain all 5 files");
     for i in 0..5 {
       let expected = PathBuf::from(format!("batch_{i}.txt"));
       assert!(
@@ -1301,10 +1310,7 @@ mod tests {
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 1, "first sync should be called");
-    assert!(
-      events.log_count(LogLevel::Warn) >= 1,
-      "Offline should log Warn"
-    );
+    assert!(events.log_count(LogLevel::Warn) >= 1, "Offline should log Warn");
 
     // Switch result to Success — next sync will succeed
     backend.set_sync_result(SyncResult::Success { synced_files: 1 });
@@ -1316,21 +1322,12 @@ mod tests {
     safe_shutdown(&engine).await;
 
     // sync called again with the same file (retry after Offline)
-    assert!(
-      backend.sync_call_count() >= 2,
-      "sync should be retried after Offline"
-    );
+    assert!(backend.sync_call_count() >= 2, "sync should be retried after Offline");
 
     // Verify: file is present in second (or subsequent) sync call
     let calls = backend.sync_calls.lock().expect("lock");
-    let retry_has_file = calls
-      .iter()
-      .skip(1)
-      .any(|batch| batch.contains(&target));
-    assert!(
-      retry_has_file,
-      "offline_retry.txt should be re-synced after recovery"
-    );
+    let retry_has_file = calls.iter().skip(1).any(|batch| batch.contains(&target));
+    assert!(retry_has_file, "offline_retry.txt should be re-synced after recovery");
 
     // on_push should be called after successful retry
     assert!(
@@ -1376,10 +1373,7 @@ mod tests {
     safe_shutdown(&engine).await;
 
     // sync should be called at least once (FileClosed triggers immediately)
-    assert!(
-      backend.sync_call_count() >= 1,
-      "FileClosed should trigger sync"
-    );
+    assert!(backend.sync_call_count() >= 1, "FileClosed should trigger sync");
 
     // All 3 files should be synced (in one or multiple calls)
     let calls = backend.sync_calls.lock().expect("lock");
@@ -1421,9 +1415,7 @@ mod tests {
     let tx = engine.sender();
 
     // Send 3 files in offline mode
-    let files: Vec<PathBuf> = (0..3)
-      .map(|i| PathBuf::from(format!("queued_{i}.txt")))
-      .collect();
+    let files: Vec<PathBuf> = (0..3).map(|i| PathBuf::from(format!("queued_{i}.txt"))).collect();
     for f in &files {
       tx.send(FsEvent::FileClosed(f.clone())).await.expect("send");
     }
@@ -1436,11 +1428,7 @@ mod tests {
       "sync should be called during offline: {call_count_offline}"
     );
     // push should NOT occur during Offline
-    assert_eq!(
-      events.push_count(),
-      0,
-      "on_push should not be called during Offline"
-    );
+    assert_eq!(events.push_count(), 0, "on_push should not be called during Offline");
 
     // Restore connection
     backend.set_sync_result(SyncResult::Success { synced_files: 3 });
@@ -1452,10 +1440,7 @@ mod tests {
     safe_shutdown(&engine).await;
 
     // Verify: push was called after recovery
-    assert!(
-      events.push_count() > 0,
-      "on_push should be called after recovery"
-    );
+    assert!(events.push_count() > 0, "on_push should be called after recovery");
 
     // All 3 files should be synchronized (in one of the sync calls after recovery)
     let calls = backend.sync_calls.lock().expect("lock");
@@ -1491,20 +1476,14 @@ mod tests {
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 1, "first sync called");
-    assert!(
-      events.log_count(LogLevel::Error) >= 1,
-      "error should be logged"
-    );
+    assert!(events.log_count(LogLevel::Error) >= 1, "error should be logged");
 
     // Second attempt — still error (file returned to dirty set)
     tx.send(FsEvent::Flush).await.expect("send flush 1");
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 2, "second sync called (retry)");
-    assert!(
-      events.log_count(LogLevel::Error) >= 2,
-      "error should be logged twice"
-    );
+    assert!(events.log_count(LogLevel::Error) >= 2, "error should be logged twice");
 
     // Third attempt — error again
     tx.send(FsEvent::Flush).await.expect("send flush 2");
@@ -1577,7 +1556,9 @@ mod tests {
     backend.clear_sync_delay();
 
     // FileClosed for file_b to guarantee triggering sync
-    tx.send(FsEvent::FileClosed(file_b.clone())).await.expect("send B close");
+    tx.send(FsEvent::FileClosed(file_b.clone()))
+      .await
+      .expect("send B close");
     wait_processing().await;
 
     safe_shutdown(&engine).await;
@@ -1586,10 +1567,7 @@ mod tests {
     let calls = backend.sync_calls.lock().expect("lock");
     let all_synced: Vec<&PathBuf> = calls.iter().flat_map(|batch| batch.iter()).collect();
 
-    assert!(
-      all_synced.contains(&&file_a),
-      "during_sync_a.txt should be synced"
-    );
+    assert!(all_synced.contains(&&file_a), "during_sync_a.txt should be synced");
     assert!(
       all_synced.contains(&&file_b),
       "during_sync_b.txt should NOT be lost — should be synced in next cycle"
@@ -1644,24 +1622,13 @@ mod tests {
 
     // All 5 files should be in one batch
     let calls = backend.sync_calls.lock().expect("lock");
-    assert_eq!(
-      calls[0].len(),
-      5,
-      "final sync should contain all 5 files"
-    );
+    assert_eq!(calls[0].len(), 5, "final sync should contain all 5 files");
     for f in &files {
-      assert!(
-        calls[0].contains(f),
-        "file {} should be in final sync",
-        f.display()
-      );
+      assert!(calls[0].contains(f), "file {} should be in final sync", f.display());
     }
 
     // on_push should be called
-    assert!(
-      events.push_count() > 0,
-      "on_push should be called after final sync"
-    );
+    assert!(events.push_count() > 0, "on_push should be called after final sync");
   }
 
   /// Regression test: poll_worker with short interval is properly stopped
@@ -1680,11 +1647,7 @@ mod tests {
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
-      let (engine, handle) = SyncEngine::start(
-        SyncConfig::default(),
-        Arc::clone(&backend),
-        events_dyn
-      );
+      let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       // Let poll_worker run and accumulate iterations
       tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1715,7 +1678,8 @@ mod tests {
         metrics.poll_iterations.load(std::sync::atomic::Ordering::Relaxed) >= 3,
         "metrics should reflect completed iterations"
       );
-    }).await;
+    })
+    .await;
   }
 
   /// Regression test: multiple SyncEngines with aggressive poll_interval
@@ -1726,41 +1690,35 @@ mod tests {
   #[tokio::test]
   async fn test_no_leaked_poll_workers_on_repeated_start_shutdown() {
     eprintln!("[TEST] test_no_leaked_poll_workers_on_repeated_start_shutdown");
-    crate::test_utils::with_timeout(
-      "test_no_leaked_poll_workers_on_repeated_start_shutdown",
-      async {
-        let backend = Arc::new(MockBackend {
-          poll_interval_dur: Duration::from_millis(5),
-          ..MockBackend::new()
-        });
+    crate::test_utils::with_timeout("test_no_leaked_poll_workers_on_repeated_start_shutdown", async {
+      let backend = Arc::new(MockBackend {
+        poll_interval_dur: Duration::from_millis(5),
+        ..MockBackend::new()
+      });
 
-        // Create and destroy 10 engines in a row
-        for i in 0..10 {
-          let events = Arc::new(TestEventHandler::new());
-          let events_dyn: Arc<dyn crate::events::VfsEventHandler> = events;
-          let (engine, handle) = SyncEngine::start(
-            SyncConfig::default(),
-            Arc::clone(&backend),
-            events_dyn
-          );
+      // Create and destroy 10 engines in a row
+      for i in 0..10 {
+        let events = Arc::new(TestEventHandler::new());
+        let events_dyn: Arc<dyn crate::events::VfsEventHandler> = events;
+        let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
-          tokio::time::sleep(Duration::from_millis(20)).await;
-          safe_shutdown(&engine).await;
-          safe_join(handle).await;
-          eprintln!("  engine {i} shutdown OK");
-        }
-
-        // Wait — if there are leaked tasks, counter will grow
-        let polls_before = backend.poll_call_count();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let polls_after = backend.poll_call_count();
-
-        assert_eq!(
-          polls_before, polls_after,
-          "no background polls should remain after all engines shut down: \
-           before={polls_before}, after={polls_after}"
-        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        safe_shutdown(&engine).await;
+        safe_join(handle).await;
+        eprintln!("  engine {i} shutdown OK");
       }
-    ).await;
+
+      // Wait — if there are leaked tasks, counter will grow
+      let polls_before = backend.poll_call_count();
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      let polls_after = backend.poll_call_count();
+
+      assert_eq!(
+        polls_before, polls_after,
+        "no background polls should remain after all engines shut down: \
+           before={polls_before}, after={polls_after}"
+      );
+    })
+    .await;
   }
 }

@@ -114,10 +114,7 @@ const fn to_node_kind(kind: FileType) -> NodeKind {
 /// Convert `SystemTime` to rfuse3 `Timestamp`.
 fn system_time_to_timestamp(time: SystemTime) -> Timestamp {
   let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-  Timestamp::new(
-    i64::try_from(duration.as_secs()).unwrap_or(0),
-    duration.subsec_nanos()
-  )
+  Timestamp::new(i64::try_from(duration.as_secs()).unwrap_or(0), duration.subsec_nanos())
 }
 
 /// Convert rfuse3 `Timestamp` to `SystemTime`.
@@ -148,9 +145,7 @@ const fn decode_open_flags(flags: u32) -> OpenFlags {
 impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
   async fn init(&self, _req: Request) -> Result<ReplyInit> {
     debug!("FUSE init");
-    Ok(ReplyInit {
-      max_write: MAX_WRITE
-    })
+    Ok(ReplyInit { max_write: MAX_WRITE })
   }
 
   async fn destroy(&self, _req: Request) {
@@ -179,13 +174,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     debug!(inode, "forget (noop)");
   }
 
-  async fn getattr(
-    &self,
-    _req: Request,
-    inode: u64,
-    _fh: Option<u64>,
-    _flags: u32
-  ) -> Result<ReplyAttr> {
+  async fn getattr(&self, _req: Request, inode: u64, _fh: Option<u64>, _flags: u32) -> Result<ReplyAttr> {
     let path = self.resolve_path(inode).await?;
 
     match self.inner.getattr(&path).await {
@@ -197,18 +186,13 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
-  async fn setattr(
-    &self,
-    _req: Request,
-    inode: u64,
-    _fh: Option<u64>,
-    set_attr: SetAttr
-  ) -> Result<ReplyAttr> {
+  async fn setattr(&self, _req: Request, inode: u64, _fh: Option<u64>, set_attr: SetAttr) -> Result<ReplyAttr> {
     let path = self.resolve_path(inode).await?;
 
     let size = set_attr.size;
     let atime = set_attr.atime.map(timestamp_to_system_time);
     let mtime = set_attr.mtime.map(timestamp_to_system_time);
+    #[allow(clippy::useless_conversion)] // mode_t is u16 on macOS, u32 on Linux
     let mode = set_attr.mode.map(u32::from);
 
     match self.inner.setattr(&path, size, atime, mtime, mode).await {
@@ -230,14 +214,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
-  async fn read(
-    &self,
-    _req: Request,
-    inode: u64,
-    fh: u64,
-    offset: u64,
-    size: u32
-  ) -> Result<ReplyData> {
+  async fn read(&self, _req: Request, inode: u64, fh: u64, offset: u64, size: u32) -> Result<ReplyData> {
     let path = self.resolve_path(inode).await?;
 
     match self.inner.read(&path, UfFileHandle(fh), offset, size).await {
@@ -359,24 +336,13 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
-  async fn mkdir(
-    &self,
-    _req: Request,
-    parent: u64,
-    name: &OsStr,
-    mode: u32,
-    _umask: u32
-  ) -> Result<ReplyEntry> {
+  async fn mkdir(&self, _req: Request, parent: u64, name: &OsStr, mode: u32, _umask: u32) -> Result<ReplyEntry> {
     let parent_path = self.resolve_path(parent).await?;
     let dir_path = parent_path.join(name);
 
     match self.inner.mkdir(&dir_path, mode).await {
       Ok(attr) => {
-        let ino = self
-          .inode_map
-          .write()
-          .await
-          .get_or_insert(&dir_path, NodeKind::Dir);
+        let ino = self.inode_map.write().await.get_or_insert(&dir_path, NodeKind::Dir);
         Ok(ReplyEntry {
           ttl: TTL,
           attr: to_rfuse3_attr(&attr, ino),
@@ -391,11 +357,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     let parent_path = self.resolve_path(parent).await?;
     let dir_path = parent_path.join(name);
 
-    self
-      .inner
-      .rmdir(&dir_path)
-      .await
-      .map_err(|e| fs_error_to_errno(&e))?;
+    self.inner.rmdir(&dir_path).await.map_err(|e| fs_error_to_errno(&e))?;
 
     self.inode_map.write().await.remove(&dir_path);
     Ok(())
@@ -405,11 +367,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     let parent_path = self.resolve_path(parent).await?;
     let file_path = parent_path.join(name);
 
-    self
-      .inner
-      .unlink(&file_path)
-      .await
-      .map_err(|e| fs_error_to_errno(&e))?;
+    self.inner.unlink(&file_path).await.map_err(|e| fs_error_to_errno(&e))?;
 
     self.inode_map.write().await.remove(&file_path);
     Ok(())
@@ -439,25 +397,14 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     Ok(())
   }
 
-  async fn create(
-    &self,
-    _req: Request,
-    parent: u64,
-    name: &OsStr,
-    mode: u32,
-    flags: u32
-  ) -> Result<ReplyCreated> {
+  async fn create(&self, _req: Request, parent: u64, name: &OsStr, mode: u32, flags: u32) -> Result<ReplyCreated> {
     let parent_path = self.resolve_path(parent).await?;
     let file_path = parent_path.join(name);
     let open_flags = decode_open_flags(flags);
 
     match self.inner.create(&file_path, open_flags, mode).await {
       Ok((fh, attr)) => {
-        let ino = self
-          .inode_map
-          .write()
-          .await
-          .get_or_insert(&file_path, NodeKind::File);
+        let ino = self.inode_map.write().await.get_or_insert(&file_path, NodeKind::File);
         Ok(ReplyCreated {
           ttl: TTL,
           attr: to_rfuse3_attr(&attr, ino),
@@ -470,13 +417,7 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
-  async fn symlink(
-    &self,
-    _req: Request,
-    parent: u64,
-    name: &OsStr,
-    link_path: &OsStr
-  ) -> Result<ReplyEntry> {
+  async fn symlink(&self, _req: Request, parent: u64, name: &OsStr, link_path: &OsStr) -> Result<ReplyEntry> {
     let parent_path = self.resolve_path(parent).await?;
     let symlink_path = parent_path.join(name);
     let target = PathBuf::from(link_path);
@@ -542,20 +483,16 @@ impl<F: UniFuseFilesystem> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     _position: u32
   ) -> Result<()> {
     let path = self.resolve_path(inode).await?;
+    #[allow(clippy::cast_possible_wrap)] // xattr flags are small POSIX constants
+    let flags = flags as i32;
     self
       .inner
-      .setxattr(&path, name, value, flags.cast_signed())
+      .setxattr(&path, name, value, flags)
       .await
       .map_err(|e| fs_error_to_errno(&e))
   }
 
-  async fn getxattr(
-    &self,
-    _req: Request,
-    inode: u64,
-    name: &OsStr,
-    size: u32
-  ) -> Result<ReplyXAttr> {
+  async fn getxattr(&self, _req: Request, inode: u64, name: &OsStr, size: u32) -> Result<ReplyXAttr> {
     let path = self.resolve_path(inode).await?;
 
     match self.inner.getxattr(&path, name).await {

@@ -18,7 +18,7 @@ async fn setup_backend() -> (
   WikiBackend,
   std::sync::Arc<common::FakeState>,
   tempfile::TempDir,
-  String,
+  String
 ) {
   let (base_url, state) = FakeWikiApi::spawn().await;
 
@@ -32,7 +32,7 @@ async fn setup_backend() -> (
       "Docs",
       "# Documentation",
       "2024-01-01T00:00:01Z",
-      Some(root_id),
+      Some(root_id)
     )
     .await;
 
@@ -42,7 +42,7 @@ async fn setup_backend() -> (
     root_slug: "root".to_string(),
     poll_interval_secs: 60,
     max_depth: 10,
-    max_pages: 500,
+    max_pages: 500
   };
   let backend = WikiBackend::new(config).expect("backend");
 
@@ -109,10 +109,7 @@ async fn test_init_downloads_tree() {
     );
 
     // Verify files are downloaded
-    assert!(
-      local_dir.join("root.md").exists(),
-      "root.md should be downloaded"
-    );
+    assert!(local_dir.join("root.md").exists(), "root.md should be downloaded");
     assert!(
       local_dir.join("root/docs.md").exists(),
       "root/docs.md should be downloaded"
@@ -121,7 +118,9 @@ async fn test_init_downloads_tree() {
     // Verify content
     let content = std::fs::read_to_string(local_dir.join("root.md")).expect("read");
     assert_eq!(content, "# Root page");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -146,7 +145,9 @@ async fn test_init_creates_meta() {
 
     let base_file = base_dir.join("root.md");
     assert!(base_file.exists(), "root.md base should exist");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -167,7 +168,9 @@ async fn test_sync_new_page() {
       matches!(result, omnifuse_core::SyncResult::Success { synced_files: 1 }),
       "sync of new page -> Success: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -188,7 +191,9 @@ async fn test_sync_update_page() {
       matches!(result, omnifuse_core::SyncResult::Success { .. }),
       "sync of updated page -> Success: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -212,11 +217,10 @@ async fn test_poll_remote_detects_changes() {
     }
 
     let changes = backend.poll_remote().await.expect("poll_remote");
-    assert!(
-      !changes.is_empty(),
-      "remote changes should be detected"
-    );
-  }).await.expect("test timed out — possible deadlock");
+    assert!(!changes.is_empty(), "remote changes should be detected");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -231,18 +235,17 @@ async fn test_apply_remote_writes() {
     // Apply a remote change
     let change = omnifuse_core::RemoteChange::Modified {
       path: local_dir.join("root.md"),
-      content: b"# Remote update".to_vec(),
+      content: b"# Remote update".to_vec()
     };
 
-    backend
-      .apply_remote(vec![change])
-      .await
-      .expect("apply_remote");
+    backend.apply_remote(vec![change]).await.expect("apply_remote");
 
     // Verify the file is updated
     let content = std::fs::read_to_string(local_dir.join("root.md")).expect("read");
     assert_eq!(content, "# Remote update");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -279,7 +282,9 @@ async fn test_sync_with_concurrent_remote_change() {
       ),
       "sync with concurrent changes should detect conflict: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -336,7 +341,9 @@ async fn test_init_idempotent() {
       matches!(result2, omnifuse_core::InitResult::UpToDate),
       "repeated init -> UpToDate: {result2:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -373,13 +380,10 @@ async fn test_apply_remote_updates_base() {
     // Apply a remote change
     let change = omnifuse_core::RemoteChange::Modified {
       path: local_dir.join("root.md"),
-      content: b"# Updated by remote".to_vec(),
+      content: b"# Updated by remote".to_vec()
     };
 
-    backend
-      .apply_remote(vec![change])
-      .await
-      .expect("apply_remote");
+    backend.apply_remote(vec![change]).await.expect("apply_remote");
 
     // Verify base is updated
     let base_path = local_dir.join(".vfs/base/root.md");
@@ -390,7 +394,9 @@ async fn test_apply_remote_updates_base() {
       base_content, "# Updated by remote",
       "base should contain updated content"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -415,7 +421,9 @@ async fn test_sync_delete_page() {
       result.is_err(),
       "sync of deleted file should return an error: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -435,75 +443,69 @@ async fn test_poll_remote_no_changes() {
       "poll_remote with no server changes -> empty list: {} items",
       changes.len()
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
 async fn test_init_with_deep_nesting() {
   eprintln!("[TEST] test_init_with_deep_nesting");
   tokio::time::timeout(TEST_TIMEOUT, async {
-  // Pages with 3 nesting levels: root -> docs -> api
-  let (base_url, state) = FakeWikiApi::spawn().await;
+    // Pages with 3 nesting levels: root -> docs -> api
+    let (base_url, state) = FakeWikiApi::spawn().await;
 
-  let root_id = state
-    .add_page("root", "Root", "# Root", "2024-01-01T00:00:00Z", None)
-    .await;
-  let docs_id = state
-    .add_page(
-      "root/docs",
-      "Docs",
-      "# Docs",
-      "2024-01-01T00:00:01Z",
-      Some(root_id),
-    )
-    .await;
-  state
-    .add_page(
-      "root/docs/api",
-      "API",
-      "# API Reference",
-      "2024-01-01T00:00:02Z",
-      Some(docs_id),
-    )
-    .await;
+    let root_id = state
+      .add_page("root", "Root", "# Root", "2024-01-01T00:00:00Z", None)
+      .await;
+    let docs_id = state
+      .add_page("root/docs", "Docs", "# Docs", "2024-01-01T00:00:01Z", Some(root_id))
+      .await;
+    state
+      .add_page(
+        "root/docs/api",
+        "API",
+        "# API Reference",
+        "2024-01-01T00:00:02Z",
+        Some(docs_id)
+      )
+      .await;
 
-  let config = WikiConfig {
-    base_url,
-    auth_token: "test-token".to_string(),
-    root_slug: "root".to_string(),
-    poll_interval_secs: 60,
-    max_depth: 10,
-    max_pages: 500,
-  };
-  let backend = WikiBackend::new(config).expect("backend");
-  let tmp = tempfile::tempdir().expect("tempdir");
-  let local_dir = tmp.path().to_path_buf();
+    let config = WikiConfig {
+      base_url,
+      auth_token: "test-token".to_string(),
+      root_slug: "root".to_string(),
+      poll_interval_secs: 60,
+      max_depth: 10,
+      max_pages: 500
+    };
+    let backend = WikiBackend::new(config).expect("backend");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let local_dir = tmp.path().to_path_buf();
 
-  let result = backend.init(&local_dir).await.expect("init");
-  assert!(
-    matches!(result, omnifuse_core::InitResult::Updated),
-    "init with deep tree -> Updated: {result:?}"
-  );
+    let result = backend.init(&local_dir).await.expect("init");
+    assert!(
+      matches!(result, omnifuse_core::InitResult::Updated),
+      "init with deep tree -> Updated: {result:?}"
+    );
 
-  // Verify all 3 nesting levels
-  assert!(
-    local_dir.join("root.md").exists(),
-    "root.md should be downloaded"
-  );
-  assert!(
-    local_dir.join("root/docs.md").exists(),
-    "root/docs.md should be downloaded"
-  );
-  assert!(
-    local_dir.join("root/docs/api.md").exists(),
-    "root/docs/api.md should be downloaded (3rd level)"
-  );
+    // Verify all 3 nesting levels
+    assert!(local_dir.join("root.md").exists(), "root.md should be downloaded");
+    assert!(
+      local_dir.join("root/docs.md").exists(),
+      "root/docs.md should be downloaded"
+    );
+    assert!(
+      local_dir.join("root/docs/api.md").exists(),
+      "root/docs/api.md should be downloaded (3rd level)"
+    );
 
-  // Verify the deepest file content
-  let content =
-    std::fs::read_to_string(local_dir.join("root/docs/api.md")).expect("read api.md");
-  assert_eq!(content, "# API Reference");
-  }).await.expect("test timed out — possible deadlock");
+    // Verify the deepest file content
+    let content = std::fs::read_to_string(local_dir.join("root/docs/api.md")).expect("read api.md");
+    assert_eq!(content, "# API Reference");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -533,7 +535,9 @@ async fn test_sync_non_md_file_ignored() {
       matches!(result, omnifuse_core::SyncResult::Success { .. }),
       "sync of non-md file handled by backend: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -552,20 +556,19 @@ async fn test_apply_remote_new_page() {
 
     let change = omnifuse_core::RemoteChange::Modified {
       path: new_path.clone(),
-      content: b"# Brand New Page".to_vec(),
+      content: b"# Brand New Page".to_vec()
     };
 
-    backend
-      .apply_remote(vec![change])
-      .await
-      .expect("apply_remote");
+    backend.apply_remote(vec![change]).await.expect("apply_remote");
 
     // Verify the file is created
     assert!(new_path.exists(), "new file should be created");
 
     let content = std::fs::read_to_string(&new_path).expect("read");
     assert_eq!(content, "# Brand New Page");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -592,7 +595,9 @@ async fn test_sync_multiple_pages() {
       matches!(result, omnifuse_core::SyncResult::Success { synced_files: 3 }),
       "sync of three new pages -> Success {{ synced_files: 3 }}: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -627,7 +632,9 @@ async fn test_poll_remote_after_server_update() {
       has_modified,
       "poll_remote should detect Modified for root/docs.md: {changes:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -645,59 +652,60 @@ async fn test_apply_remote_deleted_page() {
 
     // Apply a remote deletion
     let change = omnifuse_core::RemoteChange::Deleted {
-      path: root_path.clone(),
+      path: root_path.clone()
     };
-    backend
-      .apply_remote(vec![change])
-      .await
-      .expect("apply_remote");
+    backend.apply_remote(vec![change]).await.expect("apply_remote");
 
     // File should be deleted from disk
     assert!(
       !root_path.exists(),
       "root.md should be deleted after apply_remote Deleted"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
 async fn test_init_empty_tree() {
   eprintln!("[TEST] test_init_empty_tree");
   tokio::time::timeout(TEST_TIMEOUT, async {
-  // Server with a single root page, no children.
-  // Repeated init -> UpToDate (count=0, files already in place).
-  let (base_url, state) = FakeWikiApi::spawn().await;
+    // Server with a single root page, no children.
+    // Repeated init -> UpToDate (count=0, files already in place).
+    let (base_url, state) = FakeWikiApi::spawn().await;
 
-  state
-    .add_page("root", "Root", "# Empty root", "2024-01-01T00:00:00Z", None)
-    .await;
+    state
+      .add_page("root", "Root", "# Empty root", "2024-01-01T00:00:00Z", None)
+      .await;
 
-  let config = WikiConfig {
-    base_url,
-    auth_token: "test-token".to_string(),
-    root_slug: "root".to_string(),
-    poll_interval_secs: 60,
-    max_depth: 10,
-    max_pages: 500,
-  };
-  let backend = WikiBackend::new(config).expect("backend");
-  let tmp = tempfile::tempdir().expect("tempdir");
-  let local_dir = tmp.path().to_path_buf();
+    let config = WikiConfig {
+      base_url,
+      auth_token: "test-token".to_string(),
+      root_slug: "root".to_string(),
+      poll_interval_secs: 60,
+      max_depth: 10,
+      max_pages: 500
+    };
+    let backend = WikiBackend::new(config).expect("backend");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let local_dir = tmp.path().to_path_buf();
 
-  // First init - download the single page
-  let result1 = backend.init(&local_dir).await.expect("init 1");
-  assert!(
-    matches!(result1, omnifuse_core::InitResult::Updated),
-    "first init -> Updated: {result1:?}"
-  );
+    // First init - download the single page
+    let result1 = backend.init(&local_dir).await.expect("init 1");
+    assert!(
+      matches!(result1, omnifuse_core::InitResult::Updated),
+      "first init -> Updated: {result1:?}"
+    );
 
-  // Repeated init - data already in place, count=0
-  let result2 = backend.init(&local_dir).await.expect("init 2");
-  assert!(
-    matches!(result2, omnifuse_core::InitResult::UpToDate),
-    "repeated init of empty tree -> UpToDate (count=0): {result2:?}"
-  );
-  }).await.expect("test timed out — possible deadlock");
+    // Repeated init - data already in place, count=0
+    let result2 = backend.init(&local_dir).await.expect("init 2");
+    assert!(
+      matches!(result2, omnifuse_core::InitResult::UpToDate),
+      "repeated init of empty tree -> UpToDate (count=0): {result2:?}"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -731,7 +739,9 @@ async fn test_sync_with_server_error() {
       result.is_err(),
       "sync with server error 500 should return Err: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Root page with 3 children: init downloads all 4 .md files.
@@ -739,75 +749,74 @@ async fn test_sync_with_server_error() {
 async fn test_read_page_with_subpages() {
   eprintln!("[TEST] test_read_page_with_subpages");
   tokio::time::timeout(TEST_TIMEOUT, async {
-  let (base_url, state) = FakeWikiApi::spawn().await;
+    let (base_url, state) = FakeWikiApi::spawn().await;
 
-  let root_id = state
-    .add_page("root", "Root", "# Root page", "2024-01-01T00:00:00Z", None)
-    .await;
-  state
-    .add_page(
-      "root/child1",
-      "Child 1",
-      "# Child 1",
-      "2024-01-01T00:00:01Z",
-      Some(root_id),
-    )
-    .await;
-  state
-    .add_page(
-      "root/child2",
-      "Child 2",
-      "# Child 2",
-      "2024-01-01T00:00:02Z",
-      Some(root_id),
-    )
-    .await;
-  state
-    .add_page(
-      "root/child3",
-      "Child 3",
-      "# Child 3",
-      "2024-01-01T00:00:03Z",
-      Some(root_id),
-    )
-    .await;
+    let root_id = state
+      .add_page("root", "Root", "# Root page", "2024-01-01T00:00:00Z", None)
+      .await;
+    state
+      .add_page(
+        "root/child1",
+        "Child 1",
+        "# Child 1",
+        "2024-01-01T00:00:01Z",
+        Some(root_id)
+      )
+      .await;
+    state
+      .add_page(
+        "root/child2",
+        "Child 2",
+        "# Child 2",
+        "2024-01-01T00:00:02Z",
+        Some(root_id)
+      )
+      .await;
+    state
+      .add_page(
+        "root/child3",
+        "Child 3",
+        "# Child 3",
+        "2024-01-01T00:00:03Z",
+        Some(root_id)
+      )
+      .await;
 
-  let config = WikiConfig {
-    base_url,
-    auth_token: "test-token".to_string(),
-    root_slug: "root".to_string(),
-    poll_interval_secs: 60,
-    max_depth: 10,
-    max_pages: 500,
-  };
-  let backend = WikiBackend::new(config).expect("backend");
-  let tmp = tempfile::tempdir().expect("tempdir");
-  let local_dir = tmp.path().to_path_buf();
+    let config = WikiConfig {
+      base_url,
+      auth_token: "test-token".to_string(),
+      root_slug: "root".to_string(),
+      poll_interval_secs: 60,
+      max_depth: 10,
+      max_pages: 500
+    };
+    let backend = WikiBackend::new(config).expect("backend");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let local_dir = tmp.path().to_path_buf();
 
-  let result = backend.init(&local_dir).await.expect("init");
-  assert!(
-    matches!(result, omnifuse_core::InitResult::Updated),
-    "init with root + 3 children -> Updated: {result:?}"
-  );
+    let result = backend.init(&local_dir).await.expect("init");
+    assert!(
+      matches!(result, omnifuse_core::InitResult::Updated),
+      "init with root + 3 children -> Updated: {result:?}"
+    );
 
-  // Verify all 4 files
-  assert!(
-    local_dir.join("root.md").exists(),
-    "root.md should be downloaded"
-  );
-  assert!(
-    local_dir.join("root/child1.md").exists(),
-    "root/child1.md should be downloaded"
-  );
-  assert!(
-    local_dir.join("root/child2.md").exists(),
-    "root/child2.md should be downloaded"
-  );
-  assert!(
-    local_dir.join("root/child3.md").exists(),
-    "root/child3.md should be downloaded"
-  );
-  }).await.expect("test timed out — possible deadlock");
+    // Verify all 4 files
+    assert!(local_dir.join("root.md").exists(), "root.md should be downloaded");
+    assert!(
+      local_dir.join("root/child1.md").exists(),
+      "root/child1.md should be downloaded"
+    );
+    assert!(
+      local_dir.join("root/child2.md").exists(),
+      "root/child2.md should be downloaded"
+    );
+    assert!(
+      local_dir.join("root/child3.md").exists(),
+      "root/child3.md should be downloaded"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Deleting a parent page via apply_remote(Deleted): file removed from disk.
@@ -825,19 +834,18 @@ async fn test_delete_page_with_subpages() {
 
     // Apply remote deletion for the parent page
     let change = omnifuse_core::RemoteChange::Deleted {
-      path: root_path.clone(),
+      path: root_path.clone()
     };
-    backend
-      .apply_remote(vec![change])
-      .await
-      .expect("apply_remote");
+    backend.apply_remote(vec![change]).await.expect("apply_remote");
 
     // Parent file should be deleted
     assert!(
       !root_path.exists(),
       "root.md should be deleted after apply_remote Deleted"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Write file, sync, write again -- second change is not lost.
@@ -870,7 +878,9 @@ async fn test_write_during_sync_not_lost() {
       content, "# Second change",
       "second change should not be lost after sync"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Concurrent local + remote change -> sync detects conflict.
@@ -908,7 +918,9 @@ async fn test_merge_conflict_detection() {
       ),
       "sync with concurrent changes should detect conflict: {result:?}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Non-.md files (.txt, .json) are not tracked: should_track -> false.
@@ -943,10 +955,7 @@ async fn test_non_md_files_are_local_only() {
     ".tar.gz file should not be tracked"
   );
   // But .md is tracked
-  assert!(
-    backend.should_track(Path::new("page.md")),
-    ".md file should be tracked"
-  );
+  assert!(backend.should_track(Path::new("page.md")), ".md file should be tracked");
 }
 
 #[tokio::test]

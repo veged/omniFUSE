@@ -62,9 +62,7 @@ impl MockBackend {
       poll_result: Arc::new(Mutex::new(Vec::new())),
       sync_error: Arc::new(Mutex::new(None)),
       poll_error: Arc::new(Mutex::new(None)),
-      track_fn: Arc::new(|path| {
-        !path.to_string_lossy().contains(".git")
-      }),
+      track_fn: Arc::new(|path| !path.to_string_lossy().contains(".git")),
       poll_interval_dur: Duration::from_secs(3600),
       online: Arc::new(AtomicBool::new(true)),
       sync_delay: Arc::new(Mutex::new(None))
@@ -123,11 +121,7 @@ impl Backend for MockBackend {
   }
 
   async fn sync(&self, dirty_files: &[PathBuf]) -> anyhow::Result<SyncResult> {
-    self
-      .sync_calls
-      .lock()
-      .expect("lock")
-      .push(dirty_files.to_vec());
+    self.sync_calls.lock().expect("lock").push(dirty_files.to_vec());
 
     // Simulate sync delay (for race condition testing)
     let delay = *self.sync_delay.lock().expect("lock");
@@ -135,12 +129,7 @@ impl Backend for MockBackend {
       tokio::time::sleep(d).await;
     }
 
-    let maybe_err = self
-      .sync_error
-      .lock()
-      .expect("lock")
-      .as_ref()
-      .map(ToString::to_string);
+    let maybe_err = self.sync_error.lock().expect("lock").as_ref().map(ToString::to_string);
     if let Some(msg) = maybe_err {
       return Err(anyhow::anyhow!("{msg}"));
     }
@@ -159,11 +148,7 @@ impl Backend for MockBackend {
   }
 
   async fn apply_remote(&self, changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    self
-      .apply_calls
-      .lock()
-      .expect("lock")
-      .push(changes);
+    self.apply_calls.lock().expect("lock").push(changes);
     Ok(())
   }
 
@@ -266,13 +251,9 @@ where
   F: std::future::Future<Output = T>
 {
   eprintln!("[TEST] Starting: {test_name}");
-  let result = tokio::time::timeout(TEST_TIMEOUT, f).await.unwrap_or_else(
-    |_| {
-      panic!(
-        "[TEST] {test_name} timed out after {TEST_TIMEOUT:?} — possible deadlock"
-      )
-    }
-  );
+  let result = tokio::time::timeout(TEST_TIMEOUT, f)
+    .await
+    .unwrap_or_else(|_| panic!("[TEST] {test_name} timed out after {TEST_TIMEOUT:?} — possible deadlock"));
   eprintln!("[TEST] Completed: {test_name}");
   result
 }
@@ -283,19 +264,11 @@ impl VfsEventHandler for TestEventHandler {
   }
 
   fn on_sync(&self, result: &str) {
-    self
-      .sync_calls
-      .lock()
-      .expect("lock")
-      .push(result.to_string());
+    self.sync_calls.lock().expect("lock").push(result.to_string());
   }
 
   fn on_log(&self, level: LogLevel, message: &str) {
-    self
-      .log_calls
-      .lock()
-      .expect("lock")
-      .push((level, message.to_string()));
+    self.log_calls.lock().expect("lock").push((level, message.to_string()));
   }
 
   fn on_file_written(&self, path: &Path, bytes: usize) {
@@ -307,19 +280,11 @@ impl VfsEventHandler for TestEventHandler {
   }
 
   fn on_file_created(&self, path: &Path) {
-    self
-      .created_calls
-      .lock()
-      .expect("lock")
-      .push(path.to_path_buf());
+    self.created_calls.lock().expect("lock").push(path.to_path_buf());
   }
 
   fn on_file_deleted(&self, path: &Path) {
-    self
-      .deleted_calls
-      .lock()
-      .expect("lock")
-      .push(path.to_path_buf());
+    self.deleted_calls.lock().expect("lock").push(path.to_path_buf());
   }
 
   fn on_file_renamed(&self, old_path: &Path, new_path: &Path) {

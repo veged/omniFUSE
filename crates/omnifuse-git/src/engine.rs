@@ -191,9 +191,7 @@ impl GitEngine {
       return Ok(None);
     }
 
-    Ok(Some(
-      String::from_utf8_lossy(&output.stdout).trim().to_string()
-    ))
+    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
   }
 
   /// Fetch from remote.
@@ -264,15 +262,12 @@ impl GitEngine {
 
         let conflict_files = self.get_conflict_files().await.unwrap_or_default();
         warn!(files = ?conflict_files, "pull/rebase: conflicts detected");
-        return Ok(MergeResult::Conflict {
-          files: conflict_files
-        });
+        return Ok(MergeResult::Conflict { files: conflict_files });
       }
       anyhow::bail!("git pull failed: {stderr}");
     }
 
-    if stdout.contains("Already up to date")
-      || (stdout.contains("Current branch") && stdout.contains("is up to date"))
+    if stdout.contains("Already up to date") || (stdout.contains("Current branch") && stdout.contains("is up to date"))
     {
       debug!("pull: already up to date");
       Ok(MergeResult::UpToDate)
@@ -392,8 +387,9 @@ impl GitEngine {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 pub(crate) mod tests {
-  use super::*;
   use std::path::PathBuf;
+
+  use super::*;
 
   /// Timeout for async tests (30s — git operations can be slow).
   const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -403,10 +399,10 @@ pub(crate) mod tests {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().to_path_buf();
 
-    // git init
+    // git init (explicit branch name to avoid dependence on global config)
     tokio::process::Command::new("git")
       .current_dir(&path)
-      .args(["init"])
+      .args(["init", "-b", "main"])
       .output()
       .await
       .expect("git init");
@@ -453,9 +449,9 @@ pub(crate) mod tests {
     let clone1_path = base.join("clone1");
     let clone2_path = base.join("clone2");
 
-    // Create bare repo
+    // Create bare repo (explicit branch name to avoid dependence on global config)
     tokio::process::Command::new("git")
-      .args(["init", "--bare"])
+      .args(["init", "--bare", "-b", "main"])
       .arg(&bare_path)
       .output()
       .await
@@ -487,7 +483,9 @@ pub(crate) mod tests {
           .await
           .expect("config");
 
-        tokio::fs::write(clone1_path.join("README.md"), "# Shared").await.expect("write");
+        tokio::fs::write(clone1_path.join("README.md"), "# Shared")
+          .await
+          .expect("write");
         tokio::process::Command::new("git")
           .current_dir(&clone1_path)
           .args(["add", "."])
@@ -617,8 +615,13 @@ pub(crate) mod tests {
     let (_tmp, path) = create_test_repo().await;
     let engine = GitEngine::new(path.clone(), "main".to_string()).expect("engine");
 
-    tokio::fs::write(path.join("untracked.txt"), "data").await.expect("write");
-    assert!(engine.has_changes().await.expect("has_changes"), "new file = has changes");
+    tokio::fs::write(path.join("untracked.txt"), "data")
+      .await
+      .expect("write");
+    assert!(
+      engine.has_changes().await.expect("has_changes"),
+      "new file = has changes"
+    );
   }
 
   #[tokio::test]
@@ -627,7 +630,10 @@ pub(crate) mod tests {
     let (_tmp, path) = create_test_repo().await;
     let engine = GitEngine::new(path, "main".to_string()).expect("engine");
 
-    assert!(!engine.has_changes().await.expect("has_changes"), "clean repo = no changes");
+    assert!(
+      !engine.has_changes().await.expect("has_changes"),
+      "clean repo = no changes"
+    );
   }
 
   #[tokio::test]
@@ -667,7 +673,9 @@ pub(crate) mod tests {
 
       let result = engine.push().await.expect("push");
       assert!(matches!(result, PushResult::Success), "push to bare: {result:?}");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   #[tokio::test]
@@ -677,7 +685,9 @@ pub(crate) mod tests {
       let (_tmp, _bare, clone1, clone2) = create_bare_and_two_clones().await;
 
       // Commit and push from clone1
-      tokio::fs::write(clone1.join("from_clone1.txt"), "data").await.expect("write");
+      tokio::fs::write(clone1.join("from_clone1.txt"), "data")
+        .await
+        .expect("write");
       let engine1 = GitEngine::new(clone1.clone(), "main".to_string()).expect("engine1");
       engine1.stage(&[clone1.join("from_clone1.txt")]).await.expect("stage");
       engine1.commit("from clone1").await.expect("commit");
@@ -693,7 +703,9 @@ pub(crate) mod tests {
 
       // Verify the file appeared
       assert!(clone2.join("from_clone1.txt").exists(), "file should appear after pull");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Two clones edit different lines of the same file — auto-merge on pull.
@@ -707,7 +719,9 @@ pub(crate) mod tests {
 
       // Base file: three lines, created in clone1
       let shared = clone1.join("shared.txt");
-      tokio::fs::write(&shared, "line1\nline2\nline3\n").await.expect("write shared");
+      tokio::fs::write(&shared, "line1\nline2\nline3\n")
+        .await
+        .expect("write shared");
       engine1.stage(&[shared.clone()]).await.expect("stage");
       engine1.commit("add shared.txt").await.expect("commit");
       engine1.push().await.expect("push");
@@ -716,14 +730,18 @@ pub(crate) mod tests {
       engine2.pull().await.expect("pull sync");
 
       // Clone1 modifies line 1
-      tokio::fs::write(&shared, "MODIFIED1\nline2\nline3\n").await.expect("write clone1");
+      tokio::fs::write(&shared, "MODIFIED1\nline2\nline3\n")
+        .await
+        .expect("write clone1");
       engine1.stage(&[shared]).await.expect("stage clone1");
       engine1.commit("modify line 1").await.expect("commit clone1");
       engine1.push().await.expect("push clone1");
 
       // Clone2 modifies line 3
       let shared2 = clone2.join("shared.txt");
-      tokio::fs::write(&shared2, "line1\nline2\nMODIFIED3\n").await.expect("write clone2");
+      tokio::fs::write(&shared2, "line1\nline2\nMODIFIED3\n")
+        .await
+        .expect("write clone2");
       engine2.stage(&[shared2.clone()]).await.expect("stage clone2");
       engine2.commit("modify line 3").await.expect("commit clone2");
 
@@ -738,7 +756,9 @@ pub(crate) mod tests {
       let content = tokio::fs::read_to_string(&shared2).await.expect("read merged");
       assert!(content.contains("MODIFIED1"), "clone1 edit should be present");
       assert!(content.contains("MODIFIED3"), "clone2 edit should be present");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Two clones edit the same line — conflict on pull.
@@ -752,7 +772,9 @@ pub(crate) mod tests {
 
       // Base file: three lines, created in clone1
       let shared = clone1.join("shared.txt");
-      tokio::fs::write(&shared, "line1\nline2\nline3\n").await.expect("write shared");
+      tokio::fs::write(&shared, "line1\nline2\nline3\n")
+        .await
+        .expect("write shared");
       engine1.stage(&[shared.clone()]).await.expect("stage");
       engine1.commit("add shared.txt").await.expect("commit");
       engine1.push().await.expect("push");
@@ -782,7 +804,9 @@ pub(crate) mod tests {
         matches!(result, MergeResult::Conflict { .. }),
         "same line should conflict: {result:?}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Fetch without new commits on remote returns UpToDate.
@@ -799,7 +823,9 @@ pub(crate) mod tests {
         matches!(result, FetchResult::UpToDate),
         "fetch without new commits should return UpToDate: {result:?}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// One clone deletes a file, another edits it — conflict.
@@ -813,7 +839,9 @@ pub(crate) mod tests {
       let engine2 = GitEngine::new(clone2.clone(), "main".to_string()).expect("engine2");
 
       // Create shared file file.txt in clone1
-      tokio::fs::write(clone1.join("file.txt"), "original content").await.expect("write");
+      tokio::fs::write(clone1.join("file.txt"), "original content")
+        .await
+        .expect("write");
       engine1.stage(&[clone1.join("file.txt")]).await.expect("stage");
       engine1.commit("add file.txt").await.expect("commit");
       engine1.push().await.expect("push setup");
@@ -829,13 +857,18 @@ pub(crate) mod tests {
       assert!(matches!(push_result, PushResult::Success), "push1: {push_result:?}");
 
       // Clone 2 edits the same file
-      tokio::fs::write(clone2.join("file.txt"), "edited content").await.expect("write");
+      tokio::fs::write(clone2.join("file.txt"), "edited content")
+        .await
+        .expect("write");
       engine2.stage(&[clone2.join("file.txt")]).await.expect("stage");
       engine2.commit("edit file").await.expect("commit");
 
       // Push will be rejected
       let push_result = engine2.push().await.expect("push2");
-      assert!(matches!(push_result, PushResult::Rejected), "push2 should be Rejected: {push_result:?}");
+      assert!(
+        matches!(push_result, PushResult::Rejected),
+        "push2 should be Rejected: {push_result:?}"
+      );
 
       // Pull — conflict (delete vs edit)
       let merge_result = engine2.pull().await.expect("pull");
@@ -843,7 +876,9 @@ pub(crate) mod tests {
         matches!(merge_result, MergeResult::Conflict { .. }),
         "delete vs edit should produce a conflict: {merge_result:?}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// modified_files returns the correct list after editing.
@@ -854,7 +889,9 @@ pub(crate) mod tests {
     let engine = GitEngine::new(repo_path.clone(), "main".to_string()).expect("engine");
 
     // Modify file (README.md created in create_test_repo)
-    tokio::fs::write(repo_path.join("README.md"), "changed content").await.expect("write");
+    tokio::fs::write(repo_path.join("README.md"), "changed content")
+      .await
+      .expect("write");
 
     let modified = engine.modified_files().await.expect("modified_files");
     assert!(
@@ -872,10 +909,7 @@ pub(crate) mod tests {
 
     // Commit without changes in the index — should return an error
     let result = engine.commit("empty commit").await;
-    assert!(
-      result.is_err(),
-      "commit without staged files should return an error"
-    );
+    assert!(result.is_err(), "commit without staged files should return an error");
     let err_msg = result.expect_err("err").to_string();
     assert!(
       err_msg.contains("nothing to commit") || err_msg.contains("git commit failed"),
@@ -934,7 +968,9 @@ pub(crate) mod tests {
       let engine2 = GitEngine::new(clone2.clone(), "main".to_string()).expect("engine2");
 
       // Create shared file in clone1
-      tokio::fs::write(clone1.join("shared.txt"), "original content").await.expect("write");
+      tokio::fs::write(clone1.join("shared.txt"), "original content")
+        .await
+        .expect("write");
       engine1.stage(&[clone1.join("shared.txt")]).await.expect("stage");
       engine1.commit("add shared.txt").await.expect("commit");
       engine1.push().await.expect("push setup");
@@ -943,7 +979,9 @@ pub(crate) mod tests {
       engine2.pull().await.expect("pull sync");
 
       // Clone 1 EDITS the file and pushes
-      tokio::fs::write(clone1.join("shared.txt"), "edited by clone1").await.expect("write edit");
+      tokio::fs::write(clone1.join("shared.txt"), "edited by clone1")
+        .await
+        .expect("write edit");
       engine1.stage(&[clone1.join("shared.txt")]).await.expect("stage edit");
       engine1.commit("clone1: edit shared.txt").await.expect("commit edit");
       let push_result = engine1.push().await.expect("push1");
@@ -952,7 +990,10 @@ pub(crate) mod tests {
       // Clone 2 DELETES the file
       tokio::fs::remove_file(clone2.join("shared.txt")).await.expect("remove");
       engine2.stage(&[clone2.join("shared.txt")]).await.expect("stage delete");
-      engine2.commit("clone2: delete shared.txt").await.expect("commit delete");
+      engine2
+        .commit("clone2: delete shared.txt")
+        .await
+        .expect("commit delete");
 
       // Push will be rejected
       let push_result = engine2.push().await.expect("push2");
@@ -967,7 +1008,9 @@ pub(crate) mod tests {
         matches!(merge_result, MergeResult::Conflict { .. }),
         "edit vs delete should produce a conflict: {merge_result:?}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Two clones of one bare repo: both commit to different files, one pushes,
@@ -982,14 +1025,18 @@ pub(crate) mod tests {
       let engine2 = GitEngine::new(clone2.clone(), "main".to_string()).expect("engine2");
 
       // Clone1 commits and pushes file A
-      tokio::fs::write(clone1.join("file_a.txt"), "data from clone1").await.expect("write a");
+      tokio::fs::write(clone1.join("file_a.txt"), "data from clone1")
+        .await
+        .expect("write a");
       engine1.stage(&[clone1.join("file_a.txt")]).await.expect("stage a");
       engine1.commit("clone1: add file_a.txt").await.expect("commit a");
       let push1 = engine1.push().await.expect("push1");
       assert!(matches!(push1, PushResult::Success), "first push: {push1:?}");
 
       // Clone2 commits file B (unaware of file_a.txt)
-      tokio::fs::write(clone2.join("file_b.txt"), "data from clone2").await.expect("write b");
+      tokio::fs::write(clone2.join("file_b.txt"), "data from clone2")
+        .await
+        .expect("write b");
       engine2.stage(&[clone2.join("file_b.txt")]).await.expect("stage b");
       engine2.commit("clone2: add file_b.txt").await.expect("commit b");
 
@@ -1015,9 +1062,14 @@ pub(crate) mod tests {
       );
 
       // Verify both files exist in clone2
-      assert!(clone2.join("file_a.txt").exists(), "file_a.txt should appear after pull");
+      assert!(
+        clone2.join("file_a.txt").exists(),
+        "file_a.txt should appear after pull"
+      );
       assert!(clone2.join("file_b.txt").exists(), "file_b.txt should remain");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// After a commit, has_changes returns false.
@@ -1035,7 +1087,10 @@ pub(crate) mod tests {
     engine.stage(&[repo_path.join("new.txt")]).await.expect("stage");
     engine.commit("add new.txt").await.expect("commit");
 
-    assert!(!engine.has_changes().await.expect("has_changes"), "no changes after commit");
+    assert!(
+      !engine.has_changes().await.expect("has_changes"),
+      "no changes after commit"
+    );
   }
 
   /// Two clones edit different lines of the same file.
@@ -1051,7 +1106,9 @@ pub(crate) mod tests {
 
       // Create a file with three lines in clone1, push
       let file1 = clone1.join("data.txt");
-      tokio::fs::write(&file1, "line1\nline2\nline3\n").await.expect("write base");
+      tokio::fs::write(&file1, "line1\nline2\nline3\n")
+        .await
+        .expect("write base");
       engine1.stage(&[file1.clone()]).await.expect("stage base");
       engine1.commit("base file with three lines").await.expect("commit base");
       engine1.push().await.expect("push base");
@@ -1060,14 +1117,18 @@ pub(crate) mod tests {
       engine2.pull().await.expect("pull sync");
 
       // Clone1 modifies line 1 — "modified1"
-      tokio::fs::write(&file1, "modified1\nline2\nline3\n").await.expect("write clone1");
+      tokio::fs::write(&file1, "modified1\nline2\nline3\n")
+        .await
+        .expect("write clone1");
       engine1.stage(&[file1]).await.expect("stage clone1");
       engine1.commit("clone1: modify line 1").await.expect("commit clone1");
       engine1.push().await.expect("push clone1");
 
       // Clone2 modifies line 3 — "modified3"
       let file2 = clone2.join("data.txt");
-      tokio::fs::write(&file2, "line1\nline2\nmodified3\n").await.expect("write clone2");
+      tokio::fs::write(&file2, "line1\nline2\nmodified3\n")
+        .await
+        .expect("write clone2");
       engine2.stage(&[file2.clone()]).await.expect("stage clone2");
       engine2.commit("clone2: modify line 3").await.expect("commit clone2");
 
@@ -1090,7 +1151,9 @@ pub(crate) mod tests {
       assert!(content.contains("modified1"), "clone1 edit (line 1) should be present");
       assert!(content.contains("line2"), "line 2 should be unchanged");
       assert!(content.contains("modified3"), "clone2 edit (line 3) should be present");
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Two clones edit the same line of the same file.
@@ -1105,7 +1168,9 @@ pub(crate) mod tests {
 
       // Create a file with three lines in clone1, push
       let file1 = clone1.join("data.txt");
-      tokio::fs::write(&file1, "line1\nline2\nline3\n").await.expect("write base");
+      tokio::fs::write(&file1, "line1\nline2\nline3\n")
+        .await
+        .expect("write base");
       engine1.stage(&[file1.clone()]).await.expect("stage base");
       engine1.commit("base file with three lines").await.expect("commit base");
       engine1.push().await.expect("push base");
@@ -1114,14 +1179,18 @@ pub(crate) mod tests {
       engine2.pull().await.expect("pull sync");
 
       // Clone1 modifies line 2
-      tokio::fs::write(&file1, "line1\nchanged_by_clone1\nline3\n").await.expect("write clone1");
+      tokio::fs::write(&file1, "line1\nchanged_by_clone1\nline3\n")
+        .await
+        .expect("write clone1");
       engine1.stage(&[file1]).await.expect("stage clone1");
       engine1.commit("clone1: modify line 2").await.expect("commit clone1");
       engine1.push().await.expect("push clone1");
 
       // Clone2 also modifies line 2 (conflict)
       let file2 = clone2.join("data.txt");
-      tokio::fs::write(&file2, "line1\nchanged_by_clone2\nline3\n").await.expect("write clone2");
+      tokio::fs::write(&file2, "line1\nchanged_by_clone2\nline3\n")
+        .await
+        .expect("write clone2");
       engine2.stage(&[file2]).await.expect("stage clone2");
       engine2.commit("clone2: modify line 2").await.expect("commit clone2");
 
@@ -1138,7 +1207,9 @@ pub(crate) mod tests {
         matches!(merge_result, MergeResult::Conflict { .. }),
         "same line should conflict: {merge_result:?}"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 
   /// Clone1 pushes a commit, clone2 fetches.
@@ -1155,7 +1226,9 @@ pub(crate) mod tests {
       let before = engine2.get_remote_head().await.expect("remote head before");
 
       // Clone1 creates a commit and pushes
-      tokio::fs::write(clone1.join("fetched.txt"), "fetch test").await.expect("write");
+      tokio::fs::write(clone1.join("fetched.txt"), "fetch test")
+        .await
+        .expect("write");
       engine1.stage(&[clone1.join("fetched.txt")]).await.expect("stage");
       engine1.commit("commit to verify fetch").await.expect("commit");
       engine1.push().await.expect("push");
@@ -1178,6 +1251,8 @@ pub(crate) mod tests {
         Some(clone1_head.as_str()),
         "clone2 remote ref should point to clone1 commit"
       );
-    }).await.expect("test timed out — possible deadlock");
+    })
+    .await
+    .expect("test timed out — possible deadlock");
   }
 }

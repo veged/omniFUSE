@@ -20,25 +20,18 @@ use std::{
 };
 
 use tracing::debug;
-use winfsp::{
-  U16CStr,
-  filesystem::{
-    DirInfo, DirMarker, FileSecurity, FileSystemContext, OpenFileInfo,
-    WideNameInfo
-  }
-};
 use windows::Win32::{
   Foundation::NTSTATUS,
   Storage::FileSystem::{
-    FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_READONLY, FILE_DIRECTORY_FILE
+    FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DIRECTORY_FILE
   }
 };
-
-use crate::{
-  FileHandle, FileType, FsError, OpenFlags, UniFuseFilesystem,
-  types::FileAttr
+use winfsp::{
+  U16CStr,
+  filesystem::{DirInfo, DirMarker, FileSecurity, FileSystemContext, OpenFileInfo, WideNameInfo}
 };
+
+use crate::{FileHandle, FileType, FsError, OpenFlags, UniFuseFilesystem, types::FileAttr};
 
 // --- Constants ---
 
@@ -103,8 +96,7 @@ fn nt_path_to_pathbuf(nt_path: &U16CStr) -> PathBuf {
 /// Convert `SystemTime` to Windows FILETIME (u64, 100ns intervals since 1601-01-01).
 fn system_time_to_filetime(time: SystemTime) -> u64 {
   let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-  let intervals = duration.as_secs() * INTERVALS_PER_SEC
-    + u64::from(duration.subsec_nanos()) / 100;
+  let intervals = duration.as_secs() * INTERVALS_PER_SEC + u64::from(duration.subsec_nanos()) / 100;
   intervals + FILETIME_UNIX_DIFF
 }
 
@@ -269,12 +261,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     }
   }
 
-  fn read(
-    &self,
-    context: &Self::FileContext,
-    buffer: &mut [u8],
-    offset: u64
-  ) -> winfsp::Result<u32> {
+  fn read(&self, context: &Self::FileContext, buffer: &mut [u8], offset: u64) -> winfsp::Result<u32> {
     debug!(path = ?context.path, offset, len = buffer.len(), "read");
 
     #[allow(clippy::cast_possible_truncation)]
@@ -303,11 +290,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(path = ?context.path, offset, len = buffer.len(), "write");
 
     let written = self
-      .block_on(
-        self
-          .inner
-          .write(&context.path, context.handle, offset, buffer)
-      )
+      .block_on(self.inner.write(&context.path, context.handle, offset, buffer))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     // Update file info after write.
@@ -365,8 +348,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
       None
     };
 
-    let _ = self
-      .block_on(self.inner.setattr(&context.path, None, atime, mtime, mode));
+    let _ = self.block_on(self.inner.setattr(&context.path, None, atime, mtime, mode));
 
     // Re-read attributes.
     if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
@@ -386,11 +368,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(path = ?context.path, new_size, "set_file_size");
 
     self
-      .block_on(
-        self
-          .inner
-          .setattr(&context.path, Some(new_size), None, None, None)
-      )
+      .block_on(self.inner.setattr(&context.path, Some(new_size), None, None, None))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
@@ -400,11 +378,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     Ok(())
   }
 
-  fn flush(
-    &self,
-    context: &Self::FileContext,
-    file_info: &mut winfsp::filesystem::FileInfo
-  ) -> winfsp::Result<()> {
+  fn flush(&self, context: &Self::FileContext, file_info: &mut winfsp::filesystem::FileInfo) -> winfsp::Result<()> {
     debug!(path = ?context.path, "flush");
 
     if !context.is_directory {
@@ -418,12 +392,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     Ok(())
   }
 
-  fn cleanup(
-    &self,
-    context: &mut Self::FileContext,
-    _flags: Option<winfsp::filesystem::CleanupFlags>,
-    _delete: bool
-  ) {
+  fn cleanup(&self, context: &mut Self::FileContext, _flags: Option<winfsp::filesystem::CleanupFlags>, _delete: bool) {
     debug!(path = ?context.path, delete = context.delete_on_close, "cleanup");
 
     if context.delete_on_close {
@@ -435,12 +404,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     }
   }
 
-  fn set_delete(
-    &self,
-    context: &mut Self::FileContext,
-    _file_name: &U16CStr,
-    delete_file: bool
-  ) -> winfsp::Result<()> {
+  fn set_delete(&self, context: &mut Self::FileContext, _file_name: &U16CStr, delete_file: bool) -> winfsp::Result<()> {
     debug!(path = ?context.path, delete_file, "set_delete");
     context.delete_on_close = delete_file;
     Ok(())
@@ -509,10 +473,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
       }
 
       let mut dir_info = DirInfo::<{ 255 * 2 + 2 }>::new();
-      if dir_info
-        .set_name(std::ffi::OsStr::new(&entry.name))
-        .is_err()
-      {
+      if dir_info.set_name(std::ffi::OsStr::new(&entry.name)).is_err() {
         continue;
       }
 
@@ -534,10 +495,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     Ok(cursor)
   }
 
-  fn get_volume_info(
-    &self,
-    out_volume_info: &mut winfsp::filesystem::VolumeInfo
-  ) -> winfsp::Result<()> {
+  fn get_volume_info(&self, out_volume_info: &mut winfsp::filesystem::VolumeInfo) -> winfsp::Result<()> {
     debug!("get_volume_info");
 
     let root = PathBuf::from("/");
@@ -566,11 +524,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
 
     // Truncate the file to zero.
     self
-      .block_on(
-        self
-          .inner
-          .setattr(&context.path, Some(0), None, None, None)
-      )
+      .block_on(self.inner.setattr(&context.path, Some(0), None, None, None))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {

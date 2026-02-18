@@ -174,8 +174,7 @@ mod tests {
 
   #[test]
   fn page_full_details_deserialize() {
-    let json =
-      r##"{"id":123,"title":"Test","slug":"test/page","page_type":"page","content":"# Hello"}"##;
+    let json = r##"{"id":123,"title":"Test","slug":"test/page","page_type":"page","content":"# Hello"}"##;
     let p: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize");
     assert_eq!(p.id, 123);
     assert_eq!(p.title, "Test");
@@ -220,8 +219,7 @@ mod tests {
 
   #[test]
   fn collection_deserialize() {
-    let json =
-      r#"{"results":[{"id":1,"slug":"a"}],"next_cursor":"c","has_next":true,"metadata":null}"#;
+    let json = r#"{"results":[{"id":1,"slug":"a"}],"next_cursor":"c","has_next":true,"metadata":null}"#;
     let c: Collection<PageSchema> = serde_json::from_str(json).expect("deserialize");
     assert_eq!(c.results.len(), 1);
     assert!(c.has_next);
@@ -261,14 +259,12 @@ mod tests {
   #[test]
   fn test_page_schema_content_optional() {
     // JSON without content field -> deserialization succeeds (content = None)
-    let json = r#"{"id":10,"title":"No Content","slug":"no-content","page_type":"page","modified_at":"2024-01-01T00:00:00Z"}"#;
+    let json =
+      r#"{"id":10,"title":"No Content","slug":"no-content","page_type":"page","modified_at":"2024-01-01T00:00:00Z"}"#;
     let p: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize");
     assert_eq!(p.id, 10);
     assert_eq!(p.title, "No Content");
-    assert!(
-      p.content.is_none(),
-      "content should be None when field is absent"
-    );
+    assert!(p.content.is_none(), "content should be None when field is absent");
     assert_eq!(p.modified_at, "2024-01-01T00:00:00Z");
   }
 

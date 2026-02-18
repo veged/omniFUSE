@@ -248,9 +248,8 @@ impl FsError {
   #[must_use]
   pub fn to_ntstatus(&self) -> windows::Win32::Foundation::NTSTATUS {
     use windows::Win32::Foundation::{
-      NTSTATUS, STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY,
-      STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED,
-      STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_UNSUCCESSFUL
+      NTSTATUS, STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY,
+      STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_UNSUCCESSFUL
     };
 
     match self {
@@ -391,7 +390,7 @@ mod tests {
       files: 100_000,
       ffree: 50_000,
       bsize: 4096,
-      namelen: 255,
+      namelen: 255
     };
 
     assert_eq!(statfs.blocks, 1_000_000, "total blocks");
@@ -436,7 +435,7 @@ mod tests {
       uid: 0,
       gid: 0,
       rdev: 0,
-      flags: 0,
+      flags: 0
     };
     assert_eq!(attr.kind, FileType::Symlink, "kind should be Symlink");
     assert_eq!(attr.perm, 0o777, "symlinks typically have 0o777");

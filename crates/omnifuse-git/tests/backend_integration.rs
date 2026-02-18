@@ -20,7 +20,7 @@ async fn create_bare_and_clone() -> (tempfile::TempDir, std::path::PathBuf, std:
 
   // Create bare repo
   tokio::process::Command::new("git")
-    .args(["init", "--bare"])
+    .args(["init", "--bare", "-b", "main"])
     .arg(&bare_path)
     .output()
     .await
@@ -85,10 +85,7 @@ async fn test_should_track_hides_git() {
   let backend = GitBackend::new(config);
 
   // Before init, filter is not initialized, but .git is still hidden
-  assert!(
-    !backend.should_track(Path::new(".git")),
-    ".git should be hidden"
-  );
+  assert!(!backend.should_track(Path::new(".git")), ".git should be hidden");
   assert!(
     !backend.should_track(Path::new(".git/config")),
     ".git/config should be hidden"
@@ -209,11 +206,10 @@ async fn test_sync_commits_pushes() {
       .await
       .expect("git log");
     let message = String::from_utf8_lossy(&output.stdout);
-    assert!(
-      message.contains("[auto]"),
-      "commit should contain [auto]: {message}"
-    );
-  }).await.expect("test timed out — possible deadlock");
+    assert!(message.contains("[auto]"), "commit should contain [auto]: {message}");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 /// Creating a symlink in a repository: git tracks it.
@@ -229,12 +225,9 @@ async fn test_symlink_in_repo() {
     .expect("write target");
 
   // Create a symlink
-  tokio::fs::symlink(
-    clone_path.join("target.txt"),
-    clone_path.join("link.txt"),
-  )
-  .await
-  .expect("create symlink");
+  tokio::fs::symlink(clone_path.join("target.txt"), clone_path.join("link.txt"))
+    .await
+    .expect("create symlink");
 
   // git add the symlink
   tokio::process::Command::new("git")
@@ -252,10 +245,7 @@ async fn test_symlink_in_repo() {
     .await
     .expect("git status");
   let status = String::from_utf8_lossy(&output.stdout);
-  assert!(
-    status.contains("link.txt"),
-    "symlink should be in git status: {status}"
-  );
+  assert!(status.contains("link.txt"), "symlink should be in git status: {status}");
 }
 
 /// Creating a file in repo — git status --porcelain shows untracked.

@@ -30,7 +30,9 @@ async fn test_get_page_by_slug() {
     assert_eq!(page.slug, "docs/intro");
     assert_eq!(page.title, "Introduction");
     assert_eq!(page.content.as_deref(), Some("# Intro"));
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -45,7 +47,9 @@ async fn test_get_page_by_idx() {
     let page = client.get_page_by_idx(id).await.expect("get by idx");
     assert_eq!(page.id, id);
     assert_eq!(page.slug, "page/test");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -64,7 +68,9 @@ async fn test_update_page() {
 
     assert_eq!(updated.title, "New Title");
     assert_eq!(updated.content.as_deref(), Some("new content"));
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -82,7 +88,9 @@ async fn test_create_page() {
     assert_eq!(page.title, "New Page");
     assert_eq!(page.content.as_deref(), Some("# New"));
     assert!(page.id > 0);
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -99,7 +107,9 @@ async fn test_delete_page() {
     // After deletion -> 404
     let result = client.get_page_by_idx(id).await;
     assert!(result.is_err(), "deleted page should return an error");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -121,7 +131,9 @@ async fn test_get_page_tree() {
     assert_eq!(tree.root.slug, "root");
     let children = tree.root.children.as_ref().expect("children");
     assert_eq!(children.len(), 2, "should have 2 children");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -137,7 +149,9 @@ async fn test_get_page_not_found() {
       err_msg.contains("page not found"),
       "error should contain 'page not found': {err_msg}"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -157,7 +171,9 @@ async fn test_get_descendants() {
 
     let descendants = client.get_descendants(parent_id).await.expect("descendants");
     assert_eq!(descendants.len(), 2, "should have 2 descendants");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -172,7 +188,9 @@ async fn test_move_cluster() {
     let op = client.move_cluster("src", "dst").await.expect("move");
     assert_eq!(op.operation.ty, "move");
     assert!(op.status_url.is_some(), "should have status_url");
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
@@ -183,10 +201,7 @@ async fn test_poll_status_url() {
     state.set_op_status("test-op", "success").await;
 
     let status = client
-      .poll_status_url(
-        "/api/status/test-op",
-        std::time::Duration::from_secs(1),
-      )
+      .poll_status_url("/api/status/test-op", std::time::Duration::from_secs(1))
       .await
       .expect("poll");
 
@@ -194,5 +209,7 @@ async fn test_poll_status_url() {
       matches!(status, omnifuse_wiki::models::Status::Success),
       "status should be Success"
     );
-  }).await.expect("test timed out — possible deadlock");
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }

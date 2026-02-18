@@ -173,15 +173,7 @@ impl RepoSource {
     debug!(url, target = %target.display(), branch, "cloning");
 
     let output = tokio::process::Command::new("git")
-      .args([
-        "clone",
-        "--branch",
-        branch,
-        "--single-branch",
-        "--depth",
-        "1",
-        url
-      ])
+      .args(["clone", "--branch", branch, "--single-branch", "--depth", "1", url])
       .arg(target)
       .output()
       .await?;
@@ -276,17 +268,11 @@ mod tests {
 
   #[test]
   fn test_is_git_url() {
-    assert!(RepoSource::is_git_url(
-      "https://github.com/user/repo.git"
-    ));
+    assert!(RepoSource::is_git_url("https://github.com/user/repo.git"));
     assert!(RepoSource::is_git_url("https://github.com/user/repo"));
     assert!(RepoSource::is_git_url("git@github.com:user/repo.git"));
-    assert!(RepoSource::is_git_url(
-      "ssh://git@github.com/user/repo.git"
-    ));
-    assert!(RepoSource::is_git_url(
-      "git://github.com/user/repo.git"
-    ));
+    assert!(RepoSource::is_git_url("ssh://git@github.com/user/repo.git"));
+    assert!(RepoSource::is_git_url("git://github.com/user/repo.git"));
 
     assert!(!RepoSource::is_git_url("/path/to/repo"));
     assert!(!RepoSource::is_git_url("./relative/path"));
@@ -304,10 +290,7 @@ mod tests {
   fn test_parse_remote() {
     let source = RepoSource::parse("https://github.com/user/repo.git");
     assert!(source.is_remote());
-    assert_eq!(
-      source.remote_url(),
-      Some("https://github.com/user/repo.git")
-    );
+    assert_eq!(source.remote_url(), Some("https://github.com/user/repo.git"));
   }
 
   #[test]
@@ -347,10 +330,6 @@ mod tests {
       "remote_url() should return the original URL without modifications"
     );
     // Additionally: Display also shows the original URL
-    assert_eq!(
-      source.to_string(),
-      url,
-      "Display should show the original URL"
-    );
+    assert_eq!(source.to_string(), url, "Display should show the original URL");
   }
 }

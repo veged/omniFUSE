@@ -25,10 +25,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod backend;
-#[allow(
-  clippy::cast_possible_truncation,
-  clippy::significant_drop_tightening
-)]
+#[allow(clippy::cast_possible_truncation, clippy::significant_drop_tightening)]
 pub mod buffer;
 pub mod config;
 pub mod events;
@@ -37,16 +34,15 @@ pub mod sync_engine;
 pub mod test_utils;
 pub mod vfs;
 
+use std::{path::Path, sync::Arc};
+
 pub use backend::{Backend, InitResult, RemoteChange, SyncResult};
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
 pub use events::{LogLevel, NoopEventHandler, VfsEventHandler};
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
-pub use vfs::OmniFuseVfs;
-
-use std::{path::Path, sync::Arc};
-
 use tracing::info;
+pub use vfs::OmniFuseVfs;
 
 /// Main entry point: mount `OmniFuse`.
 ///
@@ -78,11 +74,7 @@ pub async fn run_mount<B: Backend>(
   events.on_sync(&format!("{init_result:?}"));
 
   // Start SyncEngine
-  let (sync_engine, sync_handle) = SyncEngine::start(
-    config.sync.clone(),
-    Arc::clone(&backend),
-    Arc::clone(&events)
-  );
+  let (sync_engine, sync_handle) = SyncEngine::start(config.sync.clone(), Arc::clone(&backend), Arc::clone(&events));
 
   // Create VFS
   let vfs = OmniFuseVfs::new(
@@ -133,19 +125,11 @@ impl unifuse::UniFuseFilesystem for DummyFs {
     Err(unifuse::FsError::NotSupported)
   }
 
-  async fn lookup(
-    &self,
-    _parent: &Path,
-    _name: &std::ffi::OsStr
-  ) -> Result<unifuse::FileAttr, unifuse::FsError> {
+  async fn lookup(&self, _parent: &Path, _name: &std::ffi::OsStr) -> Result<unifuse::FileAttr, unifuse::FsError> {
     Err(unifuse::FsError::NotSupported)
   }
 
-  async fn open(
-    &self,
-    _path: &Path,
-    _flags: unifuse::OpenFlags
-  ) -> Result<unifuse::FileHandle, unifuse::FsError> {
+  async fn open(&self, _path: &Path, _flags: unifuse::OpenFlags) -> Result<unifuse::FileHandle, unifuse::FsError> {
     Err(unifuse::FsError::NotSupported)
   }
 
@@ -159,18 +143,11 @@ impl unifuse::UniFuseFilesystem for DummyFs {
     Err(unifuse::FsError::NotSupported)
   }
 
-  async fn release(
-    &self,
-    _path: &Path,
-    _fh: unifuse::FileHandle
-  ) -> Result<(), unifuse::FsError> {
+  async fn release(&self, _path: &Path, _fh: unifuse::FileHandle) -> Result<(), unifuse::FsError> {
     Err(unifuse::FsError::NotSupported)
   }
 
-  async fn readdir(
-    &self,
-    _path: &Path
-  ) -> Result<Vec<unifuse::DirEntry>, unifuse::FsError> {
+  async fn readdir(&self, _path: &Path) -> Result<Vec<unifuse::DirEntry>, unifuse::FsError> {
     Err(unifuse::FsError::NotSupported)
   }
 

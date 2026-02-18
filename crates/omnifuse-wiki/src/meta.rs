@@ -140,10 +140,7 @@ impl MetaStore {
       } else if path.extension().is_some_and(|e| e == "json")
         && let Ok(rel) = path.strip_prefix(base)
       {
-        let slug = rel
-          .with_extension("")
-          .to_string_lossy()
-          .replace('\\', "/");
+        let slug = rel.with_extension("").to_string_lossy().replace('\\', "/");
         slugs.push(slug);
       }
     }
@@ -192,7 +189,10 @@ mod tests {
 
   #[test]
   fn test_slug_to_path() {
-    assert_eq!(slug_to_path("docs/architecture", "json"), PathBuf::from("docs/architecture.json"));
+    assert_eq!(
+      slug_to_path("docs/architecture", "json"),
+      PathBuf::from("docs/architecture.json")
+    );
     assert_eq!(slug_to_path("page", "md"), PathBuf::from("page.md"));
   }
 
@@ -203,10 +203,7 @@ mod tests {
       path_to_slug(Path::new("/mnt/wiki/docs/page.md"), local_dir),
       Some("docs/page".to_string())
     );
-    assert_eq!(
-      path_to_slug(Path::new("/mnt/wiki/.vfs/meta/x.json"), local_dir),
-      None
-    );
+    assert_eq!(path_to_slug(Path::new("/mnt/wiki/.vfs/meta/x.json"), local_dir), None);
   }
 
   #[test]
@@ -224,9 +221,7 @@ mod tests {
     };
 
     store.save_meta("docs/test", &meta).expect("save meta");
-    store
-      .save_base("docs/test", "# Test content")
-      .expect("save base");
+    store.save_base("docs/test", "# Test content").expect("save base");
 
     let loaded = store.load_meta("docs/test");
     assert!(loaded.is_some());
@@ -257,19 +252,19 @@ mod tests {
       id: 1,
       title: "Root".to_string(),
       slug: "root".to_string(),
-      modified_at: "2024-01-01T00:00:00Z".to_string(),
+      modified_at: "2024-01-01T00:00:00Z".to_string()
     };
     let meta2 = PageMeta {
       id: 2,
       title: "Docs".to_string(),
       slug: "root/docs".to_string(),
-      modified_at: "2024-01-01T00:00:01Z".to_string(),
+      modified_at: "2024-01-01T00:00:01Z".to_string()
     };
     let meta3 = PageMeta {
       id: 3,
       title: "Deep".to_string(),
       slug: "root/docs/deep".to_string(),
-      modified_at: "2024-01-01T00:00:02Z".to_string(),
+      modified_at: "2024-01-01T00:00:02Z".to_string()
     };
 
     store.save_meta("root", &meta1).expect("save 1");
