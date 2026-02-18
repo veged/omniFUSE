@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: checking formatting..."
+cargo fmt --all -- --check

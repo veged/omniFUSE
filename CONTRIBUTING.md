@@ -30,13 +30,19 @@
 | [`omnifuse-cli`](crates/omnifuse-cli/) | CLI binary `of` |
 | [`omnifuse-gui`](crates/omnifuse-gui/) | Desktop GUI (Tauri + React) |
 
-## Building
+## Setup
 
 ```bash
 # Requires Rust nightly
 rustup toolchain install nightly
 
-# Build all crates
+# Enable git hooks (formatting check on commit, clippy on push)
+git config core.hooksPath .githooks
+```
+
+## Building
+
+```bash
 cargo build --workspace
 ```
 

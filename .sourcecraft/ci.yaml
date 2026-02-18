@@ -28,7 +28,8 @@ tasks:
       - name: run-clippy
         image: rustlang/rust:nightly
         script:
-          - cargo clippy --workspace -- -D warnings
+          # exclude omnifuse-gui: Tauri needs GTK/webkit system libs not in image
+          - cargo clippy --workspace --exclude omnifuse-gui -- -D warnings
 
   - name: fmt
     env:
@@ -47,7 +48,7 @@ tasks:
         image: rustlang/rust:nightly
         script:
           - apt-get update && apt-get install -y fuse3 libfuse3-dev
-          - cargo test --workspace -- --skip fuse_mount --skip real_api
+          - cargo test --workspace --exclude omnifuse-gui -- --skip fuse_mount --skip real_api
 
   - name: integration-tests
     env:
@@ -57,4 +58,4 @@ tasks:
         image: rustlang/rust:nightly
         script:
           - apt-get update && apt-get install -y fuse3 libfuse3-dev
-          - cargo test --workspace --test fuse_mount_tests
+          - cargo test --workspace --exclude omnifuse-gui --test fuse_mount_tests
