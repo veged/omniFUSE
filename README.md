@@ -43,15 +43,28 @@ Remote changes are pulled periodically.
 ### Mount a wiki
 
 ```bash
-of mount wiki https://wiki.example.com my/project ~/mnt/wiki --auth TOKEN
+of mount wiki <BASE_URL> <ROOT_SLUG> <MOUNTPOINT> --auth TOKEN
 
 # Auth token can also be set via environment variable
 export OMNIFUSE_WIKI_TOKEN=your-token
-of mount wiki https://wiki.example.com my/project ~/mnt/wiki
+of mount wiki <BASE_URL> <ROOT_SLUG> <MOUNTPOINT>
 ```
 
 Wiki pages appear as `.md` files. Edits are synced back via the wiki API
 with three-way merge for conflict resolution.
+
+#### Yandex Wiki
+
+For Yandex 360 Wiki use the API host and an
+[OAuth token](https://yandex.ru/support/wiki/ru/api-ref/access):
+
+```bash
+# Yandex 360 (external organizations)
+export OMNIFUSE_WIKI_TOKEN=your-oauth-token
+of mount wiki https://api.wiki.yandex.net my/project ~/mnt/wiki --org-id YOUR_ORG_ID
+```
+
+> **Note:** use the API host (`api.wiki.yandex.net`), not the web UI host.
 
 ### Other commands
 

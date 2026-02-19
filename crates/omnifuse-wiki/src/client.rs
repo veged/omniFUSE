@@ -3,7 +3,7 @@
 //! Ported from `YaWikiFS` `src/wiki/client.rs`.
 //! `WikiErr` -> `anyhow::Error`.
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use tracing::{debug, error, trace};
 
 use crate::models::{
@@ -25,7 +25,7 @@ impl Client {
   /// # Errors
   ///
   /// Returns an error if the input parameters are empty or the HTTP client cannot be built.
-  pub fn new(base_url: &str, auth_token: &str) -> anyhow::Result<Self> {
+  pub fn new(base_url: &str, auth_token: &str, org_id: Option<&str>) -> anyhow::Result<Self> {
     if base_url.trim().is_empty() {
       anyhow::bail!("base_url must not be empty");
     }
@@ -36,12 +36,23 @@ impl Client {
     let mut h = HeaderMap::new();
     h.insert(
       AUTHORIZATION,
-      HeaderValue::from_str(&format!("Bearer {auth_token}")).map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
+      HeaderValue::from_str(&format!("OAuth {auth_token}")).map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
     );
     h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+    if let Some(id) = org_id {
+      h.insert(
+        HeaderName::from_static("x-org-id"),
+        HeaderValue::from_str(id).map_err(|e| anyhow::anyhow!("invalid org_id: {e}"))?
+      );
+    }
+
     Ok(Self {
-      c: reqwest::Client::builder().default_headers(h).no_proxy().build()?,
+      c: reqwest::Client::builder()
+        .default_headers(h)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()?,
       base: base_url.trim_end_matches('/').to_string()
     })
   }
@@ -261,6 +272,11 @@ impl Client {
 
     let resp = self.c.execute(rq).await?;
     let st = resp.status();
+    let location = resp
+      .headers()
+      .get("location")
+      .and_then(|v| v.to_str().ok())
+      .map(str::to_string);
     let txt = resp.text().await?;
 
     debug!(
@@ -273,6 +289,14 @@ impl Client {
     if tracing::enabled!(tracing::Level::TRACE) {
       let n = 4096usize.min(txt.len());
       trace!(status = st.as_u16(), body = %&txt[..n], "wiki response body");
+    }
+
+    if st.is_redirection() {
+      anyhow::bail!(
+        "HTTP {st}: server returned a redirect to {}. \
+         Check that base_url points to the API host (not the web UI)",
+        location.as_deref().unwrap_or("unknown")
+      );
     }
 
     if st.is_success() {
@@ -295,6 +319,11 @@ impl Client {
 
     let resp = self.c.execute(rq).await?;
     let st = resp.status();
+    let location = resp
+      .headers()
+      .get("location")
+      .and_then(|v| v.to_str().ok())
+      .map(str::to_string);
     let txt = resp.text().await?;
 
     debug!(
@@ -303,6 +332,14 @@ impl Client {
       bytes = txt.len(),
       "wiki response"
     );
+
+    if st.is_redirection() {
+      anyhow::bail!(
+        "HTTP {st}: server returned a redirect to {}. \
+         Check that base_url points to the API host (not the web UI)",
+        location.as_deref().unwrap_or("unknown")
+      );
+    }
 
     if st.is_success() {
       return Ok(());

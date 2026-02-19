@@ -35,6 +35,8 @@ pub struct WikiConfig {
   pub base_url: String,
   /// Authentication token.
   pub auth_token: String,
+  /// Organization ID (`X-Org-Id` header, required for Yandex 360 Wiki).
+  pub org_id: Option<String>,
   /// Root slug (the tree is built from it).
   pub root_slug: String,
   /// Remote polling interval (seconds).
@@ -50,6 +52,7 @@ impl Default for WikiConfig {
     Self {
       base_url: String::new(),
       auth_token: String::new(),
+      org_id: None,
       root_slug: String::new(),
       poll_interval_secs: 60,
       max_depth: 10,
@@ -80,7 +83,7 @@ impl WikiBackend {
   ///
   /// Returns an error if the HTTP client cannot be created.
   pub fn new(config: WikiConfig) -> anyhow::Result<Self> {
-    let client = Client::new(&config.base_url, &config.auth_token)?;
+    let client = Client::new(&config.base_url, &config.auth_token, config.org_id.as_deref())?;
 
     Ok(Self {
       config,

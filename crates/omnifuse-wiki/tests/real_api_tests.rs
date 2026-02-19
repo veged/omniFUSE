@@ -28,7 +28,7 @@ fn setup_client() -> Option<Client> {
       return None;
     }
   };
-  Client::new(&url, &token).ok()
+  Client::new(&url, &token, None).ok()
 }
 
 /// Root slug for tests (from environment).

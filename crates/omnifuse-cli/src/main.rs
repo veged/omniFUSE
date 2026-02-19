@@ -77,9 +77,12 @@ enum MountBackend {
     root_slug: String,
     /// Mount point.
     mountpoint: PathBuf,
-    /// Authentication token.
+    /// Authentication token (OAuth or IAM).
     #[arg(long, env = "OMNIFUSE_WIKI_TOKEN")]
     auth: String,
+    /// Organization ID (X-Org-Id header, required for Yandex 360 Wiki).
+    #[arg(long, env = "OMNIFUSE_WIKI_ORG_ID")]
+    org_id: Option<String>,
     /// Remote polling interval (seconds).
     #[arg(long, default_value = "60")]
     poll_interval: u64,
@@ -177,6 +180,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       root_slug,
       mountpoint,
       auth,
+      org_id,
       poll_interval,
       allow_other,
       read_only
@@ -198,6 +202,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       let wiki_config = omnifuse_wiki::WikiConfig {
         base_url,
         auth_token: auth,
+        org_id,
         root_slug,
         poll_interval_secs: poll_interval,
         max_depth: 10,

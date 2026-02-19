@@ -133,6 +133,7 @@ pub async fn mount_wiki(
   let wiki_config = omnifuse_wiki::WikiConfig {
     base_url: base_url.clone(),
     auth_token,
+    org_id: None,
     root_slug: root_slug.clone(),
     poll_interval_secs: 60,
     max_depth: 10,

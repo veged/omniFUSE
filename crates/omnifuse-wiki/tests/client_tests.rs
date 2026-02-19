@@ -13,7 +13,7 @@ const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Create a client connected to the fake API.
 async fn setup() -> (Client, std::sync::Arc<common::FakeState>) {
   let (base_url, state) = FakeWikiApi::spawn().await;
-  let client = Client::new(&base_url, "test-token").expect("client");
+  let client = Client::new(&base_url, "test-token", None).expect("client");
   (client, state)
 }
 

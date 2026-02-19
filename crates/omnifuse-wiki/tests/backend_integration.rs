@@ -39,6 +39,7 @@ async fn setup_backend() -> (
   let config = WikiConfig {
     base_url: base_url.clone(),
     auth_token: "test-token".to_string(),
+    org_id: None,
     root_slug: "root".to_string(),
     poll_interval_secs: 60,
     max_depth: 10,
@@ -474,6 +475,7 @@ async fn test_init_with_deep_nesting() {
     let config = WikiConfig {
       base_url,
       auth_token: "test-token".to_string(),
+      org_id: None,
       root_slug: "root".to_string(),
       poll_interval_secs: 60,
       max_depth: 10,
@@ -681,6 +683,7 @@ async fn test_init_empty_tree() {
     let config = WikiConfig {
       base_url,
       auth_token: "test-token".to_string(),
+      org_id: None,
       root_slug: "root".to_string(),
       poll_interval_secs: 60,
       max_depth: 10,
@@ -785,6 +788,7 @@ async fn test_read_page_with_subpages() {
     let config = WikiConfig {
       base_url,
       auth_token: "test-token".to_string(),
+      org_id: None,
       root_slug: "root".to_string(),
       poll_interval_secs: 60,
       max_depth: 10,
