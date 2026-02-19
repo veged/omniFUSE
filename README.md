@@ -50,13 +50,11 @@ export OMNIFUSE_WIKI_TOKEN=your-token
 of mount wiki <BASE_URL> <ROOT_SLUG> <MOUNTPOINT>
 ```
 
-Wiki pages appear as `.md` files. Edits are synced back via the wiki API
-with three-way merge for conflict resolution.
+Wiki pages appear as `.md` files. Edits are synced back via the wiki API with three-way merge for conflict resolution.
 
 #### Yandex Wiki
 
-For Yandex 360 Wiki use the API host and an
-[OAuth token](https://yandex.ru/support/wiki/ru/api-ref/access):
+For Yandex 360 Wiki use the API host and an [OAuth token](https://yandex.ru/support/wiki/ru/api-ref/access):
 
 ```bash
 # Yandex 360 (external organizations)
