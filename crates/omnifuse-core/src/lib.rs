@@ -93,6 +93,9 @@ pub async fn run_mount<B: Backend>(
     read_only: config.mount_options.read_only
   };
 
+  // Ensure mount point exists and is empty
+  std::fs::create_dir_all(&config.mount_point)?;
+
   events.on_mounted(backend.name(), &config.mount_point);
   info!(
     mount_point = %config.mount_point.display(),

@@ -5,7 +5,7 @@
 mod common;
 
 use common::FakeWikiApi;
-use omnifuse_wiki::client::Client;
+use omnifuse_wiki::{client::Client, models::PageFullDetailsSchema};
 
 /// Timeout for async tests (30s — HTTP server operations).
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -212,4 +212,133 @@ async fn test_poll_status_url() {
   })
   .await
   .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn test_redirect_returns_clear_error() {
+  eprintln!("[TEST] test_redirect_returns_clear_error");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    // Start a server that always returns 302
+    let app = axum::Router::new().route(
+      "/api/v2/public/pages/tree",
+      axum::routing::get(|| async {
+        (
+          axum::http::StatusCode::FOUND,
+          [("location", "https://passport.example.com/login")],
+          ""
+        )
+      })
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = Client::new(&format!("http://{addr}"), "test-token", None).expect("client");
+    let result = client.get_page_tree("root", 10, 2).await;
+
+    assert!(result.is_err(), "redirect should be an error");
+    let err = result.expect_err("error").to_string();
+    assert!(err.contains("redirect"), "error should mention 'redirect': {err}");
+    assert!(
+      err.contains("passport.example.com"),
+      "error should contain the redirect target: {err}"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn test_org_id_header_sent() {
+  eprintln!("[TEST] test_org_id_header_sent");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    // Start a server that echoes the X-Org-Id header back in the response
+    let app = axum::Router::new().route(
+      "/api/v2/public/pages",
+      axum::routing::get(|headers: axum::http::HeaderMap| async move {
+        let org_id = headers
+          .get("x-org-id")
+          .and_then(|v| v.to_str().ok())
+          .unwrap_or("missing");
+        axum::Json(serde_json::json!({
+          "id": 1,
+          "title": org_id,
+          "slug": "test",
+          "page_type": "page",
+          "content": org_id,
+          "modified_at": "2024-01-01T00:00:00Z"
+        }))
+      })
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = Client::new(&format!("http://{addr}"), "token", Some("org-12345")).expect("client");
+    let page = client.get_page_by_slug("test").await.expect("get");
+
+    assert_eq!(
+      page.content.as_deref(),
+      Some("org-12345"),
+      "server should receive X-Org-Id header"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn test_content_deserialize_json_object() {
+  eprintln!("[TEST] test_content_deserialize_json_object");
+  // Grid pages return content as a JSON object, not a string
+  let json = r#"{
+    "id": 42,
+    "title": "Grid Page",
+    "slug": "grid/page",
+    "page_type": "grid",
+    "content": {"rows": [{"cells": ["a", "b"]}]},
+    "modified_at": "2024-01-01T00:00:00Z"
+  }"#;
+  let page: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize grid content");
+  assert_eq!(page.id, 42);
+  assert_eq!(page.page_type, "grid");
+  // JSON object is serialized to string
+  let content = page.content.expect("content should be Some");
+  assert!(
+    content.contains("rows"),
+    "content should contain the JSON object as string: {content}"
+  );
+}
+
+#[tokio::test]
+async fn test_content_deserialize_string() {
+  eprintln!("[TEST] test_content_deserialize_string");
+  // Normal pages return content as a string
+  let json = r##"{
+    "id": 1,
+    "title": "Normal",
+    "slug": "normal",
+    "page_type": "wysiwyg",
+    "content": "# Hello world",
+    "modified_at": "2024-01-01T00:00:00Z"
+  }"##;
+  let page: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize string content");
+  assert_eq!(page.content.as_deref(), Some("# Hello world"));
+}
+
+#[tokio::test]
+async fn test_content_deserialize_null() {
+  eprintln!("[TEST] test_content_deserialize_null");
+  let json = r#"{
+    "id": 1,
+    "title": "No Content",
+    "slug": "empty",
+    "page_type": "page",
+    "content": null,
+    "modified_at": "2024-01-01T00:00:00Z"
+  }"#;
+  let page: PageFullDetailsSchema = serde_json::from_str(json).expect("deserialize null content");
+  assert!(page.content.is_none());
 }

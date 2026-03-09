@@ -3,6 +3,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// Deserialize `content` that can be either a string or a JSON object
+/// (e.g. "grid" pages return a map instead of markdown text).
+fn deserialize_content<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+  D: serde::Deserializer<'de>
+{
+  let value: Option<Value> = Option::deserialize(deserializer)?;
+  Ok(value.map(|v| match v {
+    Value::String(s) => s,
+    other => other.to_string()
+  }))
+}
+
 /// Page fields (detailed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageFullDetailsSchema {
@@ -14,7 +27,8 @@ pub struct PageFullDetailsSchema {
   pub slug: String,
   /// Page type.
   pub page_type: String,
-  /// Content (markdown), if requested.
+  /// Content (markdown or JSON for grid pages), if requested.
+  #[serde(default, deserialize_with = "deserialize_content")]
   pub content: Option<String>,
   /// Last modification time (ISO 8601).
   #[serde(default)]

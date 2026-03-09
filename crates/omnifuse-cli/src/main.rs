@@ -7,7 +7,10 @@
 //! of check
 //! ```
 
-use std::path::PathBuf;
+use std::{
+  hash::{Hash, Hasher},
+  path::{Path, PathBuf}
+};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -120,6 +123,34 @@ async fn main() -> anyhow::Result<()> {
   }
 }
 
+/// Compute a persistent cache directory for a given mount point.
+///
+/// Layout: `<cache_base>/omnifuse/<hash>/`
+/// - macOS: `~/Library/Caches/omnifuse/<hash>`
+/// - Linux: `$XDG_CACHE_HOME/omnifuse/<hash>` or `~/.cache/omnifuse/<hash>`
+fn cache_dir_for(mountpoint: &Path) -> anyhow::Result<PathBuf> {
+  // Resolve to absolute path (parent must exist)
+  let abs = mountpoint.canonicalize().or_else(|_| {
+    let parent = mountpoint.parent().unwrap_or(Path::new(".")).canonicalize()?;
+    Ok::<_, std::io::Error>(parent.join(mountpoint.file_name().unwrap_or_default()))
+  })?;
+
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  abs.hash(&mut hasher);
+  let hash = format!("{:016x}", hasher.finish());
+
+  let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+
+  #[cfg(target_os = "macos")]
+  let cache_base = home.join("Library/Caches");
+  #[cfg(not(target_os = "macos"))]
+  let cache_base = std::env::var("XDG_CACHE_HOME")
+    .map(PathBuf::from)
+    .unwrap_or_else(|_| home.join(".cache"));
+
+  Ok(cache_base.join("omnifuse").join(hash))
+}
+
 /// Mount command.
 async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
   match backend {
@@ -155,9 +186,11 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
 
       let git_backend = omnifuse_git::GitBackend::new(git_config);
 
+      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
+
       let mount_config = omnifuse_core::MountConfig {
         mount_point: mountpoint.clone(),
-        local_dir: mountpoint.clone(),
+        local_dir,
         sync: omnifuse_core::SyncConfig::default(),
         buffer: omnifuse_core::BufferConfig::default(),
         mount_options: omnifuse_core::FuseMountOptions {
@@ -211,9 +244,11 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
 
       let wiki_backend = omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
 
+      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
+
       let mount_config = omnifuse_core::MountConfig {
         mount_point: mountpoint.clone(),
-        local_dir: mountpoint.clone(),
+        local_dir,
         sync: omnifuse_core::SyncConfig::default(),
         buffer: omnifuse_core::BufferConfig::default(),
         mount_options: omnifuse_core::FuseMountOptions {
@@ -298,4 +333,36 @@ sync_interval = "60s"
 
   println!("{example}");
   Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+  use std::path::Path;
+
+  use super::*;
+
+  #[test]
+  fn cache_dir_returns_path_under_omnifuse() {
+    let dir = cache_dir_for(Path::new("/tmp/test-mount")).expect("cache_dir_for");
+    assert!(
+      dir.to_string_lossy().contains("omnifuse"),
+      "cache dir should contain 'omnifuse': {}",
+      dir.display()
+    );
+  }
+
+  #[test]
+  fn cache_dir_is_deterministic() {
+    let a = cache_dir_for(Path::new("/tmp/test-mount")).expect("first call");
+    let b = cache_dir_for(Path::new("/tmp/test-mount")).expect("second call");
+    assert_eq!(a, b, "same mountpoint should produce same cache dir");
+  }
+
+  #[test]
+  fn cache_dir_differs_for_different_mountpoints() {
+    let a = cache_dir_for(Path::new("/tmp/mount-a")).expect("mount-a");
+    let b = cache_dir_for(Path::new("/tmp/mount-b")).expect("mount-b");
+    assert_ne!(a, b, "different mountpoints should produce different cache dirs");
+  }
 }
