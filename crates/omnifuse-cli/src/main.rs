@@ -242,6 +242,7 @@ async fn cmd_mount_git(
   Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_mount_wiki(
   base_url: String,
   root_slug: String,
@@ -300,6 +301,8 @@ async fn cmd_mount_wiki(
   info!("unmounted");
   Ok(())
 }
+
+/// Check command — verify FUSE availability.
 fn cmd_check() -> anyhow::Result<()> {
   if omnifuse_core::is_fuse_available() {
     println!("FUSE is available");
