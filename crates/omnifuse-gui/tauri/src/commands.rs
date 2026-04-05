@@ -54,7 +54,8 @@ pub async fn mount_git(
     source: source.clone(),
     branch: branch.unwrap_or_else(|| "main".to_string()),
     max_push_retries: 10,
-    poll_interval_secs: 30
+    poll_interval_secs: 30,
+    local_dir: mnt.clone()
   };
 
   let git_backend = omnifuse_git::GitBackend::new(git_config);

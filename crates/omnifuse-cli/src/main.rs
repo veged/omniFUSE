@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
 fn cache_dir_for(mountpoint: &Path) -> anyhow::Result<PathBuf> {
   // Resolve to absolute path (parent must exist)
   let abs = mountpoint.canonicalize().or_else(|_| {
-    let parent = mountpoint.parent().unwrap_or(Path::new(".")).canonicalize()?;
+    let parent = mountpoint.parent().unwrap_or_else(|| Path::new(".")).canonicalize()?;
     Ok::<_, std::io::Error>(parent.join(mountpoint.file_name().unwrap_or_default()))
   })?;
 
@@ -161,54 +161,7 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       poll_interval,
       allow_other,
       read_only
-    } => {
-      // Check FUSE availability
-      if !omnifuse_core::is_fuse_available() {
-        anyhow::bail!(
-          "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
-           Check: of check"
-        );
-      }
-
-      info!(
-        source = %source,
-        mountpoint = %mountpoint.display(),
-        branch = %branch,
-        "mounting git repository"
-      );
-
-      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
-
-      let git_config = omnifuse_git::GitConfig {
-        source,
-        branch,
-        max_push_retries: 3,
-        poll_interval_secs: poll_interval,
-        local_dir: local_dir.clone()
-      };
-
-      let git_backend = omnifuse_git::GitBackend::new(git_config);
-
-      let mount_config = omnifuse_core::MountConfig {
-        mount_point: mountpoint.clone(),
-        local_dir,
-        sync: omnifuse_core::SyncConfig::default(),
-        buffer: omnifuse_core::BufferConfig::default(),
-        mount_options: omnifuse_core::FuseMountOptions {
-          fs_name: "omnifuse-git".to_string(),
-          allow_other,
-          read_only
-        },
-        logging: omnifuse_core::LoggingConfig::default()
-      };
-
-      omnifuse_core::run_mount(mount_config, git_backend, omnifuse_core::NoopEventHandler)
-        .await
-        .context("mount error")?;
-
-      info!("unmounted");
-      Ok(())
-    }
+    } => cmd_mount_git(source, mountpoint, branch, poll_interval, allow_other, read_only).await,
     MountBackend::Wiki {
       base_url,
       root_slug,
@@ -219,58 +172,134 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       allow_other,
       read_only
     } => {
-      if !omnifuse_core::is_fuse_available() {
-        anyhow::bail!(
-          "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
-           Check: of check"
-        );
-      }
-
-      info!(
-        base_url = %base_url,
-        root_slug = %root_slug,
-        mountpoint = %mountpoint.display(),
-        "mounting wiki"
-      );
-
-      let wiki_config = omnifuse_wiki::WikiConfig {
+      cmd_mount_wiki(
         base_url,
-        auth_token: auth,
-        org_id,
         root_slug,
-        poll_interval_secs: poll_interval,
-        max_depth: 10,
-        max_pages: 500
-      };
-
-      let wiki_backend = omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
-
-      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
-
-      let mount_config = omnifuse_core::MountConfig {
-        mount_point: mountpoint.clone(),
-        local_dir,
-        sync: omnifuse_core::SyncConfig::default(),
-        buffer: omnifuse_core::BufferConfig::default(),
-        mount_options: omnifuse_core::FuseMountOptions {
-          fs_name: "omnifuse-wiki".to_string(),
-          allow_other,
-          read_only
-        },
-        logging: omnifuse_core::LoggingConfig::default()
-      };
-
-      omnifuse_core::run_mount(mount_config, wiki_backend, omnifuse_core::NoopEventHandler)
-        .await
-        .context("mount error")?;
-
-      info!("unmounted");
-      Ok(())
+        mountpoint,
+        auth,
+        org_id,
+        poll_interval,
+        allow_other,
+        read_only
+      )
+      .await
     }
   }
 }
 
-/// Check command — verify FUSE availability.
+async fn cmd_mount_git(
+  source: String,
+  mountpoint: PathBuf,
+  branch: String,
+  poll_interval: u64,
+  allow_other: bool,
+  read_only: bool
+) -> anyhow::Result<()> {
+  if !omnifuse_core::is_fuse_available() {
+    anyhow::bail!(
+      "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
+       Check: of check"
+    );
+  }
+
+  info!(
+    source = %source,
+    mountpoint = %mountpoint.display(),
+    branch = %branch,
+    "mounting git repository"
+  );
+
+  let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
+
+  let git_config = omnifuse_git::GitConfig {
+    source,
+    branch,
+    max_push_retries: 3,
+    poll_interval_secs: poll_interval,
+    local_dir: local_dir.clone()
+  };
+
+  let git_backend = omnifuse_git::GitBackend::new(git_config);
+
+  let mount_config = omnifuse_core::MountConfig {
+    mount_point: mountpoint.clone(),
+    local_dir,
+    sync: omnifuse_core::SyncConfig::default(),
+    buffer: omnifuse_core::BufferConfig::default(),
+    mount_options: omnifuse_core::FuseMountOptions {
+      fs_name: "omnifuse-git".to_string(),
+      allow_other,
+      read_only
+    },
+    logging: omnifuse_core::LoggingConfig::default()
+  };
+
+  omnifuse_core::run_mount(mount_config, git_backend, omnifuse_core::NoopEventHandler)
+    .await
+    .context("mount error")?;
+
+  info!("unmounted");
+  Ok(())
+}
+
+async fn cmd_mount_wiki(
+  base_url: String,
+  root_slug: String,
+  mountpoint: PathBuf,
+  auth: String,
+  org_id: Option<String>,
+  poll_interval: u64,
+  allow_other: bool,
+  read_only: bool
+) -> anyhow::Result<()> {
+  if !omnifuse_core::is_fuse_available() {
+    anyhow::bail!(
+      "FUSE not found. Install macFUSE (macOS) or libfuse3 (Linux).\n\
+       Check: of check"
+    );
+  }
+
+  info!(
+    base_url = %base_url,
+    root_slug = %root_slug,
+    mountpoint = %mountpoint.display(),
+    "mounting wiki"
+  );
+
+  let wiki_config = omnifuse_wiki::WikiConfig {
+    base_url,
+    auth_token: auth,
+    org_id,
+    root_slug,
+    poll_interval_secs: poll_interval,
+    max_depth: 10,
+    max_pages: 500
+  };
+
+  let wiki_backend = omnifuse_wiki::WikiBackend::new(wiki_config).context("failed to create wiki backend")?;
+
+  let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
+
+  let mount_config = omnifuse_core::MountConfig {
+    mount_point: mountpoint.clone(),
+    local_dir,
+    sync: omnifuse_core::SyncConfig::default(),
+    buffer: omnifuse_core::BufferConfig::default(),
+    mount_options: omnifuse_core::FuseMountOptions {
+      fs_name: "omnifuse-wiki".to_string(),
+      allow_other,
+      read_only
+    },
+    logging: omnifuse_core::LoggingConfig::default()
+  };
+
+  omnifuse_core::run_mount(mount_config, wiki_backend, omnifuse_core::NoopEventHandler)
+    .await
+    .context("mount error")?;
+
+  info!("unmounted");
+  Ok(())
+}
 fn cmd_check() -> anyhow::Result<()> {
   if omnifuse_core::is_fuse_available() {
     println!("FUSE is available");
