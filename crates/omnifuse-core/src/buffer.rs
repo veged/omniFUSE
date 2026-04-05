@@ -830,4 +830,164 @@ mod tests {
     let on_disk = tokio::fs::read(&path).await.expect("read");
     assert_eq!(on_disk, b"modified", "flush should write data to disk");
   }
+
+  #[tokio::test]
+  async fn test_lru_eviction_realistic_limit() {
+    eprintln!("[TEST] test_lru_eviction_realistic_limit");
+    let config = BufferConfig {
+      max_memory_mb: 1,
+      lru_eviction_enabled: true
+    };
+    let manager = FileBufferManager::new(config);
+
+    let max_bytes = 1024 * 1024;
+    let buffer_size = 1024;
+    let count_to_fill = (max_bytes / buffer_size) + 2;
+
+    for i in 0..count_to_fill {
+      let path = PathBuf::from(format!("/test/realistic_{i}.txt"));
+      manager.cache(&path, vec![0u8; buffer_size]).await;
+    }
+
+    let first_path = PathBuf::from("/test/realistic_0.txt");
+    assert!(
+      manager.get(&first_path).is_none(),
+      "oldest buffer should be evicted when limit exceeded"
+    );
+
+    assert!(
+      manager.memory_usage() <= max_bytes + buffer_size,
+      "memory usage should respect configured limit"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_get_or_load_promotes_in_lru() {
+    eprintln!("[TEST] test_get_or_load_promotes_in_lru");
+    // get_or_load on a cached buffer promotes it in LRU order
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let p1 = Path::new("/test/lru_promote1.txt");
+    let p2 = Path::new("/test/lru_promote2.txt");
+
+    // Cache both files
+    manager.cache(p1, b"first".to_vec()).await;
+    manager.cache(p2, b"second".to_vec()).await;
+
+    // get_or_load on p1 should promote it (cache hit)
+    let buf = manager.get_or_load(p1).await.expect("get_or_load p1");
+    assert_eq!(buf.content().await, b"first");
+
+    // Both should still be in cache (no eviction with default config)
+    assert!(manager.get(p1).is_some(), "p1 should still be cached");
+    assert!(manager.get(p2).is_some(), "p2 should still be cached");
+  }
+
+  #[tokio::test]
+  async fn test_remove_non_cached_file_noop() {
+    eprintln!("[TEST] test_remove_non_cached_file_noop");
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let path = Path::new("/test/never_cached.txt");
+    assert!(manager.get(path).is_none());
+
+    manager.remove(path).await;
+
+    assert_eq!(manager.buffer_count(), 0);
+    assert_eq!(manager.memory_usage(), 0);
+  }
+
+  #[tokio::test]
+  async fn test_flush_non_cached_file_noop() {
+    eprintln!("[TEST] test_flush_non_cached_file_noop");
+    let config = BufferConfig::default();
+    let manager = FileBufferManager::new(config);
+
+    let path = Path::new("/test/never_flushed.txt");
+    assert!(manager.get(path).is_none());
+
+    manager.flush(path).await.expect("flush non-cached should be ok");
+  }
+
+  #[tokio::test]
+  async fn test_truncate_beyond_current_size() {
+    eprintln!("[TEST] test_truncate_beyond_current_size");
+    let buffer = FileBuffer::new(PathBuf::from("/test/truncate_extend.txt"), b"hi".to_vec());
+    assert_eq!(buffer.size(), 2);
+
+    // Write beyond current size to extend (truncate only shrinks)
+    buffer.write(10, b"!").await;
+    assert_eq!(buffer.size(), 11, "size should be 11 after write beyond current");
+
+    let content = buffer.content().await;
+    assert_eq!(&content[0..2], b"hi", "original data should be preserved");
+    assert!(buffer.is_dirty(), "write should mark buffer as dirty");
+  }
+
+  #[tokio::test]
+  async fn test_read_at_exact_eof() {
+    eprintln!("[TEST] test_read_at_exact_eof");
+    let buffer = FileBuffer::new(PathBuf::from("/test/read_eof.txt"), b"hello".to_vec());
+
+    let data = buffer.read(5, 100).await;
+    assert!(data.is_empty(), "read at exact eof should return empty vec");
+
+    let data = buffer.read(10, 100).await;
+    assert!(data.is_empty(), "read beyond eof should return empty vec");
+  }
+
+  #[tokio::test]
+  async fn test_write_at_exact_eof() {
+    eprintln!("[TEST] test_write_at_exact_eof");
+    let buffer = FileBuffer::new(PathBuf::from("/test/write_eof.txt"), b"hello".to_vec());
+
+    buffer.write(5, b" world").await;
+
+    let content = buffer.content().await;
+    assert_eq!(content, b"hello world", "write at eof should append data");
+    assert_eq!(buffer.size(), 11, "size should reflect appended data");
+  }
+
+  #[tokio::test]
+  async fn test_concurrent_access_same_buffer() {
+    eprintln!("[TEST] test_concurrent_access_same_buffer");
+    let buffer = Arc::new(FileBuffer::new(
+      PathBuf::from("/test/concurrent_access.txt"),
+      vec![0u8; 512]
+    ));
+
+    let mut handles = Vec::new();
+
+    for task_id in 0..5u8 {
+      let buf = Arc::clone(&buffer);
+      handles.push(tokio::spawn(async move {
+        for i in 0..20u64 {
+          let offset = (i * 4) % 512;
+          buf.write(offset, &[task_id; 4]).await;
+        }
+      }));
+    }
+
+    for _ in 0..5u8 {
+      let buf = Arc::clone(&buffer);
+      handles.push(tokio::spawn(async move {
+        for _ in 0..20u64 {
+          let _data = buf.read(0, 512).await;
+        }
+      }));
+    }
+
+    let result = tokio::time::timeout(crate::test_utils::TEST_TIMEOUT, async {
+      for h in handles {
+        h.await.expect("join");
+      }
+    })
+    .await;
+
+    assert!(result.is_ok(), "concurrent access should not cause deadlock");
+    assert!(buffer.size() >= 512, "buffer size should not shrink");
+    assert!(buffer.is_dirty(), "buffer should be dirty after concurrent writes");
+  }
 }

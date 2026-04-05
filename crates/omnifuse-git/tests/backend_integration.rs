@@ -308,3 +308,96 @@ async fn test_should_track_gitignore_patterns() {
     "readme.md should not be ignored"
   );
 }
+
+/// poll_remote after a remote commit: detects changes.
+#[tokio::test]
+async fn test_poll_remote_detects_remote_commit() {
+  eprintln!("[TEST] test_poll_remote_detects_remote_commit");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (_tmp, bare_path, clone_path) = create_bare_and_clone().await;
+
+    // Initialize backend
+    let config = GitConfig {
+      source: clone_path.display().to_string(),
+      ..GitConfig::default()
+    };
+    let backend = GitBackend::new(config);
+    let local_dir = clone_path.join(".vfs");
+    tokio::fs::create_dir_all(&local_dir).await.expect("mkdir");
+    backend.init(&local_dir).await.expect("init");
+
+    // Make a commit in the bare repo (simulating a remote push)
+    let other_clone = bare_path.parent().expect("parent").join("other_clone");
+    tokio::process::Command::new("git")
+      .args([
+        "clone",
+        bare_path.to_str().expect("bare_path str"),
+        other_clone.to_str().expect("other_clone str")
+      ])
+      .output()
+      .await
+      .expect("clone other");
+    tokio::process::Command::new("git")
+      .current_dir(&other_clone)
+      .args(["config", "user.email", "other@test.com"])
+      .output()
+      .await
+      .expect("config email");
+    tokio::process::Command::new("git")
+      .current_dir(&other_clone)
+      .args(["config", "user.name", "Other"])
+      .output()
+      .await
+      .expect("config name");
+    tokio::fs::write(other_clone.join("remote_change.md"), "# Remote change")
+      .await
+      .expect("write");
+    tokio::process::Command::new("git")
+      .current_dir(&other_clone)
+      .args(["add", "."])
+      .output()
+      .await
+      .expect("add");
+    tokio::process::Command::new("git")
+      .current_dir(&other_clone)
+      .args(["commit", "-m", "remote change"])
+      .output()
+      .await
+      .expect("commit");
+    tokio::process::Command::new("git")
+      .current_dir(&other_clone)
+      .args(["push"])
+      .output()
+      .await
+      .expect("push");
+
+    // poll_remote should detect the remote commit
+    let changes = backend.poll_remote().await.expect("poll_remote");
+    assert!(
+      !changes.is_empty(),
+      "poll_remote should detect remote changes: {changes:?}",
+    );
+  })
+  .await
+  .expect("test timed out");
+}
+
+/// is_online() returns true for a reachable local repo.
+#[tokio::test]
+async fn test_is_online_local_repo() {
+  eprintln!("[TEST] test_is_online_local_repo");
+  let (_tmp, _bare, clone_path) = create_bare_and_clone().await;
+
+  let config = GitConfig {
+    source: clone_path.display().to_string(),
+    ..GitConfig::default()
+  };
+  let backend = GitBackend::new(config);
+  let local_dir = clone_path.join(".vfs");
+  tokio::fs::create_dir_all(&local_dir).await.expect("mkdir");
+  backend.init(&local_dir).await.expect("init");
+
+  // Local bare repo is always "online"
+  let online = backend.is_online().await;
+  assert!(online, "is_online() should return true for local repo",);
+}

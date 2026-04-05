@@ -177,16 +177,17 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
         "mounting git repository"
       );
 
+      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
+
       let git_config = omnifuse_git::GitConfig {
         source,
         branch,
         max_push_retries: 3,
-        poll_interval_secs: poll_interval
+        poll_interval_secs: poll_interval,
+        local_dir: local_dir.clone()
       };
 
       let git_backend = omnifuse_git::GitBackend::new(git_config);
-
-      let local_dir = cache_dir_for(&mountpoint).context("failed to resolve cache directory")?;
 
       let mount_config = omnifuse_core::MountConfig {
         mount_point: mountpoint.clone(),

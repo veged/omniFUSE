@@ -22,7 +22,8 @@ use tracing::{debug, info, warn};
 
 use crate::{
   filter::GitignoreFilter,
-  ops::{GitOps, StartupSyncResult}
+  ops::{GitOps, StartupSyncResult},
+  repo_source::RepoSource
 };
 
 /// Git backend configuration.
@@ -35,7 +36,9 @@ pub struct GitConfig {
   /// Maximum number of push retries.
   pub max_push_retries: u32,
   /// Remote polling interval (seconds).
-  pub poll_interval_secs: u64
+  pub poll_interval_secs: u64,
+  /// Local working directory (clone target).
+  pub local_dir: PathBuf
 }
 
 impl Default for GitConfig {
@@ -44,7 +47,8 @@ impl Default for GitConfig {
       source: String::new(),
       branch: "main".to_string(),
       max_push_retries: 3,
-      poll_interval_secs: 30
+      poll_interval_secs: 30,
+      local_dir: PathBuf::new()
     }
   }
 }
@@ -120,20 +124,32 @@ impl GitBackend {
 }
 
 impl Backend for GitBackend {
-  async fn init(&self, _local_dir: &Path) -> anyhow::Result<InitResult> {
-    // Prepare the repository (clone if remote)
-    let source = crate::repo_source::RepoSource::parse(&self.config.source);
-    let repo_path = source.ensure_available(&self.config.branch).await?;
+  async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
+    let source = RepoSource::parse(&self.config.source);
 
-    // Initialize git operations
+    let repo_path = match &source {
+      RepoSource::Local(path) => {
+        std::fs::create_dir_all(local_dir)?;
+        if !local_dir.join(".git").exists() {
+          info!(source = %path.display(), target = %local_dir.display(), "cloning local repo into cache");
+          tokio::process::Command::new("git")
+            .args(["clone", "--branch", &self.config.branch])
+            .arg(path)
+            .arg(local_dir)
+            .output()
+            .await?;
+        }
+        local_dir.to_path_buf()
+      }
+      RepoSource::Remote { .. } => source.ensure_available(&self.config.branch).await?
+    };
+
     let ops = GitOps::new(repo_path.clone(), self.config.branch.clone())?;
     let _ = self.ops.set(ops);
 
-    // Initialize .gitignore filter
     let filter = GitignoreFilter::new(&repo_path);
     let _ = self.filter.set(filter);
 
-    // Startup sync: fetch + pull
     let ops = self.ops()?;
     match ops.startup_sync().await? {
       StartupSyncResult::UpToDate => Ok(InitResult::UpToDate),
@@ -146,7 +162,6 @@ impl Backend for GitBackend {
   async fn sync(&self, dirty_files: &[PathBuf]) -> anyhow::Result<SyncResult> {
     let ops = self.ops()?;
 
-    // Commit dirty files
     if let Err(e) = ops.auto_commit(dirty_files).await {
       let msg = e.to_string();
       if !msg.contains("nothing to commit") {
@@ -155,7 +170,6 @@ impl Backend for GitBackend {
       debug!("sync: no changes to commit");
     }
 
-    // Push with retry (internally: push -> rejected -> pull -> retry)
     match ops.push_with_retry(self.config.max_push_retries).await {
       Ok(()) => Ok(SyncResult::Success {
         synced_files: dirty_files.len()
@@ -180,12 +194,10 @@ impl Backend for GitBackend {
   async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
     let ops = self.ops()?;
 
-    // Fetch and check for new commits
     if !ops.check_remote().await? {
       return Ok(Vec::new());
     }
 
-    // Get the list of changed files
     let changed_files = self.diff_remote_files().await?;
 
     if changed_files.is_empty() {
@@ -194,7 +206,6 @@ impl Backend for GitBackend {
 
     info!(count = changed_files.len(), "remote changes detected");
 
-    // Return markers — content will be pulled via pull in apply_remote
     let changes = changed_files
       .into_iter()
       .map(|path| RemoteChange::Modified {
@@ -209,7 +220,6 @@ impl Backend for GitBackend {
   async fn apply_remote(&self, _changes: Vec<RemoteChange>) -> anyhow::Result<()> {
     let ops = self.ops()?;
 
-    // Git pull will fetch all changes at once
     let result = ops.engine().pull().await?;
     debug!(?result, "apply_remote: pull completed");
 
@@ -217,12 +227,10 @@ impl Backend for GitBackend {
   }
 
   fn should_track(&self, path: &Path) -> bool {
-    // Always hide .git/
     if path.components().any(|c| c.as_os_str() == ".git") {
       return false;
     }
 
-    // Check gitignore (if filter is initialized)
     if let Some(filter) = self.filter.get() {
       return !filter.is_ignored(path);
     }

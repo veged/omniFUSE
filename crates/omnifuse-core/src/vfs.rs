@@ -2581,4 +2581,208 @@ mod tests {
       "git status should show modified initial.txt: {status2}"
     );
   }
+
+  // -- New unit tests --
+
+  #[tokio::test]
+  async fn test_read_beyond_eof_returns_short_read() {
+    eprintln!("[TEST] test_read_beyond_eof_returns_short_read");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    let (fh, _) = vfs
+      .create(Path::new("short_read.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs
+      .write(Path::new("short_read.txt"), fh, 0, b"hello")
+      .await
+      .expect("write");
+
+    let data = vfs.read(Path::new("short_read.txt"), fh, 3, 100).await.expect("read");
+    assert_eq!(data, b"lo", "read beyond EOF should return only available bytes");
+    assert_eq!(data.len(), 2, "should return exactly 2 bytes");
+  }
+
+  #[tokio::test]
+  async fn test_mkdir_already_exists_returns_error() {
+    eprintln!("[TEST] test_mkdir_already_exists_returns_error");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    vfs.mkdir(Path::new("existing_dir"), 0o755).await.expect("mkdir first");
+    let result = vfs.mkdir(Path::new("existing_dir"), 0o755).await;
+    assert!(result.is_err(), "mkdir of existing directory should return error");
+  }
+
+  #[tokio::test]
+  async fn test_readdir_empty_directory() {
+    eprintln!("[TEST] test_readdir_empty_directory");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    vfs.mkdir(Path::new("empty_dir"), 0o755).await.expect("mkdir");
+
+    let entries = vfs.readdir(Path::new("empty_dir")).await.expect("readdir");
+    assert!(entries.is_empty(), "readdir of empty directory should return empty vec");
+  }
+
+  #[tokio::test]
+  async fn test_readdir_nested_directory() {
+    eprintln!("[TEST] test_readdir_nested_directory");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    vfs.mkdir(Path::new("a"), 0o755).await.expect("mkdir a");
+    vfs.mkdir(Path::new("a/b"), 0o755).await.expect("mkdir a/b");
+
+    let (fh, _) = vfs
+      .create(Path::new("a/b/c.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs.flush(Path::new("a/b/c.txt"), fh).await.expect("flush");
+
+    let entries = vfs.readdir(Path::new("a/b")).await.expect("readdir a/b");
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"c.txt"), "readdir a/b should contain c.txt");
+    assert_eq!(entries.len(), 1, "readdir a/b should contain exactly 1 entry");
+  }
+
+  #[tokio::test]
+  async fn test_setattr_truncate_and_write() {
+    eprintln!("[TEST] test_setattr_truncate_and_write");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    let (fh, _) = vfs
+      .create(Path::new("trunc_rw.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs
+      .write(Path::new("trunc_rw.txt"), fh, 0, b"long content")
+      .await
+      .expect("write");
+
+    vfs
+      .setattr(Path::new("trunc_rw.txt"), Some(4), None, None, None)
+      .await
+      .expect("setattr");
+
+    let data = vfs.read(Path::new("trunc_rw.txt"), fh, 0, 100).await.expect("read");
+    assert_eq!(data, b"long", "read after truncate should return truncated content");
+  }
+
+  #[tokio::test]
+  async fn test_read_at_exact_eof_returns_empty() {
+    eprintln!("[TEST] test_read_at_exact_eof_returns_empty");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    let (fh, _) = vfs
+      .create(Path::new("eof_read.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs
+      .write(Path::new("eof_read.txt"), fh, 0, b"hello")
+      .await
+      .expect("write");
+
+    let data = vfs.read(Path::new("eof_read.txt"), fh, 5, 100).await.expect("read");
+    assert!(data.is_empty(), "read at exact EOF should return empty vec");
+  }
+
+  #[tokio::test]
+  async fn test_write_at_exact_eof_appends() {
+    eprintln!("[TEST] test_write_at_exact_eof_appends");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    let (fh, _) = vfs
+      .create(Path::new("eof_write.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs
+      .write(Path::new("eof_write.txt"), fh, 0, b"hello")
+      .await
+      .expect("write 1");
+
+    vfs
+      .write(Path::new("eof_write.txt"), fh, 5, b" world")
+      .await
+      .expect("write 2");
+
+    let data = vfs.read(Path::new("eof_write.txt"), fh, 0, 100).await.expect("read");
+    assert_eq!(data, b"hello world", "write at exact EOF should append data");
+  }
+
+  #[tokio::test]
+  async fn test_rmdir_nested_directory() {
+    eprintln!("[TEST] test_rmdir_nested_directory");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    vfs.mkdir(Path::new("a"), 0o755).await.expect("mkdir a");
+    vfs.mkdir(Path::new("a/b"), 0o755).await.expect("mkdir a/b");
+
+    vfs.rmdir(Path::new("a/b")).await.expect("rmdir a/b");
+    assert!(!tmp.path().join("a/b").exists(), "a/b should be deleted");
+
+    vfs.rmdir(Path::new("a")).await.expect("rmdir a");
+    assert!(!tmp.path().join("a").exists(), "a should be deleted");
+  }
+
+  #[tokio::test]
+  async fn test_readdir_after_mkdir_and_create() {
+    eprintln!("[TEST] test_readdir_after_mkdir_and_create");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    vfs.mkdir(Path::new("mydir"), 0o755).await.expect("mkdir");
+
+    let (fh, _) = vfs
+      .create(Path::new("mydir/file.txt"), OpenFlags::read_write(), 0o644)
+      .await
+      .expect("create");
+    vfs.flush(Path::new("mydir/file.txt"), fh).await.expect("flush");
+
+    let entries = vfs.readdir(Path::new("mydir")).await.expect("readdir");
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"file.txt"), "readdir should contain file.txt");
+    assert_eq!(entries[0].kind, FileType::RegularFile, "file.txt should be RegularFile");
+  }
+
+  #[tokio::test]
+  async fn test_open_read_only_then_write() {
+    eprintln!("[TEST] test_open_read_only_then_write");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tokio::fs::write(tmp.path().join("ro.txt"), "initial")
+      .await
+      .expect("write");
+
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+
+    let fh = vfs
+      .open(Path::new("ro.txt"), OpenFlags::read_only())
+      .await
+      .expect("open");
+
+    let written = vfs
+      .write(Path::new("ro.txt"), fh, 0, b"overwritten")
+      .await
+      .expect("write");
+    assert_eq!(written, 11);
+
+    let data = vfs.read(Path::new("ro.txt"), fh, 0, 100).await.expect("read");
+    assert_eq!(data, b"overwritten", "write after read-only open should still work");
+  }
 }

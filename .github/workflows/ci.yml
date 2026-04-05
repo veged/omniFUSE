@@ -39,7 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
-      - run: cargo test --workspace --exclude omnifuse-gui -- --skip fuse_mount --skip real_api
+      - run: cargo test --workspace --exclude omnifuse-gui -- --skip fuse_mount --skip real_api --skip real_fuse
 
   integration-tests:
     name: Integration tests
@@ -50,3 +50,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - run: cargo test --workspace --exclude omnifuse-gui --test fuse_mount_tests
+      - run: cargo test --workspace --exclude omnifuse-gui --test real_fuse_tests
+      - run: cargo test --workspace --exclude omnifuse-gui --test honest_fuse_tests -- --ignored

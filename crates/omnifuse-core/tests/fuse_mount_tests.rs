@@ -647,58 +647,602 @@ mod symlink_tests {
 }
 
 // ============================================================================
-// BIDIRECTIONAL CONSISTENCY TESTS (FS <-> GIT)
+// LARGE FILE TESTS
 // ============================================================================
 
-mod consistency_tests {
+mod large_file_tests {
   use super::*;
 
-  /// Test: writing a file is reflected in git status.
+  /// Test: write a 5MB file and read it back — no data corruption.
   #[tokio::test]
-  async fn test_fs_changes_reflect_in_git() {
-    eprintln!("[TEST] test_fs_changes_reflect_in_git");
+  async fn test_large_file_write_and_read() {
+    eprintln!("[TEST] test_large_file_write_and_read");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("large.bin");
+
+    // 5MB of pattern data
+    let data: Vec<u8> = (0..5 * 1024 * 1024).map(|i| (i % 256) as u8).collect();
+    std::fs::write(&file, &data).expect("write large");
+
+    let read_back = std::fs::read(&file).expect("read large");
+    assert_eq!(read_back.len(), data.len(), "file size should match");
+    assert_eq!(read_back, data, "file content should match");
+  }
+
+  /// Test: partial read of large file at various offsets.
+  #[tokio::test]
+  async fn test_large_file_partial_reads() {
+    eprintln!("[TEST] test_large_file_partial_reads");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("large.bin");
+
+    let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect(); // 1MB
+    std::fs::write(&file, &data).expect("write large");
+
+    let mut f = std::fs::File::open(&file).expect("open");
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Read from middle
+    f.seek(SeekFrom::Start(500_000)).expect("seek");
+    let mut buf = vec![0u8; 1024];
+    f.read_exact(&mut buf).expect("read");
+    assert_eq!(buf, &data[500_000..501_024], "partial read should match");
+
+    // Read near end
+    f.seek(SeekFrom::Start(1_047_552)).expect("seek"); // 1MB - 1024
+    let mut buf2 = vec![0u8; 1024];
+    f.read_exact(&mut buf2).expect("read");
+    assert_eq!(buf2, &data[1_047_552..], "end read should match");
+  }
+
+  /// Test: overwrite part of a large file.
+  #[tokio::test]
+  async fn test_large_file_partial_write() {
+    eprintln!("[TEST] test_large_file_partial_write");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("large.bin");
+
+    let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
+    std::fs::write(&file, &data).expect("write large");
+
+    // Overwrite 256 bytes in the middle
+    let mut f = std::fs::OpenOptions::new().write(true).open(&file).expect("open");
+    use std::io::{Seek, SeekFrom, Write};
+    f.seek(SeekFrom::Start(512_000)).expect("seek");
+    let patch = vec![0xFFu8; 256];
+    f.write_all(&patch).expect("write patch");
+    drop(f);
+
+    // Verify
+    let read_back = std::fs::read(&file).expect("read");
+    assert_eq!(
+      &read_back[512_000..512_256],
+      patch.as_slice(),
+      "patched region should match"
+    );
+    assert_eq!(&read_back[..100], &data[..100], "before patch should be unchanged");
+    assert_eq!(
+      &read_back[512_256..512_356],
+      &data[512_256..512_356],
+      "after patch should be unchanged"
+    );
+  }
+}
+
+// ============================================================================
+// PERMISSION TESTS
+// ============================================================================
+
+#[cfg(unix)]
+mod permission_tests {
+  use super::*;
+
+  /// Test: chmod changes file permissions.
+  #[tokio::test]
+  async fn test_chmod() {
+    eprintln!("[TEST] test_chmod");
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("file.txt");
+    std::fs::write(&file, "content").expect("write");
+
+    // Change to read-only
+    let perms = std::fs::Permissions::from_mode(0o444);
+    std::fs::set_permissions(&file, perms).expect("chmod");
+
+    let meta = std::fs::metadata(&file).expect("meta");
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o444, "permissions should be 0444");
+  }
+
+  /// Test: mkdir with specific permissions.
+  #[tokio::test]
+  async fn test_mkdir_with_mode() {
+    eprintln!("[TEST] test_mkdir_with_mode");
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let dir = temp_dir.path().join("restricted");
+
+    std::fs::create_dir(&dir).expect("mkdir");
+
+    let meta = std::fs::metadata(&dir).expect("meta");
+    let mode = meta.permissions().mode() & 0o7777;
+    // Default mode is typically 0755 (umask dependent)
+    assert!(mode & 0o700 == 0o700, "owner should have rwx");
+  }
+}
+
+// ============================================================================
+// CONCURRENT ACCESS TESTS (FILESYSTEM LEVEL)
+// ============================================================================
+
+mod concurrent_access_tests {
+  use std::sync::Arc;
+
+  use super::*;
+
+  /// Test: multiple threads reading the same file simultaneously.
+  #[tokio::test]
+  async fn test_concurrent_reads_same_file() {
+    eprintln!("[TEST] test_concurrent_reads_same_file");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("shared.txt");
+
+    std::fs::write(&file, "shared content for concurrent reads").expect("write");
+
+    let file = Arc::new(file);
+    let mut handles = Vec::new();
+
+    for _ in 0..10 {
+      let file = Arc::clone(&file);
+      handles.push(tokio::spawn(async move {
+        let content = std::fs::read_to_string(&*file).expect("read");
+        assert_eq!(content, "shared content for concurrent reads");
+      }));
+    }
+
+    for h in handles {
+      h.await.expect("join");
+    }
+  }
+
+  /// Test: concurrent writes to different files in the same directory.
+  #[tokio::test]
+  async fn test_concurrent_writes_different_files() {
+    eprintln!("[TEST] test_concurrent_writes_different_files");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let dir = Arc::new(temp_dir.path().to_path_buf());
+
+    let mut handles = Vec::new();
+    for i in 0..10 {
+      let dir = Arc::clone(&dir);
+      handles.push(tokio::spawn(async move {
+        let file = dir.join(format!("file_{i}.txt"));
+        std::fs::write(&file, format!("content {i}")).expect("write");
+        let content = std::fs::read_to_string(&file).expect("read");
+        assert_eq!(content, format!("content {i}"));
+      }));
+    }
+
+    for h in handles {
+      h.await.expect("join");
+    }
+
+    // Verify all files exist
+    let entries: Vec<_> = std::fs::read_dir(&*dir)
+      .expect("readdir")
+      .filter_map(|e| e.ok())
+      .map(|e| e.file_name().to_string_lossy().to_string())
+      .collect();
+    assert_eq!(entries.len(), 10, "all 10 files should exist");
+  }
+
+  /// Test: write and read same file concurrently — no corruption.
+  #[tokio::test]
+  async fn test_concurrent_write_read_same_file() {
+    eprintln!("[TEST] test_concurrent_write_read_same_file");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("race.txt");
+
+    // Initial content
+    std::fs::write(&file, "initial").expect("write initial");
+
+    let file = Arc::new(file);
+    let writer = {
+      let file = Arc::clone(&file);
+      tokio::spawn(async move {
+        for i in 0..100 {
+          std::fs::write(&*file, format!("iteration {i}")).expect("write");
+        }
+      })
+    };
+
+    let reader = {
+      let file = Arc::clone(&file);
+      tokio::spawn(async move {
+        for _ in 0..100 {
+          let _ = std::fs::read_to_string(&*file).expect("read");
+        }
+      })
+    };
+
+    writer.await.expect("writer join");
+    reader.await.expect("reader join");
+
+    // File should still be readable
+    let _ = std::fs::read_to_string(&*file).expect("final read");
+  }
+}
+
+// ============================================================================
+// USER SCENARIO: TYPICAL EDITOR WORKFLOW
+// ============================================================================
+
+mod editor_workflow_tests {
+  use std::io::{Seek, SeekFrom, Write};
+
+  use super::*;
+
+  /// Test: typical VSCode save workflow — create temp, write, rename.
+  #[tokio::test]
+  async fn test_vscode_save_workflow() {
+    eprintln!("[TEST] test_vscode_save_workflow");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("app.ts");
+    let temp_file = temp_dir.path().join("app.ts.12345.tmp");
+
+    // Initial file
+    std::fs::write(&file, "export const x = 1;").expect("write initial");
+
+    // VSCode saves:
+    // 1. Write to temp file
+    std::fs::write(&temp_file, "export const x = 2; // updated").expect("write temp");
+    // 2. Rename temp -> original
+    std::fs::rename(&temp_file, &file).expect("rename");
+
+    let content = std::fs::read_to_string(&file).expect("read");
+    assert_eq!(content, "export const x = 2; // updated");
+    assert!(!temp_file.exists(), "temp file should be gone");
+  }
+
+  /// Test: typical vim save workflow — write directly, create/delete .swp.
+  #[tokio::test]
+  async fn test_vim_save_workflow() {
+    eprintln!("[TEST] test_vim_save_workflow");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("notes.md");
+    let swp = temp_dir.path().join(".notes.md.swp");
+
+    // Initial file
+    std::fs::write(&file, "# Notes\n").expect("write initial");
+
+    // vim opens file: creates .swp
+    std::fs::write(&swp, "swap data").expect("write swp");
+
+    // vim modifies file directly (no temp file)
+    std::fs::write(&file, "# Notes\n\n## Updated section\n").expect("modify");
+
+    // vim exits: deletes .swp
+    std::fs::remove_file(&swp).expect("delete swp");
+
+    assert!(!swp.exists(), ".swp should be deleted");
+    assert_eq!(
+      std::fs::read_to_string(&file).expect("read"),
+      "# Notes\n\n## Updated section\n"
+    );
+  }
+
+  /// Test: typical nano/emacs save workflow — write directly to file.
+  #[tokio::test]
+  async fn test_direct_write_workflow() {
+    eprintln!("[TEST] test_direct_write_workflow");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("config.ini");
+
+    std::fs::write(&file, "[section]\nkey = value\n").expect("write initial");
+
+    // nano opens file, modifies, saves (direct write, no temp)
+    let mut f = std::fs::OpenOptions::new()
+      .write(true)
+      .truncate(true)
+      .open(&file)
+      .expect("open truncate");
+    f.write_all(b"[section]\nkey = new_value\n").expect("write");
+    drop(f);
+
+    assert_eq!(
+      std::fs::read_to_string(&file).expect("read"),
+      "[section]\nkey = new_value\n"
+    );
+  }
+
+  /// Test: append-only workflow (log files).
+  #[tokio::test]
+  async fn test_append_only_workflow() {
+    eprintln!("[TEST] test_append_only_workflow");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("app.log");
+
+    // Multiple appends
+    for i in 0..100 {
+      let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .expect("open append");
+      writeln!(f, "line {i}: log entry").expect("append");
+      drop(f);
+    }
+
+    let content = std::fs::read_to_string(&file).expect("read");
+    let lines: Vec<_> = content.lines().collect();
+    assert_eq!(lines.len(), 100, "should have 100 lines");
+    assert_eq!(lines[0], "line 0: log entry");
+    assert_eq!(lines[99], "line 99: log entry");
+  }
+}
+
+// ============================================================================
+// GIT INTEGRATION SCENARIOS (FILESYSTEM LEVEL)
+// ============================================================================
+
+mod git_fs_scenarios {
+  use super::*;
+
+  /// Test: create file → git add → git commit → file tracked.
+  #[tokio::test]
+  async fn test_create_add_commit() {
+    eprintln!("[TEST] test_create_add_commit");
     tokio::time::timeout(TEST_TIMEOUT, async {
       let (_temp, repo_path) = create_test_repo().await;
 
-      // Create a new file
-      let file = repo_path.join("new_file.txt");
-      std::fs::write(&file, "content").expect("write");
+      // Create file
+      let file = repo_path.join("feature.rs");
+      std::fs::write(&file, "fn main() {}").expect("write");
 
-      // File should appear in git status
+      // git add + commit
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["add", "feature.rs"])
+        .output()
+        .await
+        .expect("git add");
+
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["commit", "-m", "add feature"])
+        .output()
+        .await
+        .expect("git commit");
+
+      // Verify committed
+      let output = tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .await
+        .expect("git log");
+      let msg = String::from_utf8_lossy(&output.stdout);
+      assert!(msg.contains("add feature"), "commit message should match: {msg}");
+    })
+    .await
+    .expect("test timed out");
+  }
+
+  /// Test: modify file → git status shows modified → git diff shows changes.
+  #[tokio::test]
+  async fn test_modify_status_diff() {
+    eprintln!("[TEST] test_modify_status_diff");
+    tokio::time::timeout(TEST_TIMEOUT, async {
+      let (_temp, repo_path) = create_test_repo().await;
+
+      // Modify README
+      let readme = repo_path.join("README.md");
+      std::fs::write(&readme, "# Modified Repo\n").expect("modify");
+
+      // git status
       let output = tokio::process::Command::new("git")
         .current_dir(&repo_path)
         .args(["status", "--porcelain"])
         .output()
         .await
         .expect("git status");
-
       let status = String::from_utf8_lossy(&output.stdout);
       assert!(
-        status.contains("new_file.txt"),
-        "new file should be visible in git status"
+        status.contains("README.md"),
+        "modified file should be in status: {status}"
       );
+
+      // git diff
+      let output = tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["diff"])
+        .output()
+        .await
+        .expect("git diff");
+      let diff = String::from_utf8_lossy(&output.stdout);
+      assert!(diff.contains("-# Test Repo"), "diff should show old content");
+      assert!(diff.contains("+# Modified Repo"), "diff should show new content");
     })
     .await
-    .expect("test timed out — possible deadlock");
+    .expect("test timed out");
   }
 
-  /// Test: direct file write is reflected on read.
+  /// Test: two-branch workflow — switch branches, file content changes.
   #[tokio::test]
-  async fn test_git_changes_reflect_in_fs() {
-    eprintln!("[TEST] test_git_changes_reflect_in_fs");
-    let (_temp, repo_path) = create_test_repo().await;
+  async fn test_branch_switch_content_changes() {
+    eprintln!("[TEST] test_branch_switch_content_changes");
+    tokio::time::timeout(TEST_TIMEOUT, async {
+      let (_temp, repo_path) = create_test_repo().await;
 
-    let file = repo_path.join("README.md");
+      // Create branch with different content
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["checkout", "-b", "feature"])
+        .output()
+        .await
+        .expect("git checkout -b");
 
-    // Read current content
-    let content1 = std::fs::read_to_string(&file).expect("read 1");
+      let readme = repo_path.join("README.md");
+      std::fs::write(&readme, "# Feature Branch\n").expect("write feature");
 
-    // Modify file directly (emulating git pull)
-    std::fs::write(&file, "modified by git").expect("write");
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["add", "."])
+        .output()
+        .await
+        .expect("git add");
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["commit", "-m", "feature commit"])
+        .output()
+        .await
+        .expect("git commit");
 
-    // Re-reading should return new content
-    let content2 = std::fs::read_to_string(&file).expect("read 2");
-    assert_ne!(content1, content2, "content should have changed");
-    assert_eq!(content2, "modified by git");
+      // Switch back to main
+      tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["checkout", "main"])
+        .output()
+        .await
+        .expect("git checkout main");
+
+      // Content should be back to original
+      let content = std::fs::read_to_string(&readme).expect("read");
+      assert_eq!(content, "# Test Repo\n", "content should revert on branch switch");
+    })
+    .await
+    .expect("test timed out");
+  }
+
+  /// Test: .gitignore filtering — ignored files don't appear in git status.
+  #[tokio::test]
+  async fn test_gitignore_filtering() {
+    eprintln!("[TEST] test_gitignore_filtering");
+    tokio::time::timeout(TEST_TIMEOUT, async {
+      let (_temp, repo_path) = create_test_repo().await;
+
+      // Create .gitignore
+      std::fs::write(repo_path.join(".gitignore"), "*.log\ntarget/\n.env\n").expect("write gitignore");
+
+      // Create ignored files
+      std::fs::write(repo_path.join("debug.log"), "log data").expect("write log");
+      std::fs::create_dir_all(repo_path.join("target/debug")).expect("mkdir target");
+      std::fs::write(repo_path.join("target/debug/app"), "binary").expect("write binary");
+      std::fs::write(repo_path.join(".env"), "SECRET=123").expect("write env");
+
+      // Create tracked file
+      std::fs::create_dir(repo_path.join("src")).expect("mkdir src");
+      std::fs::write(repo_path.join("src/main.rs"), "fn main() {}").expect("write rs");
+
+      // git status — only .gitignore and src/main.rs should be untracked
+      let output = tokio::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["status", "--porcelain"])
+        .output()
+        .await
+        .expect("git status");
+      let status = String::from_utf8_lossy(&output.stdout);
+
+      assert!(!status.contains("debug.log"), ".log should be ignored");
+      assert!(!status.contains("target/"), "target/ should be ignored");
+      assert!(!status.contains(".env"), ".env should be ignored");
+    })
+    .await
+    .expect("test timed out");
   }
 }
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+mod edge_case_tests {
+  use super::*;
+
+  /// Test: write empty file.
+  #[tokio::test]
+  async fn test_write_empty_file() {
+    eprintln!("[TEST] test_write_empty_file");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("empty.txt");
+
+    std::fs::write(&file, "").expect("write empty");
+    assert_eq!(std::fs::metadata(&file).expect("meta").len(), 0, "file should be empty");
+    assert_eq!(std::fs::read_to_string(&file).expect("read"), "");
+  }
+
+  /// Test: file with unicode content.
+  #[tokio::test]
+  async fn test_unicode_content() {
+    eprintln!("[TEST] test_unicode_content");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file = temp_dir.path().join("unicode.txt");
+
+    let content = "Привет мир! 🦀 你好世界 🌍";
+    std::fs::write(&file, content).expect("write unicode");
+
+    let read_back = std::fs::read_to_string(&file).expect("read unicode");
+    assert_eq!(read_back, content);
+  }
+
+  /// Test: file with special characters in name.
+  #[tokio::test]
+  async fn test_special_filename() {
+    eprintln!("[TEST] test_special_filename");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    // Filenames with spaces, unicode, special chars
+    let names = vec![
+      "file with spaces.txt",
+      "файл.txt",
+      "file-with-dashes.txt",
+      "file_with_underscores.txt",
+    ];
+
+    for name in names {
+      let file = temp_dir.path().join(name);
+      std::fs::write(&file, format!("content of {name}")).expect("write");
+      assert!(file.exists(), "file should exist: {name}");
+      let read_back = std::fs::read_to_string(&file).expect("read");
+      assert_eq!(read_back, format!("content of {name}"));
+    }
+  }
+
+  /// Test: rapid create-delete cycle.
+  #[tokio::test]
+  async fn test_rapid_create_delete() {
+    eprintln!("[TEST] test_rapid_create_delete");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    for i in 0..100 {
+      let file = temp_dir.path().join(format!("temp_{i}.txt"));
+      std::fs::write(&file, format!("data {i}")).expect("write");
+      assert!(file.exists());
+      std::fs::remove_file(&file).expect("delete");
+      assert!(!file.exists());
+    }
+  }
+
+  /// Test: deeply nested file path.
+  #[tokio::test]
+  async fn test_deeply_nested_path() {
+    eprintln!("[TEST] test_deeply_nested_path");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let mut path = temp_dir.path().to_path_buf();
+    for i in 0..20 {
+      path = path.join(format!("level_{i}"));
+    }
+    std::fs::create_dir_all(&path).expect("create dirs");
+
+    let file = path.join("deep.txt");
+    std::fs::write(&file, "deep content").expect("write");
+    assert_eq!(std::fs::read_to_string(&file).expect("read"), "deep content");
+  }
+}
+
+// ============================================================================
+// LARGE FILE TESTS
+// ============================================================================
