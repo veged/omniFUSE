@@ -144,9 +144,7 @@ fn cache_dir_for(mountpoint: &Path) -> anyhow::Result<PathBuf> {
   #[cfg(target_os = "macos")]
   let cache_base = home.join("Library/Caches");
   #[cfg(not(target_os = "macos"))]
-  let cache_base = std::env::var("XDG_CACHE_HOME")
-    .map(PathBuf::from)
-    .unwrap_or_else(|_| home.join(".cache"));
+  let cache_base = std::env::var("XDG_CACHE_HOME").map_or_else(|_| home.join(".cache"), PathBuf::from);
 
   Ok(cache_base.join("omnifuse").join(hash))
 }

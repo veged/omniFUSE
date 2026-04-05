@@ -129,17 +129,22 @@ impl Backend for GitBackend {
 
     let repo_path = match &source {
       RepoSource::Local(path) => {
-        std::fs::create_dir_all(local_dir)?;
-        if !local_dir.join(".git").exists() {
-          info!(source = %path.display(), target = %local_dir.display(), "cloning local repo into cache");
-          tokio::process::Command::new("git")
-            .args(["clone", "--branch", &self.config.branch])
-            .arg(path)
-            .arg(local_dir)
-            .output()
-            .await?;
+        let local_dir_is_inside_repo = local_dir.starts_with(path) || local_dir == path;
+        if local_dir_is_inside_repo {
+          path.clone()
+        } else {
+          std::fs::create_dir_all(local_dir)?;
+          if !local_dir.join(".git").exists() {
+            info!(source = %path.display(), target = %local_dir.display(), "cloning local repo into cache");
+            tokio::process::Command::new("git")
+              .args(["clone", "--branch", &self.config.branch])
+              .arg(path)
+              .arg(local_dir)
+              .output()
+              .await?;
+          }
+          local_dir.to_path_buf()
         }
-        local_dir.to_path_buf()
       }
       RepoSource::Remote { .. } => source.ensure_available(&self.config.branch).await?
     };

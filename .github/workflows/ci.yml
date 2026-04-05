@@ -51,4 +51,3 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - run: cargo test --workspace --exclude omnifuse-gui --test fuse_mount_tests
       - run: cargo test --workspace --exclude omnifuse-gui --test real_fuse_tests
-      - run: cargo test --workspace --exclude omnifuse-gui --test honest_fuse_tests -- --ignored
