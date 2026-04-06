@@ -10,6 +10,8 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::error::GitError;
+
 /// Fetch result.
 #[derive(Debug, Clone)]
 pub enum FetchResult {
@@ -74,7 +76,7 @@ impl GitEngine {
   pub fn new(repo_path: PathBuf, branch: String) -> anyhow::Result<Self> {
     let git_dir = repo_path.join(".git");
     if !git_dir.exists() {
-      anyhow::bail!("not a git repository: {}", repo_path.display());
+      return Err(GitError::InvalidRepository { path: repo_path }.into());
     }
 
     Ok(Self {
@@ -119,7 +121,13 @@ impl GitEngine {
     let output = cmd.output().await?;
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
-      anyhow::bail!("git add failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git add",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     debug!(files = files.len(), "staged files");
@@ -143,9 +151,15 @@ impl GitEngine {
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
       if stderr.contains("nothing to commit") {
-        anyhow::bail!("nothing to commit");
+        return Err(GitError::NothingToCommit.into());
       }
-      anyhow::bail!("git commit failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git commit",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     let hash = self.get_head_commit().await?;
@@ -167,7 +181,13 @@ impl GitEngine {
 
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
-      anyhow::bail!("git rev-parse failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git rev-parse",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -214,9 +234,20 @@ impl GitEngine {
       let stderr = String::from_utf8_lossy(&output.stderr);
       if stderr.contains("Could not resolve host") || stderr.contains("Connection refused") {
         warn!("fetch failed (network): {}", stderr.trim());
-        anyhow::bail!("network unavailable: {}", stderr.trim());
+        return Err(
+          GitError::NetworkUnavailable {
+            message: stderr.trim().to_string()
+          }
+          .into()
+        );
       }
-      anyhow::bail!("git fetch failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git fetch",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     let after = self.get_remote_head().await?;
@@ -264,7 +295,13 @@ impl GitEngine {
         warn!(files = ?conflict_files, "pull/rebase: conflicts detected");
         return Ok(MergeResult::Conflict { files: conflict_files });
       }
-      anyhow::bail!("git pull failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git pull",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     if stdout.contains("Already up to date") || (stdout.contains("Current branch") && stdout.contains("is up to date"))
@@ -305,7 +342,13 @@ impl GitEngine {
       if stderr.contains("No configured push destination") {
         return Ok(PushResult::NoRemote);
       }
-      anyhow::bail!("git push failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git push",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     info!("push: success");
@@ -346,7 +389,13 @@ impl GitEngine {
 
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
-      anyhow::bail!("git status failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git status",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     Ok(!output.stdout.is_empty())
@@ -366,7 +415,13 @@ impl GitEngine {
 
     if !output.status.success() {
       let stderr = String::from_utf8_lossy(&output.stderr);
-      anyhow::bail!("git status failed: {stderr}");
+      return Err(
+        GitError::CommandFailed {
+          op: "git status",
+          stderr: stderr.into_owned()
+        }
+        .into()
+      );
     }
 
     let files = String::from_utf8_lossy(&output.stdout)

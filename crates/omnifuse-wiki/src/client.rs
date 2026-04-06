@@ -6,9 +6,12 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use tracing::{debug, error, trace};
 
-use crate::models::{
-  AsyncOperationStatusSchema, Collection, CreatePageSchema, ErrorResponse, MoveCluster, MoveClusterRequest,
-  OperationCreatedSchema, PageFullDetailsSchema, PageSchema, PageTreeResponseSchema, PageUpdateSchema, Status
+use crate::{
+  error::WikiError,
+  models::{
+    AsyncOperationStatusSchema, Collection, CreatePageSchema, ErrorResponse, MoveCluster, MoveClusterRequest,
+    OperationCreatedSchema, PageFullDetailsSchema, PageSchema, PageTreeResponseSchema, PageUpdateSchema, Status
+  }
 };
 
 /// Wiki API HTTP client.
@@ -27,23 +30,24 @@ impl Client {
   /// Returns an error if the input parameters are empty or the HTTP client cannot be built.
   pub fn new(base_url: &str, auth_token: &str, org_id: Option<&str>) -> anyhow::Result<Self> {
     if base_url.trim().is_empty() {
-      anyhow::bail!("base_url must not be empty");
+      return Err(WikiError::InvalidConfig("base_url must not be empty".to_string()).into());
     }
     if auth_token.trim().is_empty() {
-      anyhow::bail!("auth_token must not be empty");
+      return Err(WikiError::InvalidConfig("auth_token must not be empty".to_string()).into());
     }
 
     let mut h = HeaderMap::new();
     h.insert(
       AUTHORIZATION,
-      HeaderValue::from_str(&format!("OAuth {auth_token}")).map_err(|e| anyhow::anyhow!("invalid auth_token: {e}"))?
+      HeaderValue::from_str(&format!("OAuth {auth_token}"))
+        .map_err(|e| WikiError::InvalidConfig(format!("invalid auth_token: {e}")))?
     );
     h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     if let Some(id) = org_id {
       h.insert(
         HeaderName::from_static("x-org-id"),
-        HeaderValue::from_str(id).map_err(|e| anyhow::anyhow!("invalid org_id: {e}"))?
+        HeaderValue::from_str(id).map_err(|e| WikiError::InvalidConfig(format!("invalid org_id: {e}")))?
       );
     }
 
@@ -264,13 +268,13 @@ impl Client {
   async fn get_json<T: serde::de::DeserializeOwned>(&self, r: reqwest::RequestBuilder) -> anyhow::Result<T> {
     let rq = r
       .try_clone()
-      .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
+      .ok_or_else(|| WikiError::InvalidConfig("failed to clone request".to_string()))?
       .build()?;
 
     let start = std::time::Instant::now();
     debug!(method = %rq.method(), url = %rq.url(), "wiki request");
 
-    let resp = self.c.execute(rq).await?;
+    let resp = self.c.execute(rq).await.map_err(classify_reqwest_error)?;
     let st = resp.status();
     let location = resp
       .headers()
@@ -292,15 +296,23 @@ impl Client {
     }
 
     if st.is_redirection() {
-      anyhow::bail!(
-        "HTTP {st}: server returned a redirect to {}. \
-         Check that base_url points to the API host (not the web UI)",
-        location.as_deref().unwrap_or("unknown")
+      return Err(
+        WikiError::Redirect {
+          status: st.as_u16(),
+          location: location.unwrap_or_else(|| "unknown".to_string())
+        }
+        .into()
       );
     }
 
     if st.is_success() {
-      return serde_json::from_str(&txt).map_err(|e| anyhow::anyhow!("deserialization ({st}): {e}"));
+      return serde_json::from_str(&txt).map_err(|e| {
+        WikiError::Deserialization {
+          status: st.as_u16(),
+          message: e.to_string()
+        }
+        .into()
+      });
     }
 
     let e: Option<ErrorResponse> = serde_json::from_str(&txt).ok();
@@ -311,13 +323,13 @@ impl Client {
   async fn send_ok(&self, r: reqwest::RequestBuilder) -> anyhow::Result<()> {
     let rq = r
       .try_clone()
-      .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
+      .ok_or_else(|| WikiError::InvalidConfig("failed to clone request".to_string()))?
       .build()?;
 
     let start = std::time::Instant::now();
     debug!(method = %rq.method(), url = %rq.url(), "wiki request");
 
-    let resp = self.c.execute(rq).await?;
+    let resp = self.c.execute(rq).await.map_err(classify_reqwest_error)?;
     let st = resp.status();
     let location = resp
       .headers()
@@ -334,10 +346,12 @@ impl Client {
     );
 
     if st.is_redirection() {
-      anyhow::bail!(
-        "HTTP {st}: server returned a redirect to {}. \
-         Check that base_url points to the API host (not the web UI)",
-        location.as_deref().unwrap_or("unknown")
+      return Err(
+        WikiError::Redirect {
+          status: st.as_u16(),
+          location: location.unwrap_or_else(|| "unknown".to_string())
+        }
+        .into()
       );
     }
 
@@ -361,18 +375,32 @@ impl Client {
     error!(status, error_code, ms = elapsed_ms, "wiki error");
 
     if status == 404 {
-      anyhow::bail!("page not found");
+      return Err(WikiError::PageNotFound.into());
     }
     if status == 403 {
-      anyhow::bail!("access denied");
+      return Err(WikiError::AccessDenied.into());
     }
     if matches!(error_code, Some("CHANGES_CONFLICT")) {
-      anyhow::bail!("changes conflict");
+      return Err(WikiError::ChangesConflict.into());
     }
     if matches!(error_code, Some("SLUG_OCCUPIED" | "SLUG_RESERVED")) {
-      anyhow::bail!("slug is occupied or reserved");
+      return Err(WikiError::SlugOccupiedOrReserved.into());
     }
 
-    anyhow::bail!("HTTP {status}: {body}")
+    Err(
+      WikiError::HttpStatus {
+        status,
+        body: body.to_string()
+      }
+      .into()
+    )
+  }
+}
+
+fn classify_reqwest_error(error: reqwest::Error) -> WikiError {
+  if error.is_connect() || error.is_timeout() {
+    WikiError::Transport(error.to_string())
+  } else {
+    WikiError::RequestFailed(error.to_string())
   }
 }

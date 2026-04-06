@@ -14,8 +14,8 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use omnifuse_core::LoggingConfig;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 /// `OmniFuse` — a universal VFS utility.
 ///
@@ -98,23 +98,23 @@ enum MountBackend {
   }
 }
 
-fn init_tracing(verbose: u8) {
-  let filter = match verbose {
+fn logging_config_for_verbose(verbose: u8) -> LoggingConfig {
+  let level = match verbose {
     0 => "info",
     1 => "debug",
     _ => "trace"
   };
 
-  tracing_subscriber::fmt()
-    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
-    .compact()
-    .init();
+  LoggingConfig {
+    level: level.to_string(),
+    log_file: None
+  }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   let cli = Cli::parse();
-  init_tracing(cli.verbose);
+  omnifuse_core::init_logging(&logging_config_for_verbose(cli.verbose))?;
 
   match cli.command {
     Commands::Mount { backend } => cmd_mount(backend).await,

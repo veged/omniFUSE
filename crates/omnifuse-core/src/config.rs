@@ -169,6 +169,13 @@ impl LoggingConfig {
   fn default_level() -> String {
     "info".to_string()
   }
+
+  /// Effective filter directive for `tracing_subscriber`.
+  #[must_use]
+  pub fn filter_directive(&self) -> &str {
+    let level = self.level.trim();
+    if level.is_empty() { "info" } else { level }
+  }
 }
 
 impl Default for LoggingConfig {

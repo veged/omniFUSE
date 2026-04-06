@@ -22,6 +22,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
+  Disposition, EventSeverity, ObservabilitySession, OperationKind, OperationOutcome, OperationalEvent,
   backend::{Backend, SyncResult},
   config::SyncConfig,
   events::{LogLevel, VfsEventHandler}
@@ -91,6 +92,21 @@ impl SyncEngine {
     backend: Arc<B>,
     events: Arc<dyn VfsEventHandler>
   ) -> (Self, tokio::task::JoinHandle<()>) {
+    let observability = Arc::new(ObservabilitySession::new(
+      backend.name(),
+      PathBuf::new(),
+      PathBuf::new()
+    ));
+    Self::start_with_session(config, backend, events, observability)
+  }
+
+  /// Create and start `SyncEngine` with a shared observability session.
+  pub fn start_with_session<B: Backend>(
+    config: SyncConfig,
+    backend: Arc<B>,
+    events: Arc<dyn VfsEventHandler>,
+    observability: Arc<ObservabilitySession>
+  ) -> (Self, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel(256);
     let metrics = Arc::new(WorkerMetrics::default());
 
@@ -100,15 +116,17 @@ impl SyncEngine {
       backend.clone(),
       events.clone(),
       event_rx,
-      dirty_metrics
+      dirty_metrics,
+      Arc::clone(&observability)
     ));
 
     // Poll worker — separate task, JoinHandle stored for shutdown
     let poll_backend = backend;
     let poll_events = events;
     let poll_metrics = Arc::clone(&metrics);
+    let poll_observability = observability;
     let poll_handle = tokio::spawn(async move {
-      Self::poll_worker(poll_backend, poll_events, poll_metrics).await;
+      Self::poll_worker(poll_backend, poll_events, poll_metrics, poll_observability).await;
     });
 
     (
@@ -166,7 +184,8 @@ impl SyncEngine {
     backend: Arc<B>,
     events: Arc<dyn VfsEventHandler>,
     mut event_rx: mpsc::Receiver<FsEvent>,
-    metrics: Arc<WorkerMetrics>
+    metrics: Arc<WorkerMetrics>,
+    observability: Arc<ObservabilitySession>
   ) {
     info!(debounce_secs = config.debounce_timeout_secs, "dirty_worker started");
 
@@ -200,7 +219,7 @@ impl SyncEngine {
                   dirty_count = dirty_set.len(),
                   "dirty_worker: final sync before shutdown"
                 );
-                Self::do_sync(&backend, &events, &mut dirty_set, &metrics).await;
+                Self::do_sync(&backend, &events, &mut dirty_set, &metrics, &observability).await;
               }
               break;
             }
@@ -213,7 +232,7 @@ impl SyncEngine {
       }
 
       if trigger_sync && !dirty_set.is_empty() {
-        Self::do_sync(&backend, &events, &mut dirty_set, &metrics).await;
+        Self::do_sync(&backend, &events, &mut dirty_set, &metrics, &observability).await;
         trigger_sync = false;
       }
     }
@@ -230,7 +249,8 @@ impl SyncEngine {
     backend: &Arc<B>,
     events: &Arc<dyn VfsEventHandler>,
     dirty_set: &mut HashSet<PathBuf>,
-    metrics: &WorkerMetrics
+    metrics: &WorkerMetrics,
+    observability: &Arc<ObservabilitySession>
   ) {
     let files: Vec<PathBuf> = dirty_set.drain().filter(|f| backend.should_track(f)).collect();
 
@@ -240,13 +260,29 @@ impl SyncEngine {
 
     let iteration = metrics.sync_iterations.fetch_add(1, Ordering::Relaxed) + 1;
     let start = Instant::now();
+    let context = observability.start_operation(
+      OperationKind::Sync,
+      iteration.try_into().unwrap_or(u32::MAX),
+      files.first().cloned()
+    );
 
     debug!(count = files.len(), iteration, "syncing dirty files");
+    events.on_event(&OperationalEvent::SyncStarted {
+      context: context.clone(),
+      dirty_count: files.len()
+    });
 
     match backend.sync(&files).await {
       Ok(SyncResult::Success { synced_files }) => {
         events.on_push(synced_files);
         debug!(synced_files, "sync successful");
+        events.on_event(&OperationalEvent::SyncFinished {
+          context: context.clone(),
+          outcome: OperationOutcome::Success,
+          synced_files,
+          conflict_files: 0,
+          elapsed_ms: context.elapsed_ms()
+        });
       }
       Ok(SyncResult::Conflict {
         synced_files,
@@ -255,18 +291,49 @@ impl SyncEngine {
         events.on_push(synced_files);
         warn!(synced_files, conflicts = conflict_files.len(), "sync with conflicts");
         events.on_log(LogLevel::Warn, &format!("conflicts: {conflict_files:?}"));
+        events.on_event(&OperationalEvent::ConflictDetected {
+          context: context.clone(),
+          conflict_files: conflict_files.len()
+        });
+        events.on_event(&OperationalEvent::SyncFinished {
+          context: context.clone(),
+          outcome: OperationOutcome::Conflict,
+          synced_files,
+          conflict_files: conflict_files.len(),
+          elapsed_ms: context.elapsed_ms()
+        });
       }
       Ok(SyncResult::Offline) => {
         // Return files to dirty set — will sync on next attempt
         dirty_set.extend(files);
         warn!("remote unavailable, files will be synced later");
         events.on_log(LogLevel::Warn, "remote unavailable");
+        events.on_event(&OperationalEvent::SyncFinished {
+          context: context.clone(),
+          outcome: OperationOutcome::Deferred,
+          synced_files: 0,
+          conflict_files: 0,
+          elapsed_ms: context.elapsed_ms()
+        });
       }
       Err(e) => {
         // Return files to dirty set — will retry on next event
         dirty_set.extend(files);
         error!(error = %e, "sync error");
         events.on_log(LogLevel::Error, &format!("sync error: {e}"));
+        events.on_event(&OperationalEvent::UserVisibleWarning {
+          context: context.clone(),
+          message: format!("sync error: {e}"),
+          source: crate::ErrorSource::SyncEngine,
+          disposition: Disposition::Retryable
+        });
+        events.on_event(&OperationalEvent::SyncFinished {
+          context: context.clone(),
+          outcome: OperationOutcome::Failure,
+          synced_files: 0,
+          conflict_files: 0,
+          elapsed_ms: context.elapsed_ms()
+        });
       }
     }
 
@@ -274,13 +341,23 @@ impl SyncEngine {
     if elapsed > SLOW_ITERATION_THRESHOLD {
       metrics.slow_sync_count.fetch_add(1, Ordering::Relaxed);
       warn!(iteration, elapsed_ms = millis(elapsed), "slow sync iteration");
+      events.on_event(&OperationalEvent::SlowOperationDetected {
+        context,
+        elapsed_ms: millis(elapsed),
+        severity: EventSeverity::Warn
+      });
     }
   }
 
   /// Worker for periodic remote polling.
   ///
   /// Terminated via `JoinHandle::abort()` when `shutdown()` is called.
-  async fn poll_worker<B: Backend>(backend: Arc<B>, events: Arc<dyn VfsEventHandler>, metrics: Arc<WorkerMetrics>) {
+  async fn poll_worker<B: Backend>(
+    backend: Arc<B>,
+    events: Arc<dyn VfsEventHandler>,
+    metrics: Arc<WorkerMetrics>,
+    observability: Arc<ObservabilitySession>
+  ) {
     let interval = backend.poll_interval();
     info!(interval_ms = millis(interval), "poll_worker started");
 
@@ -289,15 +366,33 @@ impl SyncEngine {
 
       let iteration = metrics.poll_iterations.fetch_add(1, Ordering::Relaxed) + 1;
       let start = Instant::now();
+      let context = observability.start_operation(OperationKind::Poll, iteration.try_into().unwrap_or(u32::MAX), None);
+
+      events.on_event(&OperationalEvent::RemotePollStarted {
+        context: context.clone(),
+        interval_ms: millis(interval)
+      });
 
       match backend.poll_remote().await {
         Ok(changes) if !changes.is_empty() => {
           let count = changes.len();
           debug!(count, iteration, "received changes from remote");
+          events.on_event(&OperationalEvent::RemoteChangesDetected {
+            context: context.clone(),
+            changed_files: count
+          });
 
           if let Err(e) = backend.apply_remote(changes).await {
             warn!(error = %e, "error applying remote changes");
             events.on_log(LogLevel::Warn, &format!("error applying remote changes: {e}"));
+            events.on_event(&OperationalEvent::RemoteApplyFailed {
+              context: context.clone(),
+              severity: EventSeverity::Warn,
+              error_kind: backend.classify_error(&e),
+              message: e.to_string(),
+              disposition: Disposition::Retryable,
+              elapsed_ms: context.elapsed_ms()
+            });
           } else {
             events.on_sync("updated");
           }
@@ -308,6 +403,14 @@ impl SyncEngine {
         Err(e) => {
           warn!(error = %e, iteration, "remote poll error");
           events.on_log(LogLevel::Warn, &format!("poll failed: {e}"));
+          events.on_event(&OperationalEvent::RemotePollFailed {
+            context: context.clone(),
+            severity: EventSeverity::Warn,
+            error_kind: backend.classify_error(&e),
+            message: e.to_string(),
+            disposition: Disposition::AutoRetrying,
+            elapsed_ms: context.elapsed_ms()
+          });
         }
       }
 
@@ -315,6 +418,11 @@ impl SyncEngine {
       if elapsed > SLOW_ITERATION_THRESHOLD {
         metrics.slow_poll_count.fetch_add(1, Ordering::Relaxed);
         warn!(iteration, elapsed_ms = millis(elapsed), "slow poll iteration");
+        events.on_event(&OperationalEvent::SlowOperationDetected {
+          context,
+          elapsed_ms: millis(elapsed),
+          severity: EventSeverity::Warn
+        });
       }
 
       // Heartbeat: log status every N iterations

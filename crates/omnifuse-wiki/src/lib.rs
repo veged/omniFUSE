@@ -7,6 +7,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod client;
+pub mod error;
 pub mod merge;
 pub mod meta;
 pub mod models;
@@ -18,6 +19,7 @@ use std::{
   time::Duration
 };
 
+pub use error::{WikiError, classify_wiki_error};
 use omnifuse_core::{Backend, InitResult, RemoteChange, SyncResult};
 use tracing::{debug, info, warn};
 
@@ -95,10 +97,7 @@ impl WikiBackend {
 
   /// Get the `MetaStore` (after initialization).
   fn meta(&self) -> anyhow::Result<&MetaStore> {
-    self
-      .meta_store
-      .get()
-      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
+    self.meta_store.get().ok_or_else(|| WikiError::NotInitialized.into())
   }
 
   /// Get `local_dir` (after initialization).
@@ -107,7 +106,7 @@ impl WikiBackend {
       .local_dir
       .get()
       .map(PathBuf::as_path)
-      .ok_or_else(|| anyhow::anyhow!("backend not initialized"))
+      .ok_or_else(|| WikiError::NotInitialized.into())
   }
 
   /// Recursively traverse the page tree -> write files + meta.
@@ -345,15 +344,13 @@ impl Backend for WikiBackend {
       match self.sync_file(path, meta_store, local_dir).await {
         Ok(true) => synced += 1,
         Ok(false) => conflicts.push(path.clone()),
-        Err(e) => {
-          let msg = e.to_string();
-          if msg.contains("page not found") || msg.contains("access denied") {
+        Err(e) => match classify_wiki_error(&e) {
+          Some(omnifuse_core::ErrorKind::NotFound | omnifuse_core::ErrorKind::PermissionDenied) => {
             warn!(path = %path.display(), error = %e, "skipping file");
-          } else if msg.contains("network") || msg.contains("Connection") {
-            return Ok(SyncResult::Offline);
-          } else {
-            return Err(e);
           }
+          Some(omnifuse_core::ErrorKind::Offline) => return Ok(SyncResult::Offline),
+          Some(omnifuse_core::ErrorKind::Conflict) => conflicts.push(path.clone()),
+          _ => return Err(e)
         }
       }
     }
@@ -443,6 +440,10 @@ impl Backend for WikiBackend {
 
   fn name(&self) -> &'static str {
     "wiki"
+  }
+
+  fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
+    classify_wiki_error(error).unwrap_or(omnifuse_core::ErrorKind::Internal)
   }
 }
 

@@ -25,9 +25,10 @@ tauri-build = { version = "2", features = [] }
 omnifuse-core = { path = "../../omnifuse-core" }
 omnifuse-git = { path = "../../omnifuse-git" }
 omnifuse-wiki = { path = "../../omnifuse-wiki" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["test"] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }

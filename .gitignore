@@ -6,6 +6,7 @@ Cargo.lock
 .DS_Store
 .idea/
 .vscode/
+.worktrees/
 node_modules/
 dist/
 .claude/

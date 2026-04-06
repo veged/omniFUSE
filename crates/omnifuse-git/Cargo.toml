@@ -19,6 +19,7 @@ omnifuse-core = { path = "../omnifuse-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 chrono = { workspace = true }
 ignore = { workspace = true }
 

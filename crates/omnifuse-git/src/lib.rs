@@ -7,6 +7,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod engine;
+pub mod error;
 pub mod filter;
 pub mod ops;
 pub mod repo_source;
@@ -17,10 +18,12 @@ use std::{
   time::Duration
 };
 
+pub use error::{GitError, classify_git_error};
 use omnifuse_core::{Backend, InitResult, RemoteChange, SyncResult};
 use tracing::{debug, info, warn};
 
 use crate::{
+  error::is_nothing_to_commit,
   filter::GitignoreFilter,
   ops::{GitOps, StartupSyncResult},
   repo_source::RepoSource
@@ -84,7 +87,7 @@ impl GitBackend {
   ///
   /// Returns an error if the backend is not initialized.
   fn ops(&self) -> anyhow::Result<&GitOps> {
-    self.ops.get().ok_or_else(|| anyhow::anyhow!("backend not initialized"))
+    self.ops.get().ok_or_else(|| GitError::NotInitialized.into())
   }
 
   /// Get the list of changed files between local and remote HEAD.
@@ -168,8 +171,7 @@ impl Backend for GitBackend {
     let ops = self.ops()?;
 
     if let Err(e) = ops.auto_commit(dirty_files).await {
-      let msg = e.to_string();
-      if !msg.contains("nothing to commit") {
+      if !is_nothing_to_commit(&e) {
         return Err(e);
       }
       debug!("sync: no changes to commit");
@@ -179,19 +181,16 @@ impl Backend for GitBackend {
       Ok(()) => Ok(SyncResult::Success {
         synced_files: dirty_files.len()
       }),
-      Err(e) => {
-        let msg = e.to_string();
-        if msg.contains("conflict") {
+      Err(e) => match classify_git_error(&e) {
+        Some(omnifuse_core::ErrorKind::Conflict) => {
           warn!("sync: conflicts during push");
           Ok(SyncResult::Conflict {
             synced_files: 0,
             conflict_files: dirty_files.to_vec()
           })
-        } else if msg.contains("network") {
-          Ok(SyncResult::Offline)
-        } else {
-          Err(e)
         }
+        Some(omnifuse_core::ErrorKind::Offline) => Ok(SyncResult::Offline),
+        _ => Err(e)
       }
     }
   }

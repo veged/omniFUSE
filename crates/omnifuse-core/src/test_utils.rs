@@ -12,6 +12,7 @@ use std::{
 };
 
 use crate::{
+  OperationalEvent,
   backend::{Backend, InitResult, RemoteChange, SyncResult},
   events::{LogLevel, VfsEventHandler}
 };
@@ -167,10 +168,23 @@ impl Backend for MockBackend {
   fn name(&self) -> &'static str {
     "mock"
   }
+
+  fn classify_error(&self, error: &anyhow::Error) -> crate::ErrorKind {
+    let message = error.to_string().to_lowercase();
+    if message.contains("network") || message.contains("connection") {
+      crate::ErrorKind::Offline
+    } else if message.contains("conflict") {
+      crate::ErrorKind::Conflict
+    } else {
+      crate::ErrorKind::Internal
+    }
+  }
 }
 
 /// Test event handler that records all calls.
 pub struct TestEventHandler {
+  /// Recorded `on_event(event)` calls.
+  pub operational_event_calls: Arc<Mutex<Vec<OperationalEvent>>>,
   /// Recorded `on_push(count)` calls.
   pub push_calls: Arc<Mutex<Vec<usize>>>,
   /// Recorded `on_sync(result)` calls.
@@ -198,6 +212,7 @@ impl TestEventHandler {
   #[must_use]
   pub fn new() -> Self {
     Self {
+      operational_event_calls: Arc::new(Mutex::new(Vec::new())),
       push_calls: Arc::new(Mutex::new(Vec::new())),
       sync_calls: Arc::new(Mutex::new(Vec::new())),
       log_calls: Arc::new(Mutex::new(Vec::new())),
@@ -222,6 +237,11 @@ impl TestEventHandler {
       .iter()
       .filter(|(l, _)| *l == level)
       .count()
+  }
+
+  /// Snapshot of structured operational events.
+  pub fn operational_events(&self) -> Vec<OperationalEvent> {
+    self.operational_event_calls.lock().expect("lock").clone()
   }
 }
 
@@ -259,6 +279,10 @@ where
 }
 
 impl VfsEventHandler for TestEventHandler {
+  fn on_event(&self, event: &OperationalEvent) {
+    self.operational_event_calls.lock().expect("lock").push(event.clone());
+  }
+
   fn on_push(&self, items_count: usize) {
     self.push_calls.lock().expect("lock").push(items_count);
   }

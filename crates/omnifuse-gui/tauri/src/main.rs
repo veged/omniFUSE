@@ -11,9 +11,12 @@ mod events;
 use std::sync::Arc;
 
 use commands::AppState;
+use omnifuse_core::LoggingConfig;
 
 /// Entry point for the GUI application.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+  omnifuse_core::init_logging(&LoggingConfig::default())?;
+
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .manage(Arc::new(AppState::new()))

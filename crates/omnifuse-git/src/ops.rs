@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
 
-use crate::engine::{FetchResult, GitEngine, MergeResult, PushResult};
+use crate::{
+  engine::{FetchResult, GitEngine, MergeResult, PushResult},
+  error::GitError
+};
 
 /// High-level git operations.
 #[derive(Debug)]
@@ -91,7 +94,7 @@ impl GitOps {
   /// Returns an error if the commit fails.
   pub async fn commit_changes(&self, files: &[PathBuf], message: &str) -> anyhow::Result<String> {
     if files.is_empty() {
-      anyhow::bail!("no files to commit");
+      return Err(GitError::NoFilesToCommit.into());
     }
 
     self.engine.stage(files).await?;
@@ -134,7 +137,7 @@ impl GitOps {
         }
         PushResult::Rejected => {
           if retries >= max_retries {
-            anyhow::bail!("push rejected after {max_retries} attempts");
+            return Err(GitError::PushRejected { retries: max_retries }.into());
           }
 
           retries += 1;
@@ -142,7 +145,7 @@ impl GitOps {
 
           match self.engine.pull().await? {
             MergeResult::Conflict { files } => {
-              anyhow::bail!("{} file(s) in conflict", files.len());
+              return Err(GitError::Conflict { files }.into());
             }
             _ => {
               tokio::time::sleep(std::time::Duration::from_millis(100)).await;

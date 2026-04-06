@@ -8,6 +8,8 @@ use std::{
   time::Duration
 };
 
+use crate::ErrorKind;
+
 /// Backend for a synchronized storage.
 ///
 /// Manages sync autonomously: the VFS core tells WHAT to synchronize,
@@ -47,6 +49,11 @@ pub trait Backend: Send + Sync + 'static {
 
   /// Backend name for logs and UI.
   fn name(&self) -> &'static str;
+
+  /// Classify backend-specific error into shared taxonomy.
+  fn classify_error(&self, _error: &anyhow::Error) -> ErrorKind {
+    ErrorKind::Internal
+  }
 }
 
 /// Initialization result.

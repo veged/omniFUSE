@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use crate::OperationalEvent;
+
 /// Log level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -21,6 +23,9 @@ pub enum LogLevel {
 /// the implementor can override only the ones needed.
 #[allow(unused_variables)]
 pub trait VfsEventHandler: Send + Sync + 'static {
+  /// Structured operational event.
+  fn on_event(&self, event: &OperationalEvent) {}
+
   /// Filesystem mounted.
   fn on_mounted(&self, source: &str, mount_point: &Path) {}
 

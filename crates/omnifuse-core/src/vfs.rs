@@ -19,7 +19,8 @@ use tokio::sync::mpsc;
 use unifuse::{DirEntry, FileAttr, FileHandle, FileType, FsError, OpenFlags, StatFs};
 
 use crate::{
-  backend::Backend, buffer::FileBufferManager, config::BufferConfig, events::VfsEventHandler, sync_engine::FsEvent
+  ErrorSource, ObservabilitySession, OperationKind, OperationalEvent, backend::Backend, buffer::FileBufferManager,
+  config::BufferConfig, events::VfsEventHandler, sync_engine::FsEvent
 };
 
 /// `OmniFuse` filesystem core.
@@ -39,6 +40,8 @@ pub struct OmniFuseVfs<B: Backend> {
   backend: Arc<B>,
   /// Event handler (UI/logs).
   events: Arc<dyn VfsEventHandler>,
+  /// Shared observability session.
+  session: Arc<ObservabilitySession>,
   /// File handle counter.
   next_fh: AtomicU64
 }
@@ -52,12 +55,30 @@ impl<B: Backend> OmniFuseVfs<B> {
     events: Arc<dyn VfsEventHandler>,
     buffer_config: BufferConfig
   ) -> Self {
+    let session = Arc::new(ObservabilitySession::new(
+      backend.name(),
+      PathBuf::new(),
+      local_dir.clone()
+    ));
+    Self::new_with_session(local_dir, sync_tx, backend, events, session, buffer_config)
+  }
+
+  /// Create a new VFS with a shared observability session.
+  pub fn new_with_session(
+    local_dir: PathBuf,
+    sync_tx: mpsc::Sender<FsEvent>,
+    backend: Arc<B>,
+    events: Arc<dyn VfsEventHandler>,
+    session: Arc<ObservabilitySession>,
+    buffer_config: BufferConfig
+  ) -> Self {
     Self {
       local_dir,
       buffer_manager: Arc::new(FileBufferManager::new(buffer_config)),
       sync_tx,
       backend,
       events,
+      session,
       next_fh: AtomicU64::new(1)
     }
   }
@@ -84,7 +105,35 @@ impl<B: Backend> OmniFuseVfs<B> {
 
   /// Send an event to `SyncEngine` (non-blocking).
   fn send_event(&self, event: FsEvent) {
-    let _ = self.sync_tx.try_send(event);
+    if self.sync_tx.try_send(event).is_err() {
+      let context = self.session.start_operation(OperationKind::File, 1, None);
+      self.events.on_event(&OperationalEvent::UserVisibleWarning {
+        context,
+        message: "sync event queue is full".to_string(),
+        source: ErrorSource::Vfs,
+        disposition: crate::Disposition::Retryable
+      });
+    }
+  }
+
+  fn emit_file_marked_dirty(&self, path: &Path) {
+    let context = self
+      .session
+      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
+    self.events.on_event(&OperationalEvent::FileMarkedDirty {
+      context,
+      path: path.to_path_buf()
+    });
+  }
+
+  fn emit_file_flushed(&self, path: &Path) {
+    let context = self
+      .session
+      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
+    self.events.on_event(&OperationalEvent::FileFlushed {
+      context,
+      path: path.to_path_buf()
+    });
   }
 }
 
@@ -196,6 +245,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
         .map_err(FsError::Io)?;
       file.set_len(new_size).await.map_err(FsError::Io)?;
       self.send_event(FsEvent::FileModified(path.to_path_buf()));
+      self.emit_file_marked_dirty(path);
     }
 
     // Set times
@@ -247,6 +297,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     self.buffer_manager.cache(&full_path, Vec::new()).await;
 
     self.send_event(FsEvent::FileModified(path.to_path_buf()));
+    self.emit_file_marked_dirty(path);
     self.events.on_file_created(path);
 
     let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
@@ -270,6 +321,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
     let written = buffer.write(offset, data).await;
 
     self.send_event(FsEvent::FileModified(path.to_path_buf()));
+    self.emit_file_marked_dirty(path);
     #[allow(clippy::cast_possible_truncation)]
     let written_u32 = written as u32;
     self.events.on_file_written(path, written);
@@ -279,7 +331,9 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
   async fn flush(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
     let full_path = self.full_path(path);
-    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)
+    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
+    self.emit_file_flushed(path);
+    Ok(())
   }
 
   async fn release(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
@@ -287,6 +341,7 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
     // Flush to disk
     self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
+    self.emit_file_flushed(path);
 
     // Notify sync engine
     self.send_event(FsEvent::FileClosed(path.to_path_buf()));
@@ -296,7 +351,9 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
   async fn fsync(&self, path: &Path, _fh: FileHandle, _datasync: bool) -> Result<(), FsError> {
     let full_path = self.full_path(path);
-    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)
+    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
+    self.emit_file_flushed(path);
+    Ok(())
   }
 
   async fn readdir(&self, path: &Path) -> Result<Vec<DirEntry>, FsError> {
@@ -520,7 +577,12 @@ mod tests {
   use unifuse::UniFuseFilesystem;
 
   use super::*;
-  use crate::{config::BufferConfig, sync_engine::FsEvent, test_utils::MockBackend};
+  use crate::{
+    OperationalEvent,
+    config::BufferConfig,
+    sync_engine::FsEvent,
+    test_utils::{MockBackend, TestEventHandler}
+  };
 
   /// Helper: create VFS with MockBackend and tempdir.
   fn create_test_vfs(
@@ -529,6 +591,16 @@ mod tests {
   ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>) {
     let (tx, rx) = mpsc::channel(256);
     let events: Arc<dyn crate::events::VfsEventHandler> = Arc::new(crate::events::NoopEventHandler);
+    let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx, backend, events, BufferConfig::default());
+    (vfs, rx)
+  }
+
+  fn create_test_vfs_with_handler(
+    dir: &std::path::Path,
+    backend: Arc<MockBackend>,
+    events: Arc<dyn crate::events::VfsEventHandler>
+  ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>) {
+    let (tx, rx) = mpsc::channel(256);
     let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx, backend, events, BufferConfig::default());
     (vfs, rx)
   }
@@ -683,6 +755,39 @@ mod tests {
       .iter()
       .any(|e| matches!(e, FsEvent::FileModified(p) if p == Path::new("a.txt")));
     assert!(has_modified, "write should send FileModified");
+  }
+
+  #[tokio::test]
+  async fn test_write_and_flush_emit_operational_events() {
+    eprintln!("[TEST] test_write_and_flush_emit_operational_events");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tokio::fs::write(tmp.path().join("obs.txt"), "").await.expect("write");
+
+    let backend = Arc::new(MockBackend::new());
+    let handler = Arc::new(TestEventHandler::new());
+    let events: Arc<dyn crate::events::VfsEventHandler> = handler.clone();
+    let (vfs, _rx) = create_test_vfs_with_handler(tmp.path(), backend, events);
+
+    let fh = vfs
+      .open(Path::new("obs.txt"), OpenFlags::read_write())
+      .await
+      .expect("open");
+    vfs.write(Path::new("obs.txt"), fh, 0, b"payload").await.expect("write");
+    vfs.flush(Path::new("obs.txt"), fh).await.expect("flush");
+
+    let observed = handler.operational_events();
+    assert!(
+      observed
+        .iter()
+        .any(|event| matches!(event, OperationalEvent::FileMarkedDirty { path, .. } if path == Path::new("obs.txt"))),
+      "write should emit FileMarkedDirty"
+    );
+    assert!(
+      observed
+        .iter()
+        .any(|event| matches!(event, OperationalEvent::FileFlushed { path, .. } if path == Path::new("obs.txt"))),
+      "flush should emit FileFlushed"
+    );
   }
 
   #[tokio::test]

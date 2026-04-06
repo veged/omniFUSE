@@ -29,6 +29,7 @@ pub mod backend;
 pub mod buffer;
 pub mod config;
 pub mod events;
+pub mod observability;
 pub mod sync_engine;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -40,6 +41,10 @@ pub use backend::{Backend, InitResult, RemoteChange, SyncResult};
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
 pub use events::{LogLevel, NoopEventHandler, VfsEventHandler};
+pub use observability::{
+  Disposition, ErrorKind, ErrorSource, EventSeverity, NoopOperationalEventSink, ObservabilitySession, OperationContext,
+  OperationKind, OperationOutcome, OperationalEvent, OperationalEventSink, RecordingEventSink, init_logging
+};
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
 use tracing::info;
 pub use vfs::OmniFuseVfs;
@@ -60,57 +65,127 @@ pub async fn run_mount<B: Backend>(
   backend: B,
   events: impl VfsEventHandler
 ) -> anyhow::Result<()> {
+  init_logging(&config.logging)?;
+
   let events: Arc<dyn VfsEventHandler> = Arc::new(events);
   let backend = Arc::new(backend);
+  let observability = Arc::new(ObservabilitySession::new(
+    backend.name(),
+    config.mount_point.clone(),
+    config.local_dir.clone()
+  ));
+  let mount_context = observability.start_operation(OperationKind::Mount, 1, None);
 
-  // Check FUSE availability
-  if !unifuse::UniFuseHost::<OmniFuseVfs<B>>::is_available() {
-    anyhow::bail!("FUSE/WinFsp is not installed");
+  events.on_event(&OperationalEvent::MountStarted {
+    context: mount_context.clone(),
+    backend: backend.name().to_string(),
+    mount_point: config.mount_point.clone(),
+    local_dir: config.local_dir.clone()
+  });
+
+  let result = async {
+    // Check FUSE availability
+    if !unifuse::UniFuseHost::<OmniFuseVfs<B>>::is_available() {
+      anyhow::bail!("FUSE/WinFsp is not installed");
+    }
+
+    let init_context = observability.start_operation(OperationKind::Init, 1, None);
+    events.on_event(&OperationalEvent::BackendInitStarted {
+      context: init_context.clone(),
+      backend: backend.name().to_string()
+    });
+
+    // Initialize backend
+    let init_result = backend.init(&config.local_dir).await?;
+    info!(?init_result, "backend initialized");
+    events.on_sync(&format!("{init_result:?}"));
+    events.on_event(&OperationalEvent::BackendInitFinished {
+      context: init_context.clone(),
+      outcome: init_result_outcome(&init_result),
+      backend: backend.name().to_string(),
+      details: Some(format!("{init_result:?}")),
+      elapsed_ms: init_context.elapsed_ms()
+    });
+
+    // Start SyncEngine
+    let (sync_engine, sync_handle) = SyncEngine::start_with_session(
+      config.sync.clone(),
+      Arc::clone(&backend),
+      Arc::clone(&events),
+      Arc::clone(&observability)
+    );
+
+    // Create VFS
+    let vfs = OmniFuseVfs::new_with_session(
+      config.local_dir.clone(),
+      sync_engine.sender(),
+      Arc::clone(&backend),
+      Arc::clone(&events),
+      Arc::clone(&observability),
+      config.buffer.clone()
+    );
+
+    // Mount
+    let host = unifuse::UniFuseHost::new(vfs);
+    let mount_options = unifuse::MountOptions {
+      fs_name: config.mount_options.fs_name.clone(),
+      allow_other: config.mount_options.allow_other,
+      read_only: config.mount_options.read_only
+    };
+
+    // Ensure mount point exists and is empty
+    std::fs::create_dir_all(&config.mount_point)?;
+
+    events.on_mounted(backend.name(), &config.mount_point);
+    info!(
+      mount_point = %config.mount_point.display(),
+      backend = backend.name(),
+      "mounting"
+    );
+
+    host.mount(&config.mount_point, &mount_options).await?;
+
+    // Shutdown
+    events.on_unmounted();
+    sync_engine.shutdown().await?;
+    sync_handle.await?;
+
+    Ok(())
   }
+  .await;
 
-  // Initialize backend
-  let init_result = backend.init(&config.local_dir).await?;
-  info!(?init_result, "backend initialized");
-  events.on_sync(&format!("{init_result:?}"));
+  match result {
+    Ok(()) => {
+      events.on_event(&OperationalEvent::MountFinished {
+        context: mount_context.clone(),
+        outcome: OperationOutcome::Success,
+        elapsed_ms: mount_context.elapsed_ms()
+      });
+      Ok(())
+    }
+    Err(error) => {
+      events.on_error(&error.to_string());
+      let elapsed_ms = mount_context.elapsed_ms();
+      events.on_event(&OperationalEvent::MountFailed {
+        context: mount_context,
+        severity: EventSeverity::Error,
+        error_kind: backend.classify_error(&error),
+        source: ErrorSource::Mount,
+        disposition: Disposition::Fatal,
+        message: error.to_string(),
+        elapsed_ms
+      });
+      Err(error)
+    }
+  }
+}
 
-  // Start SyncEngine
-  let (sync_engine, sync_handle) = SyncEngine::start(config.sync.clone(), Arc::clone(&backend), Arc::clone(&events));
-
-  // Create VFS
-  let vfs = OmniFuseVfs::new(
-    config.local_dir.clone(),
-    sync_engine.sender(),
-    Arc::clone(&backend),
-    Arc::clone(&events),
-    config.buffer.clone()
-  );
-
-  // Mount
-  let host = unifuse::UniFuseHost::new(vfs);
-  let mount_options = unifuse::MountOptions {
-    fs_name: config.mount_options.fs_name.clone(),
-    allow_other: config.mount_options.allow_other,
-    read_only: config.mount_options.read_only
-  };
-
-  // Ensure mount point exists and is empty
-  std::fs::create_dir_all(&config.mount_point)?;
-
-  events.on_mounted(backend.name(), &config.mount_point);
-  info!(
-    mount_point = %config.mount_point.display(),
-    backend = backend.name(),
-    "mounting"
-  );
-
-  host.mount(&config.mount_point, &mount_options).await?;
-
-  // Shutdown
-  events.on_unmounted();
-  sync_engine.shutdown().await?;
-  sync_handle.await?;
-
-  Ok(())
+fn init_result_outcome(result: &InitResult) -> OperationOutcome {
+  match result {
+    InitResult::Fresh | InitResult::UpToDate | InitResult::Updated => OperationOutcome::Success,
+    InitResult::Conflicts { .. } => OperationOutcome::Conflict,
+    InitResult::Offline => OperationOutcome::Deferred
+  }
 }
 
 /// Check FUSE/`WinFsp` platform availability.
