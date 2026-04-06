@@ -274,7 +274,11 @@ impl Client {
     let start = std::time::Instant::now();
     debug!(method = %rq.method(), url = %rq.url(), "wiki request");
 
-    let resp = self.c.execute(rq).await.map_err(classify_reqwest_error)?;
+    let resp = self
+      .c
+      .execute(rq)
+      .await
+      .map_err(|error| classify_reqwest_error(&error))?;
     let st = resp.status();
     let location = resp
       .headers()
@@ -329,7 +333,11 @@ impl Client {
     let start = std::time::Instant::now();
     debug!(method = %rq.method(), url = %rq.url(), "wiki request");
 
-    let resp = self.c.execute(rq).await.map_err(classify_reqwest_error)?;
+    let resp = self
+      .c
+      .execute(rq)
+      .await
+      .map_err(|error| classify_reqwest_error(&error))?;
     let st = resp.status();
     let location = resp
       .headers()
@@ -397,7 +405,7 @@ impl Client {
   }
 }
 
-fn classify_reqwest_error(error: reqwest::Error) -> WikiError {
+fn classify_reqwest_error(error: &reqwest::Error) -> WikiError {
   if error.is_connect() || error.is_timeout() {
     WikiError::Transport(error.to_string())
   } else {

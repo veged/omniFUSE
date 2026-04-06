@@ -115,7 +115,7 @@ pub enum ErrorSource {
   Git,
   /// Wiki backend.
   Wiki,
-  /// FUSE / WinFsp adapter.
+  /// FUSE / `WinFsp` adapter.
   Fuse,
   /// GUI / Tauri bridge.
   Gui
@@ -172,7 +172,7 @@ impl ObservabilitySession {
 
   /// Backend name.
   #[must_use]
-  pub fn backend(&self) -> &'static str {
+  pub const fn backend(&self) -> &'static str {
     self.backend
   }
 

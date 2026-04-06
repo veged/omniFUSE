@@ -68,11 +68,10 @@ pub fn classify_wiki_error(error: &anyhow::Error) -> Option<ErrorKind> {
     Some(WikiError::ChangesConflict) => Some(ErrorKind::Conflict),
     Some(WikiError::SlugOccupiedOrReserved) => Some(ErrorKind::InvalidInput),
     Some(WikiError::Transport(_)) => Some(ErrorKind::Offline),
-    Some(WikiError::RequestFailed(_)) => Some(ErrorKind::Internal),
+    Some(WikiError::RequestFailed(_) | WikiError::NotInitialized) => Some(ErrorKind::Internal),
     Some(WikiError::Redirect { .. } | WikiError::Deserialization { .. } | WikiError::HttpStatus { .. }) => {
       Some(ErrorKind::ProtocolViolation)
     }
-    Some(WikiError::NotInitialized) => Some(ErrorKind::Internal),
     None => None
   }
 }

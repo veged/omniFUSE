@@ -180,7 +180,7 @@ pub async fn run_mount<B: Backend>(
   }
 }
 
-fn init_result_outcome(result: &InitResult) -> OperationOutcome {
+const fn init_result_outcome(result: &InitResult) -> OperationOutcome {
   match result {
     InitResult::Fresh | InitResult::UpToDate | InitResult::Updated => OperationOutcome::Success,
     InitResult::Conflicts { .. } => OperationOutcome::Conflict,
