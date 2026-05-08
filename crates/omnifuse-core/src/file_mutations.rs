@@ -65,18 +65,102 @@ impl FileMutationPipeline {
     })
   }
 
+  /// Create a file, cache an empty buffer and start its mutation session.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the local file cannot be created or inspected.
+  pub async fn create_file(self: &Arc<Self>, path: &Path, mode: u32) -> Result<(OpenFileMutation, FileAttr), FsError> {
+    let full_path = self.full_path(path);
+    tokio::fs::write(&full_path, b"").await.map_err(FsError::Io)?;
+
+    #[cfg(unix)]
+    set_mode_unix(&full_path, mode)?;
+
+    let buffer = self.buffer_manager.cache(&full_path, Vec::new()).await;
+    self.mark_modified(path);
+    self.events.on_file_created(path);
+
+    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
+    let file = OpenFileMutation {
+      path: path.to_path_buf(),
+      full_path,
+      buffer,
+      pipeline: Arc::clone(self),
+      dirty_notified: AtomicBool::new(true)
+    };
+
+    Ok((file, metadata_to_attr(&meta)))
+  }
+
+  /// Remove a file from disk and from the buffer cache.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the local file cannot be removed.
+  pub async fn unlink(&self, path: &Path) -> Result<(), FsError> {
+    let full_path = self.full_path(path);
+    self.buffer_manager.remove(&full_path).await;
+    tokio::fs::remove_file(&full_path).await.map_err(FsError::Io)?;
+
+    self.queue_modified(path);
+    self.events.on_file_deleted(path);
+    Ok(())
+  }
+
+  /// Rename a file or directory and mark both paths dirty.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the local path cannot be renamed.
+  pub async fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+    let full_from = self.full_path(from);
+    let full_to = self.full_path(to);
+
+    tokio::fs::rename(&full_from, &full_to).await.map_err(FsError::Io)?;
+    self.buffer_manager.remove(&full_from).await;
+
+    self.queue_modified(from);
+    self.queue_modified(to);
+    self.events.on_file_renamed(from, to);
+    Ok(())
+  }
+
+  /// Create a symbolic link and mark the link path dirty.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when symlinks are unsupported or the link cannot be created.
+  pub async fn symlink(&self, target: &Path, link: &Path) -> Result<FileAttr, FsError> {
+    let full_link = self.full_path(link);
+
+    #[cfg(unix)]
+    tokio::fs::symlink(target, &full_link).await.map_err(FsError::Io)?;
+
+    #[cfg(not(unix))]
+    return Err(FsError::NotSupported);
+
+    let meta = tokio::fs::symlink_metadata(&full_link).await.map_err(FsError::Io)?;
+
+    self.queue_modified(link);
+    Ok(metadata_to_attr(&meta))
+  }
+
   fn full_path(&self, path: &Path) -> PathBuf {
     self.local_dir.join(path)
   }
 
-  fn mark_modified(&self, path: &Path) {
+  fn queue_modified(&self, path: &Path) {
     if matches!(
       self.dirty_sink.mark_modified(path.to_path_buf()),
       DirtySendResult::Dropped
     ) {
       self.emit_queue_full_warning();
     }
+  }
 
+  fn mark_modified(&self, path: &Path) {
+    self.queue_modified(path);
     self.emit_file_marked_dirty(path);
   }
 
@@ -320,6 +404,13 @@ const fn unix_gid(_meta: &std::fs::Metadata) -> u32 {
   0
 }
 
+#[cfg(unix)]
+fn set_mode_unix(path: &Path, mode: u32) -> Result<(), FsError> {
+  use std::os::unix::fs::PermissionsExt;
+  let perms = std::fs::Permissions::from_mode(mode);
+  std::fs::set_permissions(path, perms).map_err(FsError::Io)
+}
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
@@ -417,5 +508,46 @@ mod tests {
         .expect("read"),
       "hello"
     );
+  }
+
+  #[tokio::test]
+  async fn create_file_caches_empty_buffer_and_marks_dirty() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let (pipeline, mut rx, events) = test_pipeline(tmp.path());
+
+    let (_file, attr) = pipeline.create_file(Path::new("new.md"), 0o644).await.expect("create");
+
+    assert_eq!(attr.kind, FileType::RegularFile);
+    assert!(tmp.path().join("new.md").exists());
+    assert!(matches!(rx.recv().await, Some(FsEvent::FileModified(path)) if path == PathBuf::from("new.md")));
+    assert!(
+      events
+        .created_calls
+        .lock()
+        .expect("lock")
+        .iter()
+        .any(|path| path == Path::new("new.md"))
+    );
+  }
+
+  #[tokio::test]
+  async fn rename_removes_old_buffer_and_marks_both_paths_dirty() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(tmp.path().join("old.md"), "content")
+      .await
+      .expect("seed");
+    let (pipeline, mut rx, events) = test_pipeline(tmp.path());
+    let _file = pipeline.open_file(Path::new("old.md")).await.expect("open");
+
+    pipeline
+      .rename(Path::new("old.md"), Path::new("new.md"))
+      .await
+      .expect("rename");
+
+    assert!(!tmp.path().join("old.md").exists());
+    assert!(tmp.path().join("new.md").exists());
+    assert!(matches!(rx.recv().await, Some(FsEvent::FileModified(path)) if path == PathBuf::from("old.md")));
+    assert!(matches!(rx.recv().await, Some(FsEvent::FileModified(path)) if path == PathBuf::from("new.md")));
+    assert_eq!(events.renamed_calls.lock().expect("lock").len(), 1);
   }
 }
