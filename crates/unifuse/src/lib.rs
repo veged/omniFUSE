@@ -24,6 +24,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
 
+pub mod compat;
 pub mod inode;
 #[cfg(unix)]
 pub mod rfuse3_adapter;
@@ -39,6 +40,7 @@ use std::{
   time::SystemTime
 };
 
+pub use compat::CompatSessionFs;
 pub use inode::{InodeMap, NodeKind, ROOT_INODE};
 pub use session::*;
 pub use types::*;
