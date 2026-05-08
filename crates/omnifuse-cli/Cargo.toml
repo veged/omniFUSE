@@ -19,10 +19,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+omnifuse-app = { path = "../omnifuse-app" }
 omnifuse-core = { path = "../omnifuse-core" }
-omnifuse-git = { path = "../omnifuse-git" }
-omnifuse-wiki = { path = "../omnifuse-wiki" }
-unifuse = { path = "../unifuse" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
