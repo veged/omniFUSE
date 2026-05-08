@@ -23,8 +23,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
   Disposition, EventSeverity, ObservabilitySession, OperationKind, OperationOutcome, OperationalEvent,
-  backend::{Backend, SyncResult},
+  backend::{Backend, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult, SyncResult},
   config::SyncConfig,
+  dirty_index::DirtyIndex,
   events::{LogLevel, VfsEventHandler}
 };
 
@@ -85,8 +86,8 @@ impl SyncEngine {
   /// Create and start `SyncEngine`.
   ///
   /// Starts two background workers:
-  /// 1. `dirty_worker` — collects `FsEvent`, maintains `DirtySet`, triggers sync
-  /// 2. `poll_worker` — periodically calls `backend.poll_remote()`
+  /// 1. `dirty_worker` — collects `FsEvent`, maintains dirty state, triggers sync
+  /// 2. `poll_worker` — periodically calls `backend.refresh_remote()`
   pub fn start<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
@@ -109,6 +110,7 @@ impl SyncEngine {
   ) -> (Self, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel(256);
     let metrics = Arc::new(WorkerMetrics::default());
+    let dirty_index = Arc::new(DirtyIndex::default());
 
     let dirty_metrics = Arc::clone(&metrics);
     let handle = tokio::spawn(Self::dirty_worker(
@@ -116,6 +118,7 @@ impl SyncEngine {
       backend.clone(),
       events.clone(),
       event_rx,
+      Arc::clone(&dirty_index),
       dirty_metrics,
       Arc::clone(&observability)
     ));
@@ -126,7 +129,7 @@ impl SyncEngine {
     let poll_metrics = Arc::clone(&metrics);
     let poll_observability = observability;
     let poll_handle = tokio::spawn(async move {
-      Self::poll_worker(poll_backend, poll_events, poll_metrics, poll_observability).await;
+      Self::poll_worker(poll_backend, poll_events, dirty_index, poll_metrics, poll_observability).await;
     });
 
     (
@@ -184,6 +187,7 @@ impl SyncEngine {
     backend: Arc<B>,
     events: Arc<dyn VfsEventHandler>,
     mut event_rx: mpsc::Receiver<FsEvent>,
+    dirty_index: Arc<DirtyIndex>,
     metrics: Arc<WorkerMetrics>,
     observability: Arc<ObservabilitySession>
   ) {
@@ -202,10 +206,16 @@ impl SyncEngine {
         event = event_rx.recv() => {
           match event {
             Some(FsEvent::FileModified(path)) => {
+              if backend.should_track(&path) {
+                dirty_index.mark_dirty(path.clone());
+              }
               dirty_set.insert(path);
               debounce_deadline = Instant::now() + debounce_duration;
             }
             Some(FsEvent::FileClosed(path)) => {
+              if backend.should_track(&path) {
+                dirty_index.mark_dirty(path.clone());
+              }
               dirty_set.insert(path);
               trigger_sync = true;
             }
@@ -219,7 +229,7 @@ impl SyncEngine {
                   dirty_count = dirty_set.len(),
                   "dirty_worker: final sync before shutdown"
                 );
-                Self::do_sync(&backend, &events, &mut dirty_set, &metrics, &observability).await;
+                Self::do_sync(&backend, &events, &mut dirty_set, &dirty_index, &metrics, &observability).await;
               }
               break;
             }
@@ -232,7 +242,15 @@ impl SyncEngine {
       }
 
       if trigger_sync && !dirty_set.is_empty() {
-        Self::do_sync(&backend, &events, &mut dirty_set, &metrics, &observability).await;
+        Self::do_sync(
+          &backend,
+          &events,
+          &mut dirty_set,
+          &dirty_index,
+          &metrics,
+          &observability
+        )
+        .await;
         trigger_sync = false;
       }
     }
@@ -249,6 +267,7 @@ impl SyncEngine {
     backend: &Arc<B>,
     events: &Arc<dyn VfsEventHandler>,
     dirty_set: &mut HashSet<PathBuf>,
+    dirty_index: &Arc<DirtyIndex>,
     metrics: &WorkerMetrics,
     observability: &Arc<ObservabilitySession>
   ) {
@@ -274,6 +293,9 @@ impl SyncEngine {
 
     match backend.sync(&files).await {
       Ok(SyncResult::Success { synced_files }) => {
+        for file in &files {
+          dirty_index.mark_clean(file);
+        }
         events.on_push(synced_files);
         debug!(synced_files, "sync successful");
         events.on_event(&OperationalEvent::SyncFinished {
@@ -288,6 +310,14 @@ impl SyncEngine {
         synced_files,
         conflict_files
       }) => {
+        let conflict_set: HashSet<PathBuf> = conflict_files.iter().cloned().collect();
+        for file in &files {
+          if conflict_set.contains(file) {
+            dirty_index.mark_dirty(file.clone());
+          } else {
+            dirty_index.mark_clean(file);
+          }
+        }
         events.on_push(synced_files);
         warn!(synced_files, conflicts = conflict_files.len(), "sync with conflicts");
         events.on_log(LogLevel::Warn, &format!("conflicts: {conflict_files:?}"));
@@ -355,6 +385,7 @@ impl SyncEngine {
   async fn poll_worker<B: Backend>(
     backend: Arc<B>,
     events: Arc<dyn VfsEventHandler>,
+    dirty_index: Arc<DirtyIndex>,
     metrics: Arc<WorkerMetrics>,
     observability: Arc<ObservabilitySession>
   ) {
@@ -373,33 +404,41 @@ impl SyncEngine {
         interval_ms: millis(interval)
       });
 
-      match backend.poll_remote().await {
-        Ok(changes) if !changes.is_empty() => {
-          let count = changes.len();
-          debug!(count, iteration, "received changes from remote");
-          events.on_event(&OperationalEvent::RemoteChangesDetected {
-            context: context.clone(),
-            changed_files: count
-          });
+      let request = RemoteRefresh {
+        protected_paths: dirty_index.as_path_protection(),
+        mode: RemoteApplyMode::ApplySafe
+      };
 
-          if let Err(e) = backend.apply_remote(changes).await {
-            warn!(error = %e, "error applying remote changes");
-            events.on_log(LogLevel::Warn, &format!("error applying remote changes: {e}"));
-            events.on_event(&OperationalEvent::RemoteApplyFailed {
+      match backend.refresh_remote(request).await {
+        Ok(RemoteRefreshResult::Applied { changed, deleted }) => {
+          let count = changed.len() + deleted.len();
+          if count > 0 {
+            debug!(count, iteration, "remote changes applied");
+            events.on_event(&OperationalEvent::RemoteChangesDetected {
               context: context.clone(),
-              severity: EventSeverity::Warn,
-              error_kind: backend.classify_error(&e),
-              message: e.to_string(),
-              disposition: Disposition::Retryable,
-              elapsed_ms: context.elapsed_ms()
+              changed_files: count
             });
-          } else {
             events.on_sync("updated");
           }
         }
-        Ok(_) => {
-          // No changes
+        Ok(RemoteRefreshResult::Deferred { affected, reason }) => {
+          warn!(affected = affected.len(), ?reason, "remote refresh deferred");
+          events.on_log(
+            LogLevel::Warn,
+            &format!("remote refresh deferred: {reason:?}, affected: {affected:?}")
+          );
+          events.on_event(&OperationalEvent::UserVisibleWarning {
+            context: context.clone(),
+            message: format!("remote refresh deferred: {reason:?}"),
+            source: crate::ErrorSource::SyncEngine,
+            disposition: Disposition::Retryable
+          });
         }
+        Ok(RemoteRefreshResult::Offline) => {
+          warn!(iteration, "remote unavailable during refresh");
+          events.on_log(LogLevel::Warn, "remote unavailable");
+        }
+        Ok(RemoteRefreshResult::Unchanged) => {}
         Err(e) => {
           warn!(error = %e, iteration, "remote poll error");
           events.on_log(LogLevel::Warn, &format!("poll failed: {e}"));
@@ -444,7 +483,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    backend::SyncResult,
+    backend::{RemoteDeferReason, RemoteRefreshResult, SyncResult},
     config::SyncConfig,
     events::LogLevel,
     test_utils::{MockBackend, TestEventHandler}
@@ -804,9 +843,9 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn test_poll_worker_calls_poll_remote() {
-    eprintln!("[TEST] test_poll_worker_calls_poll_remote");
-    crate::test_utils::with_timeout("test_poll_worker_calls_poll_remote", async {
+  async fn test_poll_worker_calls_refresh_remote() {
+    eprintln!("[TEST] test_poll_worker_calls_refresh_remote");
+    crate::test_utils::with_timeout("test_poll_worker_calls_refresh_remote", async {
       let backend = Arc::new(MockBackend {
         poll_interval_dur: Duration::from_millis(50),
         ..MockBackend::new()
@@ -820,25 +859,25 @@ mod tests {
       tokio::time::sleep(Duration::from_millis(200)).await;
 
       assert!(
-        backend.poll_call_count() >= 2,
-        "poll_remote should be called periodically"
+        backend.refresh_call_count() >= 2,
+        "refresh_remote should be called periodically"
       );
     })
     .await;
   }
 
   #[tokio::test]
-  async fn test_poll_worker_applies_changes() {
-    eprintln!("[TEST] test_poll_worker_applies_changes");
-    crate::test_utils::with_timeout("test_poll_worker_applies_changes", async {
+  async fn test_poll_worker_reports_applied_refresh() {
+    eprintln!("[TEST] test_poll_worker_reports_applied_refresh");
+    crate::test_utils::with_timeout("test_poll_worker_reports_applied_refresh", async {
       let backend = Arc::new(MockBackend {
         poll_interval_dur: Duration::from_millis(50),
         ..MockBackend::new()
       });
-      backend.set_poll_result(vec![crate::backend::RemoteChange::Modified {
-        path: PathBuf::from("remote.txt"),
-        content: b"hello".to_vec()
-      }]);
+      backend.set_refresh_result(RemoteRefreshResult::Applied {
+        changed: vec![PathBuf::from("remote.txt")],
+        deleted: Vec::new()
+      });
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
@@ -846,14 +885,69 @@ mod tests {
 
       tokio::time::sleep(Duration::from_millis(200)).await;
 
-      let apply_calls = backend.apply_calls.lock().expect("lock");
-      assert!(!apply_calls.is_empty(), "apply_remote should have been called");
+      assert!(
+        backend.refresh_call_count() >= 2,
+        "refresh_remote should have been called"
+      );
 
       let sync_events = events.sync_calls.lock().expect("lock");
       assert!(
         sync_events.contains(&"updated".to_string()),
         "on_sync(\"updated\") expected"
       );
+    })
+    .await;
+  }
+
+  #[tokio::test]
+  async fn poll_worker_calls_refresh_remote_and_reports_applied() {
+    eprintln!("[TEST] poll_worker_calls_refresh_remote_and_reports_applied");
+    crate::test_utils::with_timeout("poll_worker_calls_refresh_remote_and_reports_applied", async {
+      let backend = Arc::new(MockBackend {
+        poll_interval_dur: Duration::from_millis(10),
+        ..MockBackend::new()
+      });
+      backend.set_refresh_result(RemoteRefreshResult::Applied {
+        changed: vec![PathBuf::from("remote.md")],
+        deleted: Vec::new()
+      });
+
+      let events = Arc::new(TestEventHandler::new());
+      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
+
+      tokio::time::sleep(Duration::from_millis(50)).await;
+      safe_shutdown(&engine).await;
+      safe_join(handle).await;
+
+      assert!(backend.refresh_call_count() > 0);
+      assert!(events.sync_calls.lock().expect("lock").iter().any(|v| v == "updated"));
+    })
+    .await;
+  }
+
+  #[tokio::test]
+  async fn poll_worker_defers_when_remote_touches_dirty_path() {
+    eprintln!("[TEST] poll_worker_defers_when_remote_touches_dirty_path");
+    crate::test_utils::with_timeout("poll_worker_defers_when_remote_touches_dirty_path", async {
+      let backend = Arc::new(MockBackend {
+        poll_interval_dur: Duration::from_millis(10),
+        ..MockBackend::new()
+      });
+      backend.set_refresh_result(RemoteRefreshResult::Deferred {
+        affected: vec![PathBuf::from("dirty.md")],
+        reason: RemoteDeferReason::ProtectedLocalChange
+      });
+
+      let events = Arc::new(TestEventHandler::new());
+      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
+
+      tokio::time::sleep(Duration::from_millis(50)).await;
+      safe_shutdown(&engine).await;
+      safe_join(handle).await;
+
+      assert!(events.log_count(LogLevel::Warn) >= 1);
     })
     .await;
   }
@@ -866,7 +960,7 @@ mod tests {
         poll_interval_dur: Duration::from_millis(50),
         ..MockBackend::new()
       });
-      backend.set_poll_error("network down");
+      backend.set_refresh_error("network down");
       let events = Arc::new(TestEventHandler::new());
 
       let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
@@ -1760,24 +1854,27 @@ mod tests {
       // Let poll_worker run and accumulate iterations
       tokio::time::sleep(Duration::from_millis(100)).await;
 
-      let polls_before = backend.poll_call_count();
-      assert!(polls_before >= 3, "poll_worker should have polled: {polls_before}");
+      let refreshes_before = backend.refresh_call_count();
+      assert!(
+        refreshes_before >= 3,
+        "poll_worker should have refreshed: {refreshes_before}"
+      );
 
       // Shutdown should stop poll_worker
       safe_shutdown(&engine).await;
       safe_join(handle).await;
 
       // Capture counter immediately after shutdown
-      let polls_at_shutdown = backend.poll_call_count();
+      let refreshes_at_shutdown = backend.refresh_call_count();
 
       // Wait — if poll_worker is still running, counter will grow
       tokio::time::sleep(Duration::from_millis(200)).await;
 
-      let polls_after = backend.poll_call_count();
+      let refreshes_after = backend.refresh_call_count();
       assert_eq!(
-        polls_at_shutdown, polls_after,
-        "poll_worker must NOT poll after shutdown: \
-         at_shutdown={polls_at_shutdown}, after_wait={polls_after}"
+        refreshes_at_shutdown, refreshes_after,
+        "poll_worker must NOT refresh after shutdown: \
+         at_shutdown={refreshes_at_shutdown}, after_wait={refreshes_after}"
       );
 
       // Verify metrics
@@ -1817,14 +1914,14 @@ mod tests {
       }
 
       // Wait — if there are leaked tasks, counter will grow
-      let polls_before = backend.poll_call_count();
+      let refreshes_before = backend.refresh_call_count();
       tokio::time::sleep(Duration::from_millis(100)).await;
-      let polls_after = backend.poll_call_count();
+      let refreshes_after = backend.refresh_call_count();
 
       assert_eq!(
-        polls_before, polls_after,
-        "no background polls should remain after all engines shut down: \
-           before={polls_before}, after={polls_after}"
+        refreshes_before, refreshes_after,
+        "no background refreshes should remain after all engines shut down: \
+           before={refreshes_before}, after={refreshes_after}"
       );
     })
     .await;

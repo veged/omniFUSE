@@ -10,7 +10,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
-  backend::{RemoteChange, SyncResult},
+  backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
   events::{LogLevel, VfsEventHandler},
   sync_engine::{FsEvent, SyncEngine},
@@ -356,7 +356,7 @@ async fn test_shutdown_final_sync_no_data_loss() {
 
 /// 5. Poll error → graceful handling, worker continues.
 ///
-/// poll_remote returns Err → Warn logged → next poll still works.
+/// refresh_remote returns Err → Warn logged → next refresh still works.
 #[tokio::test]
 async fn test_poll_error_graceful_handling() {
   eprintln!("[TEST] test_poll_error_graceful_handling");
@@ -367,7 +367,7 @@ async fn test_poll_error_graceful_handling() {
       poll_interval_dur: Duration::from_millis(50),
       ..MockBackend::new()
     });
-    backend.set_poll_error("network down");
+    backend.set_refresh_error("network down");
     let events = Arc::new(TestEventHandler::new());
 
     let config = SyncConfig::default();
@@ -386,11 +386,11 @@ async fn test_poll_error_graceful_handling() {
     // Wait for at least 2-3 poll cycles (50ms each)
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    // poll_remote should have been called multiple times
+    // refresh_remote should have been called multiple times
     assert!(
-      backend.poll_call_count() >= 2,
-      "poll_remote should have been called at least twice, got: {}",
-      backend.poll_call_count()
+      backend.refresh_call_count() >= 2,
+      "refresh_remote should have been called at least twice, got: {}",
+      backend.refresh_call_count()
     );
 
     // Warning should have been logged for the poll error
@@ -407,28 +407,28 @@ async fn test_poll_error_graceful_handling() {
     );
 
     // Clear the error by directly accessing the field
-    *backend.poll_error.lock().expect("lock") = None;
+    *backend.refresh_error.lock().expect("lock") = None;
 
-    // Set a valid poll result for future polls
-    backend.set_poll_result(vec![RemoteChange::Modified {
-      path: std::path::PathBuf::from("remote_updated.txt"),
-      content: b"updated from remote".to_vec()
-    }]);
+    // Set a valid refresh result for future polls
+    backend.set_refresh_result(RemoteRefreshResult::Applied {
+      changed: vec![std::path::PathBuf::from("remote_updated.txt")],
+      deleted: Vec::new()
+    });
 
     // Wait for more poll cycles with the valid result
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // apply_remote should have been called with the changes
-    let apply_calls = backend.apply_calls.lock().expect("lock");
+    // User-visible sync signal should be emitted after applied refresh
+    let sync_calls = events.sync_calls.lock().expect("lock");
     assert!(
-      !apply_calls.is_empty(),
-      "apply_remote should have been called after clearing the error"
+      sync_calls.iter().any(|call| call == "updated"),
+      "updated sync signal should be emitted after clearing the error"
     );
 
     eprintln!(
-      "  [OK] poll error handled gracefully, {} poll calls, apply called {} times",
-      backend.poll_call_count(),
-      apply_calls.len()
+      "  [OK] refresh error handled gracefully, {} refresh calls, sync signals: {:?}",
+      backend.refresh_call_count(),
+      sync_calls
     );
   })
   .await;

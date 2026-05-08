@@ -64,7 +64,7 @@ async fn test_sync_engine_emits_remote_poll_failed_event() {
   let mut backend_inner = MockBackend::new();
   backend_inner.poll_interval_dur = Duration::from_millis(10);
   let backend = Arc::new(backend_inner);
-  backend.set_poll_error("network unavailable");
+  backend.set_refresh_error("network unavailable");
 
   let events = Arc::new(TestEventHandler::new());
   let events_dyn: Arc<dyn omnifuse_core::events::VfsEventHandler> = events.clone();

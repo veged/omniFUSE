@@ -12,7 +12,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
-  backend::{RemoteChange, SyncResult},
+  backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
   events::{LogLevel, VfsEventHandler},
   sync_engine::SyncEngine,
@@ -458,8 +458,8 @@ async fn test_e2e_sync_result_events() {
   .await;
 }
 
-/// E2E: Set short poll_interval on MockBackend, configure poll_result
-/// with a RemoteChange. Verify apply_remote was called and the event
+/// E2E: Set short poll_interval on MockBackend, configure refresh_result.
+/// Verify refresh_remote was called and the event
 /// handler received on_sync("updated").
 #[tokio::test]
 async fn test_e2e_poll_remote_applies_changes() {
@@ -471,10 +471,10 @@ async fn test_e2e_poll_remote_applies_changes() {
       poll_interval_dur: Duration::from_millis(50),
       ..MockBackend::new()
     });
-    backend.set_poll_result(vec![RemoteChange::Modified {
-      path: std::path::PathBuf::from("remote_file.txt"),
-      content: b"content from remote".to_vec()
-    }]);
+    backend.set_refresh_result(RemoteRefreshResult::Applied {
+      changed: vec![std::path::PathBuf::from("remote_file.txt")],
+      deleted: Vec::new()
+    });
     let events = Arc::new(TestEventHandler::new());
 
     let config = SyncConfig::default();
@@ -493,16 +493,12 @@ async fn test_e2e_poll_remote_applies_changes() {
     // Wait for at least 2-3 poll cycles (50ms each)
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    // poll_remote should have been called
+    // refresh_remote should have been called
     assert!(
-      backend.poll_call_count() >= 2,
-      "poll_remote should have been called at least twice, got: {}",
-      backend.poll_call_count()
+      backend.refresh_call_count() >= 2,
+      "refresh_remote should have been called at least twice, got: {}",
+      backend.refresh_call_count()
     );
-
-    // apply_remote should have been called with the changes
-    let apply_calls = backend.apply_calls.lock().expect("lock");
-    assert!(!apply_calls.is_empty(), "apply_remote should have been called");
 
     // Event handler should have received on_sync("updated")
     let sync_events = events.sync_calls.lock().expect("lock");

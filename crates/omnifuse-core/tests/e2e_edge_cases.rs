@@ -7,7 +7,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
-  backend::{RemoteChange, SyncResult},
+  backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
   events::{LogLevel, VfsEventHandler},
   sync_engine::{FsEvent, SyncEngine},
@@ -111,7 +111,7 @@ async fn test_offline_mode_sync_returns_offline() {
   .await;
 }
 
-/// 2. Backend poll_error set → poll_worker logs Warn → doesn't crash.
+/// 2. Backend refresh_error set → poll_worker logs Warn → doesn't crash.
 #[tokio::test]
 async fn test_offline_mode_poll_fails_gracefully() {
   eprintln!("[TEST] test_offline_mode_poll_fails_gracefully");
@@ -120,7 +120,7 @@ async fn test_offline_mode_poll_fails_gracefully() {
       poll_interval_dur: Duration::from_millis(50),
       ..MockBackend::new()
     });
-    backend.set_poll_error("network unreachable");
+    backend.set_refresh_error("network unreachable");
     let events = Arc::new(TestEventHandler::new());
 
     let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
@@ -129,10 +129,10 @@ async fn test_offline_mode_poll_fails_gracefully() {
     // Wait for several poll cycles
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // poll_remote should have been called
+    // refresh_remote should have been called
     assert!(
-      backend.poll_call_count() >= 2,
-      "poll_remote should be called despite errors"
+      backend.refresh_call_count() >= 2,
+      "refresh_remote should be called despite errors"
     );
 
     // Warn should be logged for poll errors
@@ -227,7 +227,7 @@ async fn test_sync_error_retries_on_next_event() {
   .await;
 }
 
-/// 5. poll_remote returns Err → event handler receives Warn → worker continues.
+/// 5. refresh_remote returns Err → event handler receives Warn → worker continues.
 #[tokio::test]
 async fn test_poll_remote_error_logged_not_crashed() {
   eprintln!("[TEST] test_poll_remote_error_logged_not_crashed");
@@ -236,7 +236,7 @@ async fn test_poll_remote_error_logged_not_crashed() {
       poll_interval_dur: Duration::from_millis(50),
       ..MockBackend::new()
     });
-    backend.set_poll_error("dns resolution failed");
+    backend.set_refresh_error("dns resolution failed");
     let events = Arc::new(TestEventHandler::new());
 
     let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
@@ -244,7 +244,10 @@ async fn test_poll_remote_error_logged_not_crashed() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    assert!(backend.poll_call_count() >= 2, "poll should continue despite errors");
+    assert!(
+      backend.refresh_call_count() >= 2,
+      "refresh should continue despite errors"
+    );
     assert!(events.log_count(LogLevel::Warn) >= 1, "poll error should log Warn");
 
     // Verify the error message is in the log
@@ -255,9 +258,7 @@ async fn test_poll_remote_error_logged_not_crashed() {
   .await;
 }
 
-/// 6. poll_remote returns changes → apply_remote succeeds → poll continues working.
-///    (MockBackend.apply_remote always returns Ok, so we verify the happy path
-///    and that polling continues after apply_remote is called.)
+/// 6. refresh_remote applies changes → poll continues working.
 #[tokio::test]
 async fn test_apply_remote_does_not_break_polling() {
   eprintln!("[TEST] test_apply_remote_does_not_break_polling");
@@ -266,10 +267,10 @@ async fn test_apply_remote_does_not_break_polling() {
       poll_interval_dur: Duration::from_millis(50),
       ..MockBackend::new()
     });
-    backend.set_poll_result(vec![RemoteChange::Modified {
-      path: Path::new("remote_change.txt").to_path_buf(),
-      content: b"from remote".to_vec()
-    }]);
+    backend.set_refresh_result(RemoteRefreshResult::Applied {
+      changed: vec![Path::new("remote_change.txt").to_path_buf()],
+      deleted: Vec::new()
+    });
     let events = Arc::new(TestEventHandler::new());
 
     let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
@@ -277,14 +278,10 @@ async fn test_apply_remote_does_not_break_polling() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // apply_remote should have been called
-    let apply_calls = backend.apply_calls.lock().expect("lock");
-    assert!(!apply_calls.is_empty(), "apply_remote should have been called");
-
-    // Polling continues (multiple poll calls)
+    // Polling continues (multiple refresh calls)
     assert!(
-      backend.poll_call_count() >= 2,
-      "polling should continue after apply_remote"
+      backend.refresh_call_count() >= 2,
+      "polling should continue after applied refresh"
     );
 
     // on_sync("updated") should have been called
