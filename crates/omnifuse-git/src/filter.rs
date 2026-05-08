@@ -41,7 +41,7 @@ impl GitignoreFilter {
   #[must_use]
   pub fn is_ignored(&self, path: &Path) -> bool {
     let is_dir = path.is_dir();
-    self.gitignore.matched(path, is_dir).is_ignore()
+    self.gitignore.matched_path_or_any_parents(path, is_dir).is_ignore()
   }
 }
 
