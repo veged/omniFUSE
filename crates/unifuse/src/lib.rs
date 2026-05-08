@@ -228,6 +228,75 @@ impl Default for MountOptions {
   }
 }
 
+impl MountSpec {
+  /// Create a mount specification from legacy mount options.
+  #[must_use]
+  pub fn from_options(mountpoint: PathBuf, options: &MountOptions) -> Self {
+    Self {
+      mountpoint,
+      fs_name: options.fs_name.clone(),
+      allow_other: options.allow_other,
+      read_only: options.read_only
+    }
+  }
+}
+
+/// Mount a session-oriented filesystem and wait until unmount.
+///
+/// # Errors
+///
+/// Returns an error if session startup, platform mounting, runtime waiting or
+/// session shutdown fails.
+#[cfg(unix)]
+pub async fn run_mount<F>(fs: F, spec: MountSpec) -> Result<MountExit, FsError>
+where
+  F: SessionPathFs
+{
+  use rfuse3_adapter::Rfuse3Adapter;
+
+  let fs = Arc::new(fs);
+  let state = fs.start(MountContext::new(spec.clone())).await?;
+  let state = Arc::new(state);
+  let adapter = Rfuse3Adapter::new(Arc::clone(&fs), Arc::clone(&state), spec.mountpoint.clone());
+
+  let mut mount_options = rfuse3::MountOptions::default();
+  mount_options
+    .fs_name(&spec.fs_name)
+    .allow_other(spec.allow_other)
+    .read_only(spec.read_only);
+
+  let mount_handle = match rfuse3::raw::Session::new(mount_options)
+    .mount_with_unprivileged(adapter, &spec.mountpoint)
+    .await
+  {
+    Ok(handle) => handle,
+    Err(e) => {
+      stop_mount_session(&fs, state, UnmountReason::MountFailed).await?;
+      return Err(FsError::Other(format!("mount error: {e}")));
+    }
+  };
+
+  let reason = match mount_handle.await {
+    Ok(()) => UnmountReason::Unmounted,
+    Err(e) => {
+      stop_mount_session(&fs, state, UnmountReason::Aborted).await?;
+      return Err(FsError::Other(format!("FUSE session error: {e}")));
+    }
+  };
+
+  stop_mount_session(&fs, state, reason).await?;
+  Ok(MountExit { reason })
+}
+
+#[cfg(unix)]
+async fn stop_mount_session<F>(fs: &Arc<F>, state: Arc<F::MountState>, reason: UnmountReason) -> Result<(), FsError>
+where
+  F: SessionPathFs
+{
+  let state = Arc::try_unwrap(state).map_err(|_| FsError::Other("mount state still shared".to_string()))?;
+  fs.stop(state, reason).await
+}
+
 /// Host for mounting the filesystem.
 ///
 /// A wrapper over the platform-specific mount API:
@@ -250,27 +319,8 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
   /// Returns an error if mounting fails.
   #[cfg(unix)]
   pub async fn mount(&self, mountpoint: &Path, options: &MountOptions) -> Result<(), FsError> {
-    use rfuse3_adapter::Rfuse3Adapter;
-
-    let fs = Arc::new(CompatSessionFs::from_arc(Arc::clone(&self.fs)));
-    let state = Arc::new(fs.start(MountContext::test(mountpoint)).await?);
-    let adapter = Rfuse3Adapter::new(Arc::clone(&fs), state, mountpoint.to_path_buf());
-
-    let mut mount_options = rfuse3::MountOptions::default();
-    mount_options
-      .fs_name(&options.fs_name)
-      .allow_other(options.allow_other)
-      .read_only(options.read_only);
-
-    let mount_handle = rfuse3::raw::Session::new(mount_options)
-      .mount_with_unprivileged(adapter, mountpoint)
-      .await
-      .map_err(|e| FsError::Other(format!("mount error: {e}")))?;
-
-    mount_handle
-      .await
-      .map_err(|e| FsError::Other(format!("FUSE session error: {e}")))?;
-
+    let spec = MountSpec::from_options(mountpoint.to_path_buf(), options);
+    run_mount(CompatSessionFs::from_arc(Arc::clone(&self.fs)), spec).await?;
     Ok(())
   }
 

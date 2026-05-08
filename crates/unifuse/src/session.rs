@@ -65,6 +65,13 @@ pub enum UnmountReason {
   Aborted
 }
 
+/// Result of a completed mount session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountExit {
+  /// Reason why the mount session ended.
+  pub reason: UnmountReason
+}
+
 /// Metadata for a path node.
 #[derive(Debug, Clone)]
 pub struct NodeMeta {
