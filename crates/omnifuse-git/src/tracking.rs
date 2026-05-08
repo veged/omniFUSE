@@ -24,7 +24,7 @@ impl GitTrackingRules {
   /// Return whether a path should be tracked.
   #[must_use]
   pub fn accepts(&self, path: &Path) -> bool {
-    if path.components().any(|component| component.as_os_str() == ".git") {
+    if Self::contains_git_directory(path) {
       return false;
     }
 
@@ -35,6 +35,10 @@ impl GitTrackingRules {
     };
 
     !self.filter.is_ignored(&path)
+  }
+
+  pub(crate) fn contains_git_directory(path: &Path) -> bool {
+    path.components().any(|component| component.as_os_str() == ".git")
   }
 }
 

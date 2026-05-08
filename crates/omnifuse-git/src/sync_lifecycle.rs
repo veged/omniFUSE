@@ -2,12 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::{
   GitConfig,
   engine::MergeResult,
-  error::classify_git_error,
+  error::{classify_git_error, is_nothing_to_commit},
   ops::{GitOps, StartupSyncResult},
   repo_source::RepoSource,
   tracking::GitTrackingRules
@@ -71,10 +71,8 @@ pub enum GitRefresh {
 #[derive(Debug)]
 pub struct GitSyncLifecycle {
   repo_path: PathBuf,
-  #[allow(dead_code)]
   ops: GitOps,
   tracking: GitTrackingRules,
-  #[allow(dead_code)]
   max_push_retries: u32
 }
 
@@ -113,6 +111,36 @@ impl GitSyncLifecycle {
     self.tracking.accepts(path)
   }
 
+  /// Synchronize local dirty files to the Git remote.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if git commit or push fails with a non-domain error.
+  pub async fn sync_local(&self, dirty_files: &[PathBuf]) -> anyhow::Result<GitSync> {
+    if let Err(error) = self.ops.auto_commit(dirty_files).await {
+      if !is_nothing_to_commit(&error) {
+        return Err(error);
+      }
+      debug!("sync_local: no changes to commit");
+    }
+
+    match self.ops.push_with_retry(self.max_push_retries).await {
+      Ok(()) => Ok(GitSync::Success {
+        synced_files: dirty_files.len()
+      }),
+      Err(error) => match classify_git_error(&error) {
+        Some(omnifuse_core::ErrorKind::Conflict) => {
+          warn!("sync_local: conflicts during push");
+          Ok(GitSync::Conflict {
+            files: dirty_files.to_vec()
+          })
+        }
+        Some(omnifuse_core::ErrorKind::Offline) => Ok(GitSync::Offline),
+        _ => Err(error)
+      }
+    }
+  }
+
   /// Classify a git error for core observability.
   #[must_use]
   pub fn classify(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
@@ -123,6 +151,54 @@ impl GitSyncLifecycle {
   #[must_use]
   pub fn repo_path(&self) -> &Path {
     &self.repo_path
+  }
+
+  pub(crate) async fn changed_remote_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+    if !self.ops.check_remote().await? {
+      return Ok(Vec::new());
+    }
+
+    self.diff_remote_files().await
+  }
+
+  pub(crate) async fn pull_remote(&self) -> anyhow::Result<MergeResult> {
+    self.ops.engine().pull().await
+  }
+
+  pub(crate) async fn is_online(&self) -> bool {
+    self.ops.engine().fetch().await.is_ok()
+  }
+
+  async fn diff_remote_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+    let engine = self.ops.engine();
+
+    let local_head = engine.get_head_commit().await?;
+    let remote_head = engine.get_remote_head().await?;
+
+    let Some(remote_head) = remote_head else {
+      return Ok(Vec::new());
+    };
+
+    if local_head == remote_head {
+      return Ok(Vec::new());
+    }
+
+    let output = tokio::process::Command::new("git")
+      .current_dir(&self.repo_path)
+      .args(["diff", "--name-only", &local_head, &remote_head])
+      .output()
+      .await?;
+
+    if !output.status.success() {
+      return Ok(Vec::new());
+    }
+
+    let files = String::from_utf8_lossy(&output.stdout)
+      .lines()
+      .map(|line| self.repo_path.join(line))
+      .collect();
+
+    Ok(files)
   }
 }
 
@@ -173,7 +249,7 @@ mod tests {
   use crate::{
     GitConfig,
     engine::tests::create_bare_and_two_clones,
-    sync_lifecycle::{GitInit, GitSyncLifecycle}
+    sync_lifecycle::{GitInit, GitSync, GitSyncLifecycle}
   };
 
   #[tokio::test]
@@ -192,5 +268,41 @@ mod tests {
     assert!(matches!(init, GitInit::UpToDate | GitInit::Updated));
     assert!(git.should_track(Path::new("README.md")));
     assert!(!git.should_track(Path::new(".git/config")));
+  }
+
+  #[tokio::test]
+  async fn sync_local_commits_and_pushes_dirty_files() {
+    let (_tmp, _bare, clone1, _clone2) = create_bare_and_two_clones().await;
+    let config = GitConfig {
+      source: clone1.to_string_lossy().into_owned(),
+      branch: "main".to_string(),
+      max_push_retries: 3,
+      poll_interval_secs: 30,
+      local_dir: clone1.clone()
+    };
+    let (git, _) = GitSyncLifecycle::open(config, &clone1).await.expect("open");
+    let file = clone1.join("new.txt");
+    tokio::fs::write(&file, "new").await.expect("write");
+
+    let result = git.sync_local(&[file]).await.expect("sync");
+
+    assert!(matches!(result, GitSync::Success { synced_files: 1 }));
+  }
+
+  #[tokio::test]
+  async fn sync_local_reports_noop_as_success() {
+    let (_tmp, _bare, repo_path, _other) = create_bare_and_two_clones().await;
+    let config = GitConfig {
+      source: repo_path.to_string_lossy().into_owned(),
+      branch: "main".to_string(),
+      max_push_retries: 1,
+      poll_interval_secs: 30,
+      local_dir: repo_path.clone()
+    };
+    let (git, _) = GitSyncLifecycle::open(config, &repo_path).await.expect("open");
+
+    let result = git.sync_local(&[repo_path.join("README.md")]).await.expect("sync");
+
+    assert!(matches!(result, GitSync::Success { synced_files: 1 }));
   }
 }

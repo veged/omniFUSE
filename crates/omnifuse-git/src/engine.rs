@@ -149,8 +149,9 @@ impl GitEngine {
       .await?;
 
     if !output.status.success() {
+      let stdout = String::from_utf8_lossy(&output.stdout);
       let stderr = String::from_utf8_lossy(&output.stderr);
-      if stderr.contains("nothing to commit") {
+      if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
         return Err(GitError::NothingToCommit.into());
       }
       return Err(
