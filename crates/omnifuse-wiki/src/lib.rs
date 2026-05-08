@@ -67,12 +67,11 @@ impl Default for WikiConfig {
 
 /// Wiki backend for `OmniFuse`.
 ///
-/// Implements the `Backend` trait: init -> fetch tree, sync -> merge+PUT,
-/// poll -> compare `modified_at`, apply -> download modified pages.
+/// Adapts the core `Backend` trait to `WikiPageSyncSession`.
 pub struct WikiBackend {
   /// Configuration.
   config: WikiConfig,
-  /// HTTP client (initialized in `new`).
+  /// HTTP client shared with the page sync session.
   client: Arc<Client>,
   /// Page synchronization session (initialized in `init`).
   session: OnceLock<WikiPageSyncSession>
@@ -102,15 +101,8 @@ impl WikiBackend {
 
 impl Backend for WikiBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
-    let local_dir = if local_dir.is_absolute() {
-      local_dir.to_path_buf()
-    } else {
-      std::env::current_dir()?.join(local_dir)
-    };
-
-    std::fs::create_dir_all(&local_dir)?;
     if self.session.get().is_none() {
-      let session = WikiPageSyncSession::attach(self.config.clone(), self.client.clone(), &local_dir).await?;
+      let session = WikiPageSyncSession::attach(self.config.clone(), self.client.clone(), local_dir).await?;
       let _ = self.session.set(session);
     }
 
