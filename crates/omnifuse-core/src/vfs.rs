@@ -6,7 +6,7 @@
 //! - Filtering -> `Backend::should_track()`
 
 use std::{
-  ffi::OsStr,
+  ffi::{OsStr, OsString},
   path::{Path, PathBuf},
   sync::{
     Arc,
@@ -169,6 +169,18 @@ impl<B: Backend> unifuse::SessionPathFs for OmniFuseVfs<B> {
       }
       unifuse::FsMutation::Readlink { .. } => Err(FsError::NotSupported)
     }
+  }
+
+  async fn read_link(&self, _state: &Self::MountState, path: &Path) -> Result<PathBuf, FsError> {
+    <Self as unifuse::UniFuseFilesystem>::readlink(self, path).await
+  }
+
+  async fn get_xattr(&self, _state: &Self::MountState, path: &Path, name: &OsStr) -> Result<Vec<u8>, FsError> {
+    <Self as unifuse::UniFuseFilesystem>::getxattr(self, path, name).await
+  }
+
+  async fn list_xattr(&self, _state: &Self::MountState, path: &Path) -> Result<Vec<OsString>, FsError> {
+    <Self as unifuse::UniFuseFilesystem>::listxattr(self, path).await
   }
 
   async fn statfs(&self, _state: &Self::MountState) -> Result<StatFs, FsError> {

@@ -117,7 +117,7 @@ impl Backend for GitBackend {
     self
       .lifecycle
       .get()
-      .map_or(true, |lifecycle| lifecycle.should_track(path))
+      .is_none_or(|lifecycle| lifecycle.should_track(path))
   }
 
   fn poll_interval(&self) -> Duration {

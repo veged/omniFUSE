@@ -4,7 +4,10 @@
 
 mod common;
 
-use std::{path::Path, sync::Arc};
+use std::{
+  path::{Path, PathBuf},
+  sync::Arc
+};
 
 use common::FakeWikiApi;
 use omnifuse_core::{Backend, InitResult, PathProtection, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult};
@@ -98,9 +101,7 @@ async fn setup_session_with_root_content(
   };
   let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
   let tmp = tempfile::tempdir().expect("tempdir");
-  let session = WikiPageSyncSession::attach(config, client, tmp.path())
-    .await
-    .expect("attach");
+  let session = WikiPageSyncSession::attach(config, client, tmp.path()).expect("attach");
 
   (session, state, tmp)
 }
@@ -136,9 +137,7 @@ async fn session_initialize_downloads_tree_and_indexes_pages() {
     };
     let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
     let tmp = tempfile::tempdir().expect("tempdir");
-    let session = WikiPageSyncSession::attach(config, client, tmp.path())
-      .await
-      .expect("attach");
+    let session = WikiPageSyncSession::attach(config, client, tmp.path()).expect("attach");
 
     let result = session.initialize().await.expect("init");
 
@@ -173,6 +172,32 @@ async fn sync_dirty_creates_new_page_and_updates_snapshot() {
 
     assert!(matches!(result, omnifuse_core::SyncResult::Success { synced_files: 1 }));
     assert!(state.find_slug("root/new-page").await.is_some());
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn sync_dirty_accepts_relative_vfs_paths() {
+  eprintln!("[TEST] sync_dirty_accepts_relative_vfs_paths");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (session, state, tmp) = setup_session_with_root().await;
+    session.initialize().await.expect("init");
+
+    let absolute_path = tmp.path().join("root/relative-page.md");
+    std::fs::create_dir_all(absolute_path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&absolute_path, "# Relative").expect("write");
+    let relative_path = PathBuf::from("root/relative-page.md");
+
+    let result = session
+      .sync_dirty(DirtyBatch {
+        paths: &[relative_path]
+      })
+      .await
+      .expect("sync");
+
+    assert!(matches!(result, omnifuse_core::SyncResult::Success { synced_files: 1 }));
+    assert!(state.find_slug("root/relative-page").await.is_some());
   })
   .await
   .expect("test timed out — possible deadlock");

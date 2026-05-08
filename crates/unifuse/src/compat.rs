@@ -1,6 +1,10 @@
 //! Compatibility adapter from `UniFuseFilesystem` to `SessionPathFs`.
 
-use std::{path::Path, sync::Arc};
+use std::{
+  ffi::{OsStr, OsString},
+  path::{Path, PathBuf},
+  sync::Arc
+};
 
 use crate::{
   CloseReason, DirPage, DirPageRequest, FileAttr, FlushMode, FsError, FsMutation, MountContext, NodeMeta, OpenIntent,
@@ -124,11 +128,45 @@ impl<F: UniFuseFilesystem> SessionPathFs for CompatSessionFs<F> {
         let attr = self.inner.symlink(target, link).await?;
         Ok(NodeMeta::new(link.to_path_buf(), attr))
       }
-      FsMutation::Readlink { .. }
-      | FsMutation::SetAttr { .. }
-      | FsMutation::SetXattr { .. }
-      | FsMutation::RemoveXattr { .. } => Err(FsError::NotSupported)
+      FsMutation::SetAttr {
+        path,
+        size,
+        atime,
+        mtime,
+        mode
+      } => {
+        let attr = self.inner.setattr(path, size, atime, mtime, mode).await?;
+        Ok(NodeMeta::new(path.to_path_buf(), attr))
+      }
+      FsMutation::SetXattr {
+        path,
+        name,
+        value,
+        flags
+      } => {
+        self.inner.setxattr(path, name, value, flags).await?;
+        let attr = self.inner.getattr(path).await?;
+        Ok(NodeMeta::new(path.to_path_buf(), attr))
+      }
+      FsMutation::RemoveXattr { path, name } => {
+        self.inner.removexattr(path, name).await?;
+        let attr = self.inner.getattr(path).await?;
+        Ok(NodeMeta::new(path.to_path_buf(), attr))
+      }
+      FsMutation::Readlink { .. } => Err(FsError::NotSupported)
     }
+  }
+
+  async fn read_link(&self, _state: &Self::MountState, path: &Path) -> Result<PathBuf, FsError> {
+    self.inner.readlink(path).await
+  }
+
+  async fn get_xattr(&self, _state: &Self::MountState, path: &Path, name: &OsStr) -> Result<Vec<u8>, FsError> {
+    self.inner.getxattr(path, name).await
+  }
+
+  async fn list_xattr(&self, _state: &Self::MountState, path: &Path) -> Result<Vec<OsString>, FsError> {
+    self.inner.listxattr(path).await
   }
 
   async fn statfs(&self, _state: &Self::MountState) -> Result<StatFs, FsError> {

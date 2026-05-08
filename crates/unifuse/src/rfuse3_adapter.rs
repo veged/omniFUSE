@@ -8,6 +8,8 @@
 //! - `rfuse3::raw::reply::FileAttr` -> `unifuse::FileAttr`
 //! - `unifuse::FsError` -> `rfuse3::Errno`
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::{
   ffi::{OsStr, OsString},
   path::PathBuf,
@@ -51,11 +53,11 @@ pub struct Rfuse3Adapter<F: SessionPathFs> {
 
 impl<F: SessionPathFs> Rfuse3Adapter<F> {
   /// Create a new adapter for the filesystem.
-  pub fn new(fs: Arc<F>, state: Arc<F::MountState>, root: PathBuf) -> Self {
+  pub fn new(fs: Arc<F>, state: Arc<F::MountState>) -> Self {
     Self {
       inner: fs,
       state,
-      inode_map: Arc::new(RwLock::new(InodeMap::new(root))),
+      inode_map: Arc::new(RwLock::new(InodeMap::new(PathBuf::new()))),
       open_nodes: DashMap::new()
     }
   }
@@ -140,6 +142,29 @@ fn timestamp_to_system_time(ts: Timestamp) -> SystemTime {
 /// Convert `FsError` to rfuse3 `Errno`.
 fn fs_error_to_errno(err: &FsError) -> Errno {
   Errno::from(err.to_errno())
+}
+
+fn xattr_reply(data: Vec<u8>, size: u32) -> Result<ReplyXAttr> {
+  if size == 0 {
+    #[allow(clippy::cast_possible_truncation)]
+    return Ok(ReplyXAttr::Size(data.len() as u32));
+  }
+
+  if data.len() > size as usize {
+    return Err(Errno::from(libc::ERANGE));
+  }
+
+  Ok(ReplyXAttr::Data(data.into()))
+}
+
+#[cfg(unix)]
+fn os_str_bytes(value: &OsStr) -> Vec<u8> {
+  value.as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn os_str_bytes(value: &OsStr) -> Vec<u8> {
+  value.to_string_lossy().as_bytes().to_vec()
 }
 
 /// Convert rfuse3 open flags to `unifuse::OpenFlags`.
@@ -402,6 +427,40 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
+  async fn mknod(&self, _req: Request, parent: u64, name: &OsStr, mode: u32, _rdev: u32) -> Result<ReplyEntry> {
+    let file_type = mode & u32::from(libc::S_IFMT);
+    if file_type != u32::from(libc::S_IFREG) {
+      return Err(Errno::from(libc::ENOTSUP));
+    }
+
+    let parent_path = self.resolve_path(parent).await?;
+    let file_path = parent_path.join(name);
+    let perm = mode & 0o777;
+
+    match self
+      .inner
+      .mutate(
+        &self.state,
+        FsMutation::Create {
+          path: &file_path,
+          flags: OpenFlags::write_only(),
+          mode: perm
+        }
+      )
+      .await
+    {
+      Ok(meta) => {
+        let ino = self.inode_map.write().await.get_or_insert(&file_path, NodeKind::File);
+        Ok(ReplyEntry {
+          ttl: TTL,
+          attr: to_rfuse3_attr(&meta.attr, ino),
+          generation: 0
+        })
+      }
+      Err(e) => Err(fs_error_to_errno(&e))
+    }
+  }
+
   async fn rmdir(&self, _req: Request, parent: u64, name: &OsStr) -> Result<()> {
     let parent_path = self.resolve_path(parent).await?;
     let dir_path = parent_path.join(name);
@@ -459,6 +518,46 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
 
     self.inode_map.write().await.rename_subtree(&old_path, &new_path);
     Ok(())
+  }
+
+  async fn rename2(
+    &self,
+    _req: Request,
+    origin_parent: u64,
+    origin_name: &OsStr,
+    parent: u64,
+    name: &OsStr,
+    flags: u32
+  ) -> Result<()> {
+    if flags != 0 {
+      return Err(Errno::from(libc::ENOTSUP));
+    }
+
+    let origin_parent_path = self.resolve_path(origin_parent).await?;
+    let new_parent_path = self.resolve_path(parent).await?;
+
+    let old_path = origin_parent_path.join(origin_name);
+    let new_path = new_parent_path.join(name);
+
+    self
+      .inner
+      .mutate(
+        &self.state,
+        FsMutation::Rename {
+          from: &old_path,
+          to: &new_path,
+          flags
+        }
+      )
+      .await
+      .map_err(|e| fs_error_to_errno(&e))?;
+
+    self.inode_map.write().await.rename_subtree(&old_path, &new_path);
+    Ok(())
+  }
+
+  async fn link(&self, _req: Request, _inode: u64, _new_parent: u64, _new_name: &OsStr) -> Result<ReplyEntry> {
+    Err(Errno::from(libc::ENOTSUP))
   }
 
   async fn create(&self, _req: Request, parent: u64, name: &OsStr, mode: u32, flags: u32) -> Result<ReplyCreated> {
@@ -532,8 +631,14 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
   }
 
   async fn readlink(&self, _req: Request, inode: u64) -> Result<ReplyData> {
-    let _path = self.resolve_path(inode).await?;
-    Err(Errno::from(libc::ENOSYS))
+    let path = self.resolve_path(inode).await?;
+
+    match self.inner.read_link(&self.state, &path).await {
+      Ok(target) => Ok(ReplyData {
+        data: os_str_bytes(target.as_os_str()).into()
+      }),
+      Err(e) => Err(fs_error_to_errno(&e))
+    }
   }
 
   async fn statfs(&self, _req: Request, inode: u64) -> Result<ReplyStatFs> {
@@ -554,8 +659,14 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
     }
   }
 
-  async fn access(&self, _req: Request, _inode: u64, _mask: u32) -> Result<()> {
-    Ok(())
+  async fn access(&self, _req: Request, inode: u64, _mask: u32) -> Result<()> {
+    let path = self.resolve_path(inode).await?;
+    self
+      .inner
+      .lookup(&self.state, &path)
+      .await
+      .map(|_| ())
+      .map_err(|e| fs_error_to_errno(&e))
   }
 
   async fn setxattr(
@@ -587,15 +698,28 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
   }
 
   async fn getxattr(&self, _req: Request, inode: u64, name: &OsStr, size: u32) -> Result<ReplyXAttr> {
-    let _path = self.resolve_path(inode).await?;
-    let _ = (name, size);
-    Err(Errno::from(libc::ENOSYS))
+    let path = self.resolve_path(inode).await?;
+
+    match self.inner.get_xattr(&self.state, &path, name).await {
+      Ok(value) => xattr_reply(value, size),
+      Err(e) => Err(fs_error_to_errno(&e))
+    }
   }
 
   async fn listxattr(&self, _req: Request, inode: u64, size: u32) -> Result<ReplyXAttr> {
-    let _path = self.resolve_path(inode).await?;
-    let _ = size;
-    Err(Errno::from(libc::ENOSYS))
+    let path = self.resolve_path(inode).await?;
+
+    match self.inner.list_xattr(&self.state, &path).await {
+      Ok(attrs) => {
+        let mut data = Vec::new();
+        for attr in attrs {
+          data.extend_from_slice(&os_str_bytes(&attr));
+          data.push(0);
+        }
+        xattr_reply(data, size)
+      }
+      Err(e) => Err(fs_error_to_errno(&e))
+    }
   }
 
   async fn removexattr(&self, _req: Request, inode: u64, name: &OsStr) -> Result<()> {
@@ -615,6 +739,141 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
 
   async fn releasedir(&self, _req: Request, _inode: u64, _fh: u64, _flags: u32) -> Result<()> {
     Ok(())
+  }
+
+  async fn fsyncdir(&self, _req: Request, _inode: u64, _fh: u64, _datasync: bool) -> Result<()> {
+    Ok(())
+  }
+
+  async fn bmap(&self, _req: Request, _inode: u64, _blocksize: u32, _idx: u64) -> Result<ReplyBmap> {
+    Err(Errno::from(libc::ENOTSUP))
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  async fn poll(
+    &self,
+    _req: Request,
+    _inode: u64,
+    _fh: u64,
+    _kh: Option<u64>,
+    _flags: u32,
+    events: u32,
+    _notify: &Notify
+  ) -> Result<ReplyPoll> {
+    Ok(ReplyPoll { revents: events })
+  }
+
+  async fn fallocate(
+    &self,
+    _req: Request,
+    _inode: u64,
+    _fh: u64,
+    _offset: u64,
+    _length: u64,
+    _mode: u32
+  ) -> Result<()> {
+    Err(Errno::from(libc::ENOTSUP))
+  }
+
+  async fn lseek(&self, _req: Request, inode: u64, _fh: u64, offset: u64, whence: u32) -> Result<ReplyLSeek> {
+    let path = self.resolve_path(inode).await?;
+    let meta = self
+      .inner
+      .lookup(&self.state, &path)
+      .await
+      .map_err(|e| fs_error_to_errno(&e))?;
+
+    #[allow(clippy::cast_sign_loss)]
+    let seek_set = libc::SEEK_SET as u32;
+    #[allow(clippy::cast_sign_loss)]
+    let seek_end = libc::SEEK_END as u32;
+
+    #[cfg(target_os = "linux")]
+    {
+      #[allow(clippy::cast_sign_loss)]
+      let seek_data = libc::SEEK_DATA as u32;
+      #[allow(clippy::cast_sign_loss)]
+      let seek_hole = libc::SEEK_HOLE as u32;
+
+      if whence == seek_data {
+        return if offset <= meta.attr.size {
+          Ok(ReplyLSeek { offset })
+        } else {
+          Err(Errno::from(libc::ENXIO))
+        };
+      }
+
+      if whence == seek_hole {
+        return if offset <= meta.attr.size {
+          Ok(ReplyLSeek { offset: meta.attr.size })
+        } else {
+          Err(Errno::from(libc::ENXIO))
+        };
+      }
+    }
+
+    if whence == seek_set {
+      return Ok(ReplyLSeek { offset });
+    }
+
+    if whence == seek_end {
+      return Ok(ReplyLSeek {
+        offset: meta.attr.size.saturating_add(offset)
+      });
+    }
+
+    Err(Errno::from(libc::ENOTSUP))
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  async fn copy_file_range(
+    &self,
+    _req: Request,
+    _inode: u64,
+    fh_in: u64,
+    off_in: u64,
+    _inode_out: u64,
+    fh_out: u64,
+    off_out: u64,
+    length: u64,
+    _flags: u64
+  ) -> Result<ReplyCopyFileRange> {
+    let input = self.opened_node(fh_in)?;
+    let output = self.opened_node(fh_out)?;
+    let mut copied = 0;
+    let mut buffer = vec![0; MAX_WRITE.get() as usize];
+
+    while copied < length {
+      let remaining = (length - copied).min(u64::from(MAX_WRITE.get()));
+      #[allow(clippy::cast_possible_truncation)]
+      let remaining = remaining as usize;
+      let read = self
+        .inner
+        .read_into(&input, off_in + copied, &mut buffer[..remaining])
+        .await
+        .map_err(|e| fs_error_to_errno(&e))?;
+
+      if read == 0 {
+        break;
+      }
+
+      let written = self
+        .inner
+        .write_from(&output, off_out + copied, &buffer[..read])
+        .await
+        .map_err(|e| fs_error_to_errno(&e))?;
+
+      #[allow(clippy::cast_possible_truncation)]
+      {
+        copied += written as u64;
+      }
+
+      if written < read {
+        break;
+      }
+    }
+
+    Ok(ReplyCopyFileRange { copied })
   }
 
   async fn interrupt(&self, _req: Request, _unique: u64) -> Result<()> {

@@ -102,7 +102,7 @@ impl WikiBackend {
 impl Backend for WikiBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
     if self.session.get().is_none() {
-      let session = WikiPageSyncSession::attach(self.config.clone(), self.client.clone(), local_dir).await?;
+      let session = WikiPageSyncSession::attach(self.config.clone(), self.client.clone(), local_dir)?;
       let _ = self.session.set(session);
     }
 

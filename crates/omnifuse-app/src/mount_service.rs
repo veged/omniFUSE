@@ -112,7 +112,7 @@ impl<E: MountEnvironment> MountService<E> {
 
   /// Create a service with explicit defaults.
   #[must_use]
-  pub fn with_defaults(env: E, defaults: MountDefaults) -> Self {
+  pub const fn with_defaults(env: E, defaults: MountDefaults) -> Self {
     Self { env, defaults }
   }
 
@@ -127,7 +127,7 @@ impl<E: MountEnvironment> MountService<E> {
     let layout = MountLayout::resolve(
       &self.env,
       &args.mount_point,
-      CacheKey::new("git", format!("{}:{branch}", args.source))
+      &CacheKey::new("git", format!("{}:{branch}", args.source))
     )?;
 
     let config = mount_config(&layout, "omnifuse-git", args.allow_other, args.read_only);
@@ -156,7 +156,7 @@ impl<E: MountEnvironment> MountService<E> {
     let layout = MountLayout::resolve(
       &self.env,
       &args.mount_point,
-      CacheKey::new(
+      &CacheKey::new(
         "wiki",
         wiki_cache_identity(&args.base_url, &args.root_slug, args.org_id.as_deref())
       )
@@ -186,7 +186,10 @@ impl<E: MountEnvironment> MountService<E> {
   /// # Errors
   ///
   /// Returns an error if preparation or mounting fails.
-  pub async fn run_git(&self, args: GitMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()> {
+  pub async fn run_git(&self, args: GitMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()>
+  where
+    E: Sync
+  {
     let prepared = self.prepare_git(args)?;
     omnifuse_core::run_mount(prepared.config, prepared.backend, events).await
   }
@@ -196,7 +199,10 @@ impl<E: MountEnvironment> MountService<E> {
   /// # Errors
   ///
   /// Returns an error if preparation or mounting fails.
-  pub async fn run_wiki(&self, args: WikiMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()> {
+  pub async fn run_wiki(&self, args: WikiMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()>
+  where
+    E: Sync
+  {
     let prepared = self.prepare_wiki(args)?;
     omnifuse_core::run_mount(prepared.config, prepared.backend, events).await
   }

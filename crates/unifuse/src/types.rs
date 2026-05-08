@@ -237,7 +237,7 @@ impl FsError {
       Self::NotADirectory => libc::ENOTDIR,
       Self::IsADirectory => libc::EISDIR,
       Self::NotEmpty => libc::ENOTEMPTY,
-      Self::NotSupported => libc::ENOSYS,
+      Self::NotSupported => libc::ENOTSUP,
       Self::Io(e) => e.raw_os_error().unwrap_or(libc::EIO),
       Self::Other(_) => libc::EIO
     }
@@ -278,7 +278,7 @@ mod tests {
     assert_eq!(FsError::NotADirectory.to_errno(), libc::ENOTDIR);
     assert_eq!(FsError::IsADirectory.to_errno(), libc::EISDIR);
     assert_eq!(FsError::NotEmpty.to_errno(), libc::ENOTEMPTY);
-    assert_eq!(FsError::NotSupported.to_errno(), libc::ENOSYS);
+    assert_eq!(FsError::NotSupported.to_errno(), libc::ENOTSUP);
     assert_eq!(FsError::Other("err".to_string()).to_errno(), libc::EIO);
   }
 

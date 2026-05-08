@@ -1,7 +1,7 @@
 //! Session-oriented path filesystem API.
 
 use std::{
-  ffi::OsStr,
+  ffi::{OsStr, OsString},
   path::{Path, PathBuf}
 };
 
@@ -43,7 +43,7 @@ pub struct MountContext {
 impl MountContext {
   /// Create a mount context.
   #[must_use]
-  pub fn new(spec: MountSpec) -> Self {
+  pub const fn new(spec: MountSpec) -> Self {
     Self { spec }
   }
 
@@ -84,7 +84,7 @@ pub struct NodeMeta {
 impl NodeMeta {
   /// Create node metadata.
   #[must_use]
-  pub fn new(path: PathBuf, attr: FileAttr) -> Self {
+  pub const fn new(path: PathBuf, attr: FileAttr) -> Self {
     Self { path, attr }
   }
 }
@@ -105,7 +105,7 @@ pub struct OpenedNode {
 impl OpenedNode {
   /// Create an opened node descriptor.
   #[must_use]
-  pub fn new(path: PathBuf, handle: FileHandle, kind: FileType, attr: FileAttr) -> Self {
+  pub const fn new(path: PathBuf, handle: FileHandle, kind: FileType, attr: FileAttr) -> Self {
     Self {
       path,
       handle,
@@ -221,7 +221,7 @@ pub struct DirPage {
 impl DirPage {
   /// Create a directory page with all entries.
   #[must_use]
-  pub fn all(entries: Vec<DirEntryMeta>) -> Self {
+  pub const fn all(entries: Vec<DirEntryMeta>) -> Self {
     Self {
       entries,
       next_offset: None
@@ -370,6 +370,34 @@ pub trait SessionPathFs: Send + Sync + 'static {
     state: &Self::MountState,
     mutation: FsMutation<'_>
   ) -> impl Future<Output = Result<NodeMeta, FsError>> + Send;
+
+  /// Read a symlink target.
+  fn read_link(
+    &self,
+    _state: &Self::MountState,
+    _path: &Path
+  ) -> impl Future<Output = Result<PathBuf, FsError>> + Send {
+    async { Err(FsError::NotSupported) }
+  }
+
+  /// Read an extended attribute.
+  fn get_xattr(
+    &self,
+    _state: &Self::MountState,
+    _path: &Path,
+    _name: &OsStr
+  ) -> impl Future<Output = Result<Vec<u8>, FsError>> + Send {
+    async { Err(FsError::NotSupported) }
+  }
+
+  /// List extended attribute names.
+  fn list_xattr(
+    &self,
+    _state: &Self::MountState,
+    _path: &Path
+  ) -> impl Future<Output = Result<Vec<OsString>, FsError>> + Send {
+    async { Err(FsError::NotSupported) }
+  }
 
   /// Get filesystem statistics.
   fn statfs(&self, state: &Self::MountState) -> impl Future<Output = Result<StatFs, FsError>> + Send;

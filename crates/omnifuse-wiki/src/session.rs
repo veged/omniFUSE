@@ -22,7 +22,9 @@ use crate::{
 
 /// Dirty local file batch.
 pub struct DirtyBatch<'a> {
-  /// Absolute local paths reported as dirty by the VFS layer.
+  /// Dirty markdown paths reported by the VFS layer.
+  ///
+  /// Paths may be absolute under the session local directory or relative to it.
   pub paths: &'a [PathBuf]
 }
 
@@ -38,7 +40,7 @@ pub struct RemoteBatch {
 impl RemoteBatch {
   /// Build a batch from explicit wiki file changes without remote snapshots.
   #[must_use]
-  pub fn from_changes(changes: Vec<RemoteChange>) -> Self {
+  pub const fn from_changes(changes: Vec<RemoteChange>) -> Self {
     Self {
       changes,
       snapshots: Vec::new()
@@ -104,7 +106,7 @@ impl WikiPageSyncSession {
   /// # Errors
   ///
   /// Returns an error if the local metadata store cannot be created.
-  pub async fn attach(config: WikiConfig, client: Arc<Client>, local_dir: &Path) -> anyhow::Result<Self> {
+  pub fn attach(config: WikiConfig, client: Arc<Client>, local_dir: &Path) -> anyhow::Result<Self> {
     let local_dir = absolute_local_dir(local_dir)?;
     let meta_store = MetaStore::new(&local_dir)?;
 
@@ -378,12 +380,13 @@ impl WikiPageSyncSession {
   }
 
   async fn sync_dirty_file(&self, path: &Path) -> anyhow::Result<Option<bool>> {
-    let Some(page_ref) = PageRef::from_path(&self.local_dir, path) else {
+    let path = self.local_dirty_path(path);
+    let Some(page_ref) = PageRef::from_path(&self.local_dir, &path) else {
       return Ok(None);
     };
 
     let local_content =
-      std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+      std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
 
     let Some(snapshot) = self.snapshot_for(&page_ref).await else {
       self.create_remote_page(&page_ref, &local_content).await?;
@@ -395,7 +398,7 @@ impl WikiPageSyncSession {
 
     if remote_page.modified_at == snapshot.modified_at {
       self
-        .update_remote_page(snapshot.id, &page_ref, &local_content, false, false)
+        .update_remote_page(&snapshot, &page_ref, &local_content, false, false)
         .await?;
       debug!(slug = %page_ref.slug.as_str(), "page updated (no conflict)");
       return Ok(Some(true));
@@ -406,13 +409,13 @@ impl WikiPageSyncSession {
     match decide_merge(&base_content, &local_content, remote_content) {
       MergeDecision::UploadLocal => {
         self
-          .update_remote_page(snapshot.id, &page_ref, &local_content, true, false)
+          .update_remote_page(&snapshot, &page_ref, &local_content, true, false)
           .await?;
         Ok(Some(true))
       }
       MergeDecision::UploadMerged(merged) => {
         self
-          .update_remote_page(snapshot.id, &page_ref, &merged, true, false)
+          .update_remote_page(&snapshot, &page_ref, &merged, true, false)
           .await?;
         std::fs::write(path, &merged)?;
         info!(slug = %page_ref.slug.as_str(), "merge successful");
@@ -434,7 +437,7 @@ impl WikiPageSyncSession {
       MergeDecision::Conflict => {
         warn!(slug = %page_ref.slug.as_str(), "conflict: local wins");
         self
-          .update_remote_page(snapshot.id, &page_ref, &local_content, true, false)
+          .update_remote_page(&snapshot, &page_ref, &local_content, true, false)
           .await?;
         Ok(Some(false))
       }
@@ -476,13 +479,16 @@ impl WikiPageSyncSession {
 
   async fn update_remote_page(
     &self,
-    id: u64,
+    snapshot: &PageSnapshot,
     page_ref: &PageRef,
     content: &str,
     allow_merge: bool,
     update_local: bool
   ) -> anyhow::Result<()> {
-    let updated = self.client.update_page(id, None, Some(content), allow_merge).await?;
+    let updated = self
+      .client
+      .update_page(snapshot.id, Some(&snapshot.title), Some(content), allow_merge)
+      .await?;
     if update_local {
       std::fs::write(&page_ref.path, content)?;
     }
@@ -498,6 +504,14 @@ impl WikiPageSyncSession {
     self.meta_store.save_base(page_ref.slug.as_str(), content)?;
     self.page_index.write().await.insert(page_ref.clone(), snapshot);
     Ok(())
+  }
+
+  fn local_dirty_path(&self, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+      path.to_path_buf()
+    } else {
+      self.local_dir.join(path)
+    }
   }
 }
 

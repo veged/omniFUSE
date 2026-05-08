@@ -215,6 +215,10 @@ pub struct OpenFileMutation {
 
 impl OpenFileMutation {
   /// Read bytes from the open file buffer.
+  ///
+  /// # Errors
+  ///
+  /// This operation currently cannot fail, but keeps `FsError` for parity with VFS calls.
   pub async fn read(&self, offset: u64, size: u32) -> Result<Vec<u8>, FsError> {
     Ok(self.buffer.read(offset, size).await)
   }
@@ -300,11 +304,13 @@ impl DirtySink {
   }
 
   /// Notify that a file was modified.
+  #[must_use]
   pub fn mark_modified(&self, path: PathBuf) -> DirtySendResult {
     self.send(FsEvent::FileModified(path))
   }
 
   /// Notify that a file was closed.
+  #[must_use]
   pub fn mark_closed(&self, path: PathBuf) -> DirtySendResult {
     self.send(FsEvent::FileClosed(path))
   }
@@ -449,8 +455,8 @@ mod tests {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let sink = DirtySink::new(tx);
 
-    sink.mark_modified(PathBuf::from("a.md"));
-    sink.mark_closed(PathBuf::from("a.md"));
+    let _ = sink.mark_modified(PathBuf::from("a.md"));
+    let _ = sink.mark_closed(PathBuf::from("a.md"));
 
     assert!(matches!(rx.recv().await, Some(FsEvent::FileModified(path)) if path == PathBuf::from("a.md")));
     assert!(matches!(rx.recv().await, Some(FsEvent::FileClosed(path)) if path == PathBuf::from("a.md")));
@@ -461,7 +467,7 @@ mod tests {
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let sink = DirtySink::new(tx);
 
-    sink.mark_modified(PathBuf::from("a.md"));
+    let _ = sink.mark_modified(PathBuf::from("a.md"));
     let result = sink.mark_modified(PathBuf::from("b.md"));
 
     assert!(matches!(result, DirtySendResult::Dropped));

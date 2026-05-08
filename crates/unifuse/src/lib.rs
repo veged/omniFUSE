@@ -257,7 +257,7 @@ where
   let fs = Arc::new(fs);
   let state = fs.start(MountContext::new(spec.clone())).await?;
   let state = Arc::new(state);
-  let adapter = Rfuse3Adapter::new(Arc::clone(&fs), Arc::clone(&state), spec.mountpoint.clone());
+  let adapter = Rfuse3Adapter::new(Arc::clone(&fs), Arc::clone(&state));
 
   let mut mount_options = rfuse3::MountOptions::default();
   mount_options

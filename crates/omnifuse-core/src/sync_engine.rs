@@ -263,6 +263,7 @@ impl SyncEngine {
   }
 
   /// Synchronize dirty files.
+  #[allow(clippy::too_many_lines)]
   async fn do_sync<B: Backend>(
     backend: &Arc<B>,
     events: &Arc<dyn VfsEventHandler>,

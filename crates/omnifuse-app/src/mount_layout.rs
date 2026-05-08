@@ -25,7 +25,7 @@ impl CacheKey {
     }
   }
 
-  fn backend(&self) -> &'static str {
+  const fn backend(&self) -> &'static str {
     self.backend
   }
 
@@ -53,7 +53,7 @@ impl MountLayout {
   /// # Errors
   ///
   /// Returns an error if environment path resolution fails.
-  pub fn resolve(env: &impl MountEnvironment, mount_point: &Path, cache_key: CacheKey) -> anyhow::Result<Self> {
+  pub fn resolve(env: &impl MountEnvironment, mount_point: &Path, cache_key: &CacheKey) -> anyhow::Result<Self> {
     let mount_point = env.canonicalize_mount_point(mount_point)?;
     let hash = cache_key.hash_for(&mount_point);
     let work_dir = env
@@ -82,7 +82,7 @@ mod tests {
     let layout = MountLayout::resolve(
       &env,
       Path::new("/mnt/wiki"),
-      CacheKey::new("wiki", "https://api.example.test/root")
+      &CacheKey::new("wiki", "https://api.example.test/root")
     )
     .expect("layout");
 
@@ -102,8 +102,8 @@ mod tests {
       .home("/home/user")
       .canonical("/mnt/repo", "/abs/mnt/repo");
 
-    let first = MountLayout::resolve(&env, Path::new("/mnt/repo"), CacheKey::new("git", "source-a")).expect("first");
-    let second = MountLayout::resolve(&env, Path::new("/mnt/repo"), CacheKey::new("git", "source-a")).expect("second");
+    let first = MountLayout::resolve(&env, Path::new("/mnt/repo"), &CacheKey::new("git", "source-a")).expect("first");
+    let second = MountLayout::resolve(&env, Path::new("/mnt/repo"), &CacheKey::new("git", "source-a")).expect("second");
 
     assert_eq!(first.work_dir, second.work_dir);
   }
@@ -114,8 +114,8 @@ mod tests {
       .home("/home/user")
       .canonical("/mnt/repo", "/abs/mnt/repo");
 
-    let first = MountLayout::resolve(&env, Path::new("/mnt/repo"), CacheKey::new("git", "source-a")).expect("first");
-    let second = MountLayout::resolve(&env, Path::new("/mnt/repo"), CacheKey::new("git", "source-b")).expect("second");
+    let first = MountLayout::resolve(&env, Path::new("/mnt/repo"), &CacheKey::new("git", "source-a")).expect("first");
+    let second = MountLayout::resolve(&env, Path::new("/mnt/repo"), &CacheKey::new("git", "source-b")).expect("second");
 
     assert_ne!(first.work_dir, second.work_dir);
   }
