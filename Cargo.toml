@@ -5,6 +5,7 @@ members = [
   "crates/omnifuse-core",
   "crates/omnifuse-git",
   "crates/omnifuse-wiki",
+  "crates/omnifuse-app",
   "crates/omnifuse-cli",
   "crates/omnifuse-gui/tauri"
 ]
