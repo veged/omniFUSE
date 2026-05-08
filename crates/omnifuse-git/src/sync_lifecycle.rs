@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use omnifuse_core::{RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -171,6 +172,59 @@ impl GitSyncLifecycle {
     match merge {
       MergeResult::Conflict { files } => Ok(GitRefresh::Conflict { files }),
       merge => Ok(GitRefresh::Applied { files, merge })
+    }
+  }
+
+  /// Detect remote changes, respect protected paths, and apply safe refreshes.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if git inspection or pull fails with a non-domain error.
+  pub async fn refresh_remote_protected(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    let changed_files = match self.changed_remote_files().await {
+      Ok(files) => files,
+      Err(error) => {
+        return match classify_git_error(&error) {
+          Some(omnifuse_core::ErrorKind::Offline) => Ok(RemoteRefreshResult::Offline),
+          _ => Err(error)
+        };
+      }
+    };
+
+    if changed_files.is_empty() {
+      return Ok(RemoteRefreshResult::Unchanged);
+    }
+
+    let protected: Vec<PathBuf> = changed_files
+      .iter()
+      .filter(|path| request.protected_paths.is_protected(path))
+      .cloned()
+      .collect();
+    if !protected.is_empty() {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected: protected,
+        reason: RemoteDeferReason::ProtectedLocalChange
+      });
+    }
+
+    if matches!(request.mode, RemoteApplyMode::DetectOnly) {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected: changed_files,
+        reason: RemoteDeferReason::DetectOnly
+      });
+    }
+
+    match self.refresh_remote().await? {
+      GitRefresh::NoChange => Ok(RemoteRefreshResult::Unchanged),
+      GitRefresh::Applied { files, .. } => Ok(RemoteRefreshResult::Applied {
+        changed: files,
+        deleted: Vec::new()
+      }),
+      GitRefresh::Conflict { files } => Ok(RemoteRefreshResult::Deferred {
+        affected: files,
+        reason: RemoteDeferReason::Conflict
+      }),
+      GitRefresh::Offline => Ok(RemoteRefreshResult::Offline)
     }
   }
 

@@ -2,9 +2,9 @@
 
 #![allow(clippy::expect_used)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use omnifuse_core::Backend;
+use omnifuse_core::{Backend, PathProtection, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult};
 use omnifuse_git::{GitBackend, GitConfig};
 
 /// Timeout for async tests (30s — git operations can be slow).
@@ -73,6 +73,70 @@ async fn create_bare_and_clone() -> (tempfile::TempDir, std::path::PathBuf, std:
     .expect("push");
 
   (tmp, bare_path, clone_path)
+}
+
+struct StaticPathProtection {
+  paths: Vec<PathBuf>
+}
+
+impl StaticPathProtection {
+  fn new(paths: Vec<PathBuf>) -> Self {
+    Self { paths }
+  }
+}
+
+impl PathProtection for StaticPathProtection {
+  fn is_protected(&self, path: &Path) -> bool {
+    self
+      .paths
+      .iter()
+      .any(|protected| path == protected || path.starts_with(protected))
+  }
+}
+
+async fn create_clone(bare_path: &Path, clone_path: &Path) {
+  tokio::process::Command::new("git")
+    .args(["clone"])
+    .arg(bare_path)
+    .arg(clone_path)
+    .output()
+    .await
+    .expect("clone");
+
+  tokio::process::Command::new("git")
+    .current_dir(clone_path)
+    .args(["config", "user.email", "other@test.com"])
+    .output()
+    .await
+    .expect("config email");
+  tokio::process::Command::new("git")
+    .current_dir(clone_path)
+    .args(["config", "user.name", "Other"])
+    .output()
+    .await
+    .expect("config name");
+}
+
+async fn create_remote_commit(repo_path: &Path, file: &str, content: &str) {
+  tokio::fs::write(repo_path.join(file), content).await.expect("write");
+  tokio::process::Command::new("git")
+    .current_dir(repo_path)
+    .args(["add", file])
+    .output()
+    .await
+    .expect("add");
+  tokio::process::Command::new("git")
+    .current_dir(repo_path)
+    .args(["commit", "-m", "remote change"])
+    .output()
+    .await
+    .expect("commit");
+  tokio::process::Command::new("git")
+    .current_dir(repo_path)
+    .args(["push"])
+    .output()
+    .await
+    .expect("push");
 }
 
 #[tokio::test]
@@ -396,6 +460,42 @@ async fn test_poll_remote_detects_remote_commit() {
     assert!(
       !changes.is_empty(),
       "poll_remote should detect remote changes: {changes:?}",
+    );
+  })
+  .await
+  .expect("test timed out");
+}
+
+#[tokio::test]
+async fn git_refresh_defers_when_remote_change_hits_protected_path() {
+  eprintln!("[TEST] git_refresh_defers_when_remote_change_hits_protected_path");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (_tmp, bare_path, clone_path) = create_bare_and_clone().await;
+    let other_clone = bare_path.parent().expect("parent").join("other_clone");
+    create_clone(&bare_path, &other_clone).await;
+
+    let backend = GitBackend::new(GitConfig {
+      source: clone_path.display().to_string(),
+      local_dir: clone_path.clone(),
+      ..GitConfig::default()
+    });
+    backend.init(&clone_path).await.expect("init");
+
+    create_remote_commit(&other_clone, "shared.txt", "remote").await;
+
+    let protected = StaticPathProtection::new(vec![clone_path.join("shared.txt")]);
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protected,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
+
+    assert!(matches!(result, RemoteRefreshResult::Deferred { .. }));
+    assert!(
+      !clone_path.join("shared.txt").exists(),
+      "protected remote file should not be applied"
     );
   })
   .await

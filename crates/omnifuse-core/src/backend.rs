@@ -125,7 +125,9 @@ pub enum RemoteDeferReason {
   /// Remote changes affect locally dirty paths.
   ProtectedLocalChange,
   /// Refresh was requested in detect-only mode.
-  DetectOnly
+  DetectOnly,
+  /// Backend detected merge conflicts while applying remote changes.
+  Conflict
 }
 
 /// Result of a remote refresh attempt.

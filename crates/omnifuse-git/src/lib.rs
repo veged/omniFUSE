@@ -21,7 +21,7 @@ use std::{
 };
 
 pub use error::{GitError, classify_git_error};
-use omnifuse_core::{Backend, InitResult, RemoteChange, SyncResult};
+use omnifuse_core::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult};
 use tracing::{debug, info};
 
 use crate::{
@@ -104,6 +104,10 @@ impl Backend for GitBackend {
       }),
       GitSync::Offline => Ok(SyncResult::Offline)
     }
+  }
+
+  async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    self.lifecycle()?.refresh_remote_protected(request).await
   }
 
   async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
