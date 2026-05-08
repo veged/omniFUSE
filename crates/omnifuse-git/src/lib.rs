@@ -11,6 +11,7 @@ pub mod error;
 pub mod filter;
 pub mod ops;
 pub mod repo_source;
+pub mod sync_lifecycle;
 pub mod tracking;
 
 use std::{
