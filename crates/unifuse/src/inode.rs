@@ -172,6 +172,29 @@ impl InodeMap {
     }
   }
 
+  /// Rename a path and all registered descendants.
+  pub fn rename_subtree(&self, old_path: &Path, new_path: &Path) {
+    let updates: Vec<_> = self
+      .path_to_inode
+      .iter()
+      .filter_map(|entry| {
+        let path = entry.key();
+        if path == old_path || path.starts_with(old_path) {
+          let suffix = path.strip_prefix(old_path).ok()?;
+          Some((*entry.value(), path.clone(), new_path.join(suffix)))
+        } else {
+          None
+        }
+      })
+      .collect();
+
+    for (inode, old, new) in updates {
+      self.path_to_inode.remove(&old);
+      self.path_to_inode.insert(new.clone(), inode);
+      self.inode_to_path.insert(inode, new);
+    }
+  }
+
   /// Check whether an inode exists.
   #[must_use]
   pub fn contains_inode(&self, inode: u64) -> bool {
@@ -272,6 +295,19 @@ mod tests {
     assert!(!map.contains_path(old_path));
     assert!(map.contains_path(new_path));
     assert_eq!(map.get_path(inode), Some(new_path.to_path_buf()));
+  }
+
+  #[test]
+  fn inode_map_renames_subtree() {
+    let map = InodeMap::new(PathBuf::from("/"));
+    let file = PathBuf::from("/old/a.md");
+    let inode = map.get_or_insert(&file, NodeKind::File);
+
+    map.rename_subtree(Path::new("/old"), Path::new("/new"));
+
+    assert_eq!(map.get_path(inode), Some(PathBuf::from("/new/a.md")));
+    assert_eq!(map.get_inode(Path::new("/new/a.md")), Some(inode));
+    assert_eq!(map.get_inode(Path::new("/old/a.md")), None);
   }
 
   #[test]

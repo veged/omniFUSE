@@ -1,6 +1,6 @@
 //! Compatibility adapter from `UniFuseFilesystem` to `SessionPathFs`.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use crate::{
   CloseReason, DirPage, DirPageRequest, FileAttr, FlushMode, FsError, FsMutation, MountContext, NodeMeta, OpenIntent,
@@ -9,19 +9,25 @@ use crate::{
 
 /// Session adapter for the legacy `UniFuseFilesystem` trait.
 pub struct CompatSessionFs<F> {
-  inner: F
+  inner: Arc<F>
 }
 
 impl<F> CompatSessionFs<F> {
   /// Wrap a legacy filesystem.
   #[must_use]
-  pub const fn new(inner: F) -> Self {
+  pub fn new(inner: F) -> Self {
+    Self { inner: Arc::new(inner) }
+  }
+
+  /// Wrap a shared legacy filesystem.
+  #[must_use]
+  pub const fn from_arc(inner: Arc<F>) -> Self {
     Self { inner }
   }
 
   /// Return the wrapped filesystem.
   #[must_use]
-  pub fn into_inner(self) -> F {
+  pub fn into_inner(self) -> Arc<F> {
     self.inner
   }
 }

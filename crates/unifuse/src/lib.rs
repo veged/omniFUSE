@@ -252,7 +252,9 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
   pub async fn mount(&self, mountpoint: &Path, options: &MountOptions) -> Result<(), FsError> {
     use rfuse3_adapter::Rfuse3Adapter;
 
-    let adapter = Rfuse3Adapter::new(Arc::clone(&self.fs), mountpoint.to_path_buf());
+    let fs = Arc::new(CompatSessionFs::from_arc(Arc::clone(&self.fs)));
+    let state = Arc::new(fs.start(MountContext::test(mountpoint)).await?);
+    let adapter = Rfuse3Adapter::new(Arc::clone(&fs), state, mountpoint.to_path_buf());
 
     let mut mount_options = rfuse3::MountOptions::default();
     mount_options
