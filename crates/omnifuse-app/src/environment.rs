@@ -49,10 +49,10 @@ impl MountEnvironment for StdMountEnvironment {
 
     #[cfg(not(target_os = "macos"))]
     {
-      Ok(std::env::var_os("XDG_CACHE_HOME").map_or_else(
+      std::env::var_os("XDG_CACHE_HOME").map_or_else(
         || self.home_dir().map(|home| home.join(".cache")),
         |path| Ok(PathBuf::from(path))
-      )?)
+      )
     }
   }
 
