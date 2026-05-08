@@ -10,7 +10,7 @@ use std::{
 use tracing::{debug, info};
 
 /// Git URL prefixes for remote repositories.
-const GIT_URL_PREFIXES: &[&str] = &["https://", "http://", "git://", "ssh://", "git@"];
+const GIT_URL_PREFIXES: &[&str] = &["https://", "http://", "git://", "ssh://", "git@", "file://"];
 
 /// Repository source — local path or remote URL.
 #[derive(Debug, Clone)]
@@ -142,26 +142,45 @@ impl RepoSource {
   /// Returns an error if clone fails or the local path is missing.
   pub async fn ensure_available(&self, branch: &str) -> anyhow::Result<PathBuf> {
     match self {
-      Self::Local(path) => {
-        if !path.exists() {
-          anyhow::bail!("path not found: {}", path.display());
-        }
-        if !path.join(".git").exists() {
-          anyhow::bail!("not a git repository: {}", path.display());
-        }
-        Ok(path.clone())
-      }
-      Self::Remote { url, cache_path } => {
-        if cache_path.join(".git").exists() {
-          info!(url, path = %cache_path.display(), "using cached repository");
-          Self::fetch_updates(cache_path).await?;
-        } else {
-          info!(url, path = %cache_path.display(), "cloning");
-          Self::clone_repo(url, cache_path, branch).await?;
-        }
-        Ok(cache_path.clone())
-      }
+      Self::Local(path) => Self::ensure_local_repo(path),
+      Self::Remote { cache_path, .. } => self.ensure_available_at(branch, cache_path).await
     }
+  }
+
+  /// Ensure the repository is available at an explicit target path.
+  ///
+  /// For local sources the target is ignored and the repository path is validated.
+  /// For remote sources the target is the clone/cache directory.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if clone/fetch fails or the local path is missing.
+  pub async fn ensure_available_at(&self, branch: &str, target: &Path) -> anyhow::Result<PathBuf> {
+    match self {
+      Self::Local(path) => Self::ensure_local_repo(path),
+      Self::Remote { url, .. } => Self::ensure_remote_repo(url, target, branch).await
+    }
+  }
+
+  fn ensure_local_repo(path: &Path) -> anyhow::Result<PathBuf> {
+    if !path.exists() {
+      anyhow::bail!("path not found: {}", path.display());
+    }
+    if !path.join(".git").exists() {
+      anyhow::bail!("not a git repository: {}", path.display());
+    }
+    Ok(path.to_path_buf())
+  }
+
+  async fn ensure_remote_repo(url: &str, target: &Path, branch: &str) -> anyhow::Result<PathBuf> {
+    if target.join(".git").exists() {
+      info!(url, path = %target.display(), "using cached repository");
+      Self::fetch_updates(target).await?;
+    } else {
+      info!(url, path = %target.display(), "cloning");
+      Self::clone_repo(url, target, branch).await?;
+    }
+    Ok(target.to_path_buf())
   }
 
   /// Clone a remote repository.
@@ -273,6 +292,7 @@ mod tests {
     assert!(RepoSource::is_git_url("git@github.com:user/repo.git"));
     assert!(RepoSource::is_git_url("ssh://git@github.com/user/repo.git"));
     assert!(RepoSource::is_git_url("git://github.com/user/repo.git"));
+    assert!(RepoSource::is_git_url("file:///tmp/repo.git"));
 
     assert!(!RepoSource::is_git_url("/path/to/repo"));
     assert!(!RepoSource::is_git_url("./relative/path"));

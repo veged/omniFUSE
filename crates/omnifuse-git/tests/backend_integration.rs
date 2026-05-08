@@ -173,6 +173,26 @@ async fn test_init_local_repo() {
 }
 
 #[tokio::test]
+async fn remote_git_init_uses_configured_local_dir() {
+  eprintln!("[TEST] remote_git_init_uses_configured_local_dir");
+  let (_tmp, bare_path, _clone_path) = create_bare_and_clone().await;
+  let work = tempfile::tempdir().expect("work dir");
+  let configured = work.path().join("configured");
+
+  let backend = GitBackend::new(GitConfig {
+    source: format!("file://{}", bare_path.display()),
+    branch: "main".to_string(),
+    max_push_retries: 1,
+    poll_interval_secs: 30,
+    local_dir: configured.clone()
+  });
+
+  backend.init(&configured).await.expect("init");
+
+  assert!(configured.join(".git").exists());
+}
+
+#[tokio::test]
 async fn test_sync_commits_pushes() {
   eprintln!("[TEST] test_sync_commits_pushes");
   tokio::time::timeout(TEST_TIMEOUT, async {

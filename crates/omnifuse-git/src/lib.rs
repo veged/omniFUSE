@@ -129,27 +129,32 @@ impl GitBackend {
 impl Backend for GitBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
     let source = RepoSource::parse(&self.config.source);
+    let target_dir = if self.config.local_dir.as_os_str().is_empty() {
+      local_dir
+    } else {
+      &self.config.local_dir
+    };
 
     let repo_path = match &source {
       RepoSource::Local(path) => {
-        let local_dir_is_inside_repo = local_dir.starts_with(path) || local_dir == path;
+        let local_dir_is_inside_repo = target_dir.starts_with(path) || target_dir == path;
         if local_dir_is_inside_repo {
           path.clone()
         } else {
-          std::fs::create_dir_all(local_dir)?;
-          if !local_dir.join(".git").exists() {
-            info!(source = %path.display(), target = %local_dir.display(), "cloning local repo into cache");
+          std::fs::create_dir_all(target_dir)?;
+          if !target_dir.join(".git").exists() {
+            info!(source = %path.display(), target = %target_dir.display(), "cloning local repo into cache");
             tokio::process::Command::new("git")
               .args(["clone", "--branch", &self.config.branch])
               .arg(path)
-              .arg(local_dir)
+              .arg(target_dir)
               .output()
               .await?;
           }
-          local_dir.to_path_buf()
+          target_dir.to_path_buf()
         }
       }
-      RepoSource::Remote { .. } => source.ensure_available(&self.config.branch).await?
+      RepoSource::Remote { .. } => source.ensure_available_at(&self.config.branch, target_dir).await?
     };
 
     let ops = GitOps::new(repo_path.clone(), self.config.branch.clone())?;
