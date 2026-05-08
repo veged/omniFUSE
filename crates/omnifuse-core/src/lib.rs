@@ -28,6 +28,8 @@ pub mod backend;
 #[allow(clippy::cast_possible_truncation, clippy::significant_drop_tightening)]
 pub mod buffer;
 pub mod config;
+/// Shared dirty path index for remote refresh protection.
+pub mod dirty_index;
 pub mod events;
 pub mod observability;
 pub mod sync_engine;
@@ -40,6 +42,7 @@ use std::{path::Path, sync::Arc};
 pub use backend::{Backend, InitResult, RemoteChange, SyncResult};
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
+pub use dirty_index::{DirtyIndex, PathProtection};
 pub use events::{LogLevel, NoopEventHandler, VfsEventHandler};
 pub use observability::{
   Disposition, ErrorKind, ErrorSource, EventSeverity, NoopOperationalEventSink, ObservabilitySession, OperationContext,
