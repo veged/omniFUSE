@@ -141,6 +141,39 @@ impl GitSyncLifecycle {
     }
   }
 
+  /// Fetch and apply remote changes.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if git fetch or pull fails with a non-domain error.
+  pub async fn refresh_remote(&self) -> anyhow::Result<GitRefresh> {
+    let engine = self.ops.engine();
+    let local_head = engine.get_head_commit().await?;
+
+    if let Err(error) = engine.fetch().await {
+      return match classify_git_error(&error) {
+        Some(omnifuse_core::ErrorKind::Offline) => Ok(GitRefresh::Offline),
+        _ => Err(error)
+      };
+    }
+
+    let Some(remote_head) = engine.get_remote_head().await? else {
+      return Ok(GitRefresh::NoChange);
+    };
+
+    if local_head == remote_head {
+      return Ok(GitRefresh::NoChange);
+    }
+
+    let files = self.diff_files_between(&local_head, &remote_head).await?;
+    let merge = engine.pull().await?;
+
+    match merge {
+      MergeResult::Conflict { files } => Ok(GitRefresh::Conflict { files }),
+      merge => Ok(GitRefresh::Applied { files, merge })
+    }
+  }
+
   /// Classify a git error for core observability.
   #[must_use]
   pub fn classify(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
@@ -161,10 +194,6 @@ impl GitSyncLifecycle {
     self.diff_remote_files().await
   }
 
-  pub(crate) async fn pull_remote(&self) -> anyhow::Result<MergeResult> {
-    self.ops.engine().pull().await
-  }
-
   pub(crate) async fn is_online(&self) -> bool {
     self.ops.engine().fetch().await.is_ok()
   }
@@ -183,9 +212,13 @@ impl GitSyncLifecycle {
       return Ok(Vec::new());
     }
 
+    self.diff_files_between(&local_head, &remote_head).await
+  }
+
+  async fn diff_files_between(&self, from: &str, to: &str) -> anyhow::Result<Vec<PathBuf>> {
     let output = tokio::process::Command::new("git")
       .current_dir(&self.repo_path)
-      .args(["diff", "--name-only", &local_head, &remote_head])
+      .args(["diff", "--name-only", from, to])
       .output()
       .await?;
 
@@ -193,12 +226,12 @@ impl GitSyncLifecycle {
       return Ok(Vec::new());
     }
 
-    let files = String::from_utf8_lossy(&output.stdout)
-      .lines()
-      .map(|line| self.repo_path.join(line))
-      .collect();
-
-    Ok(files)
+    Ok(
+      String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| self.repo_path.join(line))
+        .collect()
+    )
   }
 }
 
@@ -248,7 +281,7 @@ mod tests {
 
   use crate::{
     GitConfig,
-    engine::tests::create_bare_and_two_clones,
+    engine::{GitEngine, tests::create_bare_and_two_clones},
     sync_lifecycle::{GitInit, GitSync, GitSyncLifecycle}
   };
 
@@ -304,5 +337,31 @@ mod tests {
     let result = git.sync_local(&[repo_path.join("README.md")]).await.expect("sync");
 
     assert!(matches!(result, GitSync::Success { synced_files: 1 }));
+  }
+
+  #[tokio::test]
+  async fn refresh_remote_applies_new_remote_commit() {
+    let (_tmp, _bare, clone1, clone2) = create_bare_and_two_clones().await;
+    let config = GitConfig {
+      source: clone1.to_string_lossy().into_owned(),
+      branch: "main".to_string(),
+      max_push_retries: 3,
+      poll_interval_secs: 30,
+      local_dir: clone1.clone()
+    };
+    let (git, _) = GitSyncLifecycle::open(config, &clone1).await.expect("open");
+
+    tokio::fs::write(clone2.join("remote.txt"), "remote")
+      .await
+      .expect("write");
+    let engine2 = GitEngine::new(clone2.clone(), "main".to_string()).expect("engine2");
+    engine2.stage(&[clone2.join("remote.txt")]).await.expect("stage");
+    engine2.commit("remote change").await.expect("commit");
+    engine2.push().await.expect("push");
+
+    let result = git.refresh_remote().await.expect("refresh");
+
+    assert!(matches!(result, super::GitRefresh::Applied { .. }));
+    assert!(clone1.join("remote.txt").exists());
   }
 }

@@ -127,7 +127,7 @@ impl Backend for GitBackend {
   }
 
   async fn apply_remote(&self, _changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    let result = self.lifecycle()?.pull_remote().await?;
+    let result = self.lifecycle()?.refresh_remote().await?;
     debug!(?result, "apply_remote: pull completed");
 
     Ok(())
