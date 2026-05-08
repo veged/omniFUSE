@@ -11,6 +11,10 @@ pub mod error;
 pub mod merge;
 pub mod meta;
 pub mod models;
+/// Wiki page identity and local path mapping.
+pub mod page;
+/// Bidirectional index of known wiki pages.
+pub mod page_index;
 
 use std::{
   future::Future,
