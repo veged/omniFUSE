@@ -8,7 +8,7 @@ use std::{
   time::Duration
 };
 
-use crate::ErrorKind;
+use crate::{ErrorKind, PathProtection};
 
 /// Backend for a synchronized storage.
 ///
@@ -26,6 +26,52 @@ pub trait Backend: Send + Sync + 'static {
   /// Called by `SyncEngine` after debounce/close trigger.
   /// The backend decides how to merge on conflicts.
   fn sync(&self, dirty_files: &[PathBuf]) -> impl Future<Output = anyhow::Result<SyncResult>> + Send;
+
+  /// Detect and safely apply remote changes.
+  fn refresh_remote(
+    &self,
+    request: RemoteRefresh<'_>
+  ) -> impl Future<Output = anyhow::Result<RemoteRefreshResult>> + Send {
+    async move {
+      let changes = self.poll_remote().await?;
+      if changes.is_empty() {
+        return Ok(RemoteRefreshResult::Unchanged);
+      }
+
+      let affected: Vec<PathBuf> = changes.iter().map(|change| change.path().to_path_buf()).collect();
+      let protected: Vec<PathBuf> = affected
+        .iter()
+        .filter(|path| request.protected_paths.is_protected(path))
+        .cloned()
+        .collect();
+
+      if !protected.is_empty() {
+        return Ok(RemoteRefreshResult::Deferred {
+          affected: protected,
+          reason: RemoteDeferReason::ProtectedLocalChange
+        });
+      }
+
+      if matches!(request.mode, RemoteApplyMode::DetectOnly) {
+        return Ok(RemoteRefreshResult::Deferred {
+          affected,
+          reason: RemoteDeferReason::DetectOnly
+        });
+      }
+
+      let mut changed = Vec::new();
+      let mut deleted = Vec::new();
+      for change in &changes {
+        match change {
+          RemoteChange::Modified { path, .. } => changed.push(path.clone()),
+          RemoteChange::Deleted { path } => deleted.push(path.clone())
+        }
+      }
+
+      self.apply_remote(changes).await?;
+      Ok(RemoteRefreshResult::Applied { changed, deleted })
+    }
+  }
 
   /// Check remote for changes (periodic poll).
   fn poll_remote(&self) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send;
@@ -54,6 +100,55 @@ pub trait Backend: Send + Sync + 'static {
   fn classify_error(&self, _error: &anyhow::Error) -> ErrorKind {
     ErrorKind::Internal
   }
+}
+
+/// Remote refresh request.
+pub struct RemoteRefresh<'a> {
+  /// Paths that must not be overwritten by remote changes.
+  pub protected_paths: &'a dyn PathProtection,
+  /// Remote refresh mode.
+  pub mode: RemoteApplyMode
+}
+
+/// Remote refresh mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteApplyMode {
+  /// Apply changes when protected paths are not affected.
+  ApplySafe,
+  /// Detect changes without applying them.
+  DetectOnly
+}
+
+/// Reason why a remote refresh was deferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteDeferReason {
+  /// Remote changes affect locally dirty paths.
+  ProtectedLocalChange,
+  /// Refresh was requested in detect-only mode.
+  DetectOnly
+}
+
+/// Result of a remote refresh attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteRefreshResult {
+  /// No remote changes were found.
+  Unchanged,
+  /// Remote changes were applied locally.
+  Applied {
+    /// Modified paths.
+    changed: Vec<PathBuf>,
+    /// Deleted paths.
+    deleted: Vec<PathBuf>
+  },
+  /// Remote changes were not applied.
+  Deferred {
+    /// Paths that caused deferral.
+    affected: Vec<PathBuf>,
+    /// Deferral reason.
+    reason: RemoteDeferReason
+  },
+  /// Remote is unavailable.
+  Offline
 }
 
 /// Initialization result.

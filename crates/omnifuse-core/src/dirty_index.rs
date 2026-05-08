@@ -44,6 +44,12 @@ impl DirtyIndex {
       .any(|dirty_path| path == dirty_path || path.starts_with(dirty_path))
   }
 
+  /// Borrow as a path protection trait object.
+  #[must_use]
+  pub fn as_path_protection(&self) -> &dyn PathProtection {
+    self
+  }
+
   fn read_paths(&self) -> RwLockReadGuard<'_, HashSet<PathBuf>> {
     self.paths.read().unwrap_or_else(PoisonError::into_inner)
   }

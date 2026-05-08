@@ -39,7 +39,9 @@ pub mod vfs;
 
 use std::{path::Path, sync::Arc};
 
-pub use backend::{Backend, InitResult, RemoteChange, SyncResult};
+pub use backend::{
+  Backend, InitResult, RemoteApplyMode, RemoteChange, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult
+};
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
 pub use dirty_index::{DirtyIndex, PathProtection};

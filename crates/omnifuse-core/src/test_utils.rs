@@ -13,7 +13,7 @@ use std::{
 
 use crate::{
   OperationalEvent,
-  backend::{Backend, InitResult, RemoteChange, SyncResult},
+  backend::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult},
   events::{LogLevel, VfsEventHandler}
 };
 
@@ -27,14 +27,20 @@ pub struct MockBackend {
   pub poll_calls: Arc<AtomicUsize>,
   /// Recorded `apply_remote()` calls.
   pub apply_calls: Arc<Mutex<Vec<Vec<RemoteChange>>>>,
+  /// Call counter for `refresh_remote()`.
+  pub refresh_calls: Arc<AtomicUsize>,
   /// Result returned by `sync()`.
   pub sync_result: Arc<Mutex<SyncResult>>,
   /// Changes returned by `poll_remote()`.
   pub poll_result: Arc<Mutex<Vec<RemoteChange>>>,
+  /// Result returned by `refresh_remote()`.
+  pub refresh_result: Arc<Mutex<RemoteRefreshResult>>,
   /// Error returned by `sync()` (if set).
   pub sync_error: Arc<Mutex<Option<String>>>,
   /// Error returned by `poll_remote()` (if set).
   pub poll_error: Arc<Mutex<Option<String>>>,
+  /// Error returned by `refresh_remote()` (if set).
+  pub refresh_error: Arc<Mutex<Option<String>>>,
   /// The `should_track` function.
   pub track_fn: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
   /// Poll interval.
@@ -59,10 +65,13 @@ impl MockBackend {
       sync_calls: Arc::new(Mutex::new(Vec::new())),
       poll_calls: Arc::new(AtomicUsize::new(0)),
       apply_calls: Arc::new(Mutex::new(Vec::new())),
+      refresh_calls: Arc::new(AtomicUsize::new(0)),
       sync_result: Arc::new(Mutex::new(SyncResult::Success { synced_files: 0 })),
       poll_result: Arc::new(Mutex::new(Vec::new())),
+      refresh_result: Arc::new(Mutex::new(RemoteRefreshResult::Unchanged)),
       sync_error: Arc::new(Mutex::new(None)),
       poll_error: Arc::new(Mutex::new(None)),
+      refresh_error: Arc::new(Mutex::new(None)),
       track_fn: Arc::new(|path| !path.to_string_lossy().contains(".git")),
       poll_interval_dur: Duration::from_secs(3600),
       online: Arc::new(AtomicBool::new(true)),
@@ -85,9 +94,19 @@ impl MockBackend {
     *self.poll_result.lock().expect("lock") = changes;
   }
 
+  /// Set the result returned by `refresh_remote()`.
+  pub fn set_refresh_result(&self, result: RemoteRefreshResult) {
+    *self.refresh_result.lock().expect("lock") = result;
+  }
+
   /// Set the `poll_remote()` error.
   pub fn set_poll_error(&self, msg: &str) {
     *self.poll_error.lock().expect("lock") = Some(msg.to_string());
+  }
+
+  /// Set the `refresh_remote()` error.
+  pub fn set_refresh_error(&self, msg: &str) {
+    *self.refresh_error.lock().expect("lock") = Some(msg.to_string());
   }
 
   /// Set the delay before returning from `sync()`.
@@ -108,6 +127,11 @@ impl MockBackend {
   /// Number of `poll_remote()` calls.
   pub fn poll_call_count(&self) -> usize {
     self.poll_calls.load(Ordering::Relaxed)
+  }
+
+  /// Number of `refresh_remote()` calls.
+  pub fn refresh_call_count(&self) -> usize {
+    self.refresh_calls.load(Ordering::Relaxed)
   }
 
   /// Last set of files passed to `sync()`.
@@ -136,6 +160,16 @@ impl Backend for MockBackend {
     }
 
     Ok(self.sync_result.lock().expect("lock").clone())
+  }
+
+  async fn refresh_remote(&self, _request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    self.refresh_calls.fetch_add(1, Ordering::Relaxed);
+
+    if let Some(ref msg) = *self.refresh_error.lock().expect("lock") {
+      return Err(anyhow::anyhow!("{msg}"));
+    }
+
+    Ok(self.refresh_result.lock().expect("lock").clone())
   }
 
   async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
