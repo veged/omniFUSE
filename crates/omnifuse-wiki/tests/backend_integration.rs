@@ -7,7 +7,7 @@ mod common;
 use std::{path::Path, sync::Arc};
 
 use common::FakeWikiApi;
-use omnifuse_core::{Backend, InitResult};
+use omnifuse_core::{Backend, InitResult, PathProtection, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult};
 use omnifuse_wiki::{
   WikiBackend, WikiConfig,
   client::Client,
@@ -54,6 +54,25 @@ async fn setup_backend() -> (
   let tmp = tempfile::tempdir().expect("tempdir");
 
   (backend, state, tmp, base_url)
+}
+
+struct StaticPathProtection {
+  paths: Vec<std::path::PathBuf>
+}
+
+impl StaticPathProtection {
+  fn new(paths: Vec<std::path::PathBuf>) -> Self {
+    Self { paths }
+  }
+}
+
+impl PathProtection for StaticPathProtection {
+  fn is_protected(&self, path: &Path) -> bool {
+    self
+      .paths
+      .iter()
+      .any(|protected| path == protected || path.starts_with(protected))
+  }
 }
 
 async fn setup_session_with_root_content(
@@ -225,6 +244,36 @@ async fn apply_remote_updates_file_base_meta_and_index_together() {
     assert_eq!(
       std::fs::read_to_string(tmp.path().join(".vfs/base/root.md")).expect("base"),
       "# Remote"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn wiki_refresh_defers_protected_remote_page() {
+  eprintln!("[TEST] wiki_refresh_defers_protected_remote_page");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (backend, state, tmp, _url) = setup_backend().await;
+    let local_dir = tmp.path().to_path_buf();
+    backend.init(&local_dir).await.expect("init");
+    state
+      .update_content_by_slug("root", "# Remote", "2024-02-01T00:00:00Z")
+      .await;
+
+    let protected = StaticPathProtection::new(vec![local_dir.join("root.md")]);
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protected,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
+
+    assert!(matches!(result, RemoteRefreshResult::Deferred { .. }));
+    assert_eq!(
+      std::fs::read_to_string(local_dir.join("root.md")).expect("file"),
+      "# Root page"
     );
   })
   .await

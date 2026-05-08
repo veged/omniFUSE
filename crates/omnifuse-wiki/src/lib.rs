@@ -25,7 +25,7 @@ use std::{
 };
 
 pub use error::{WikiError, classify_wiki_error};
-use omnifuse_core::{Backend, InitResult, RemoteChange, SyncResult};
+use omnifuse_core::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult};
 
 use crate::{
   client::Client,
@@ -113,17 +113,16 @@ impl Backend for WikiBackend {
     self.session()?.sync_dirty(DirtyBatch { paths: dirty_files }).await
   }
 
+  async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    self.session()?.refresh_remote(request).await
+  }
+
   async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
     Ok(self.session()?.poll_remote().await?.changes)
   }
 
   async fn apply_remote(&self, changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    let batch = self
-      .session()?
-      .take_pending_remote(&changes)
-      .await
-      .unwrap_or_else(|| RemoteBatch::from_changes(changes));
-    self.session()?.apply_remote(batch).await?;
+    self.session()?.apply_remote(RemoteBatch::from_changes(changes)).await?;
     Ok(())
   }
 

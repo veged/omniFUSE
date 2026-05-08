@@ -5,8 +5,10 @@ use std::{
   sync::Arc
 };
 
-use omnifuse_core::{InitResult, RemoteChange, SyncResult};
-use tokio::sync::{Mutex, RwLock};
+use omnifuse_core::{
+  InitResult, RemoteApplyMode, RemoteChange, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult
+};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -68,8 +70,7 @@ pub struct WikiPageSyncSession {
   client: Arc<Client>,
   local_dir: PathBuf,
   meta_store: MetaStore,
-  page_index: RwLock<PageIndex>,
-  pending_remote: Mutex<Option<RemoteBatch>>
+  page_index: RwLock<PageIndex>
 }
 
 impl WikiPageSyncSession {
@@ -87,8 +88,7 @@ impl WikiPageSyncSession {
       client,
       local_dir,
       meta_store,
-      page_index: RwLock::new(PageIndex::default()),
-      pending_remote: Mutex::new(None)
+      page_index: RwLock::new(PageIndex::default())
     })
   }
 
@@ -223,8 +223,61 @@ impl WikiPageSyncSession {
       info!(count = batch.changes.len(), "remote changes detected");
     }
 
-    *self.pending_remote.lock().await = Some(batch.clone());
     Ok(batch)
+  }
+
+  /// Detect remote changes, respect protected paths, and apply safe refreshes.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when remote polling or local apply fails.
+  pub async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    let batch = self.poll_remote().await?;
+    if batch.changes.is_empty() {
+      return Ok(RemoteRefreshResult::Unchanged);
+    }
+
+    let protected: Vec<PathBuf> = batch
+      .changes
+      .iter()
+      .map(|change| change.path().to_path_buf())
+      .filter(|path| request.protected_paths.is_protected(path))
+      .collect();
+    if !protected.is_empty() {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected: protected,
+        reason: RemoteDeferReason::ProtectedLocalChange
+      });
+    }
+
+    let changed: Vec<PathBuf> = batch
+      .changes
+      .iter()
+      .filter_map(|change| match change {
+        RemoteChange::Modified { path, .. } => Some(path.clone()),
+        RemoteChange::Deleted { .. } => None
+      })
+      .collect();
+    let deleted: Vec<PathBuf> = batch
+      .changes
+      .iter()
+      .filter_map(|change| match change {
+        RemoteChange::Modified { .. } => None,
+        RemoteChange::Deleted { path } => Some(path.clone())
+      })
+      .collect();
+
+    if matches!(request.mode, RemoteApplyMode::DetectOnly) {
+      let mut affected = changed.clone();
+      affected.extend(deleted.iter().cloned());
+      return Ok(RemoteRefreshResult::Deferred {
+        affected,
+        reason: RemoteDeferReason::DetectOnly
+      });
+    }
+
+    self.apply_remote(batch).await?;
+    Ok(RemoteRefreshResult::Applied { changed, deleted })
   }
 
   /// Apply a previously polled remote batch to local files, base content, metadata and index.
@@ -268,18 +321,6 @@ impl WikiPageSyncSession {
     }
 
     Ok(report)
-  }
-
-  pub(crate) async fn take_pending_remote(&self, changes: &[RemoteChange]) -> Option<RemoteBatch> {
-    let mut pending = self.pending_remote.lock().await;
-    if pending
-      .as_ref()
-      .is_some_and(|batch| remote_change_paths_match(&batch.changes, changes))
-    {
-      pending.take()
-    } else {
-      None
-    }
   }
 
   async fn materialize_node(&self, node: &PageTreeNodeSchema, index: &mut PageIndex) -> anyhow::Result<bool> {
@@ -486,8 +527,4 @@ fn absolute_local_dir(local_dir: &Path) -> anyhow::Result<PathBuf> {
   } else {
     Ok(std::env::current_dir()?.join(local_dir))
   }
-}
-
-fn remote_change_paths_match(left: &[RemoteChange], right: &[RemoteChange]) -> bool {
-  left.len() == right.len() && left.iter().zip(right).all(|(left, right)| left.path() == right.path())
 }
