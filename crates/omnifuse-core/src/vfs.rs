@@ -29,6 +29,153 @@ use crate::{
   sync_engine::FsEvent
 };
 
+impl<B: Backend> unifuse::SessionPathFs for OmniFuseVfs<B> {
+  type MountState = ();
+
+  async fn start(&self, _context: unifuse::MountContext) -> Result<Self::MountState, FsError> {
+    Ok(())
+  }
+
+  async fn stop(&self, _state: Self::MountState, _reason: unifuse::UnmountReason) -> Result<(), FsError> {
+    Ok(())
+  }
+
+  async fn lookup(&self, _state: &Self::MountState, path: &Path) -> Result<unifuse::NodeMeta, FsError> {
+    let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, path).await?;
+    Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+  }
+
+  async fn open(
+    &self,
+    _state: &Self::MountState,
+    path: &Path,
+    intent: unifuse::OpenIntent
+  ) -> Result<unifuse::OpenedNode, FsError> {
+    let handle = <Self as unifuse::UniFuseFilesystem>::open(self, path, intent.flags).await?;
+    let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, path).await?;
+    Ok(unifuse::OpenedNode::new(path.to_path_buf(), handle, attr.kind, attr))
+  }
+
+  async fn read_into(&self, file: &unifuse::OpenedNode, offset: u64, out: &mut [u8]) -> Result<usize, FsError> {
+    #[allow(clippy::cast_possible_truncation)]
+    let size = out.len() as u32;
+    let data = <Self as unifuse::UniFuseFilesystem>::read(self, &file.path, file.handle, offset, size).await?;
+    let copied = data.len().min(out.len());
+    out[..copied].copy_from_slice(&data[..copied]);
+    Ok(copied)
+  }
+
+  async fn write_from(&self, file: &unifuse::OpenedNode, offset: u64, data: &[u8]) -> Result<usize, FsError> {
+    let written = <Self as unifuse::UniFuseFilesystem>::write(self, &file.path, file.handle, offset, data).await?;
+    Ok(written as usize)
+  }
+
+  async fn flush(&self, file: &unifuse::OpenedNode, mode: unifuse::FlushMode) -> Result<unifuse::NodeMeta, FsError> {
+    match mode {
+      unifuse::FlushMode::Flush => {
+        <Self as unifuse::UniFuseFilesystem>::flush(self, &file.path, file.handle).await?;
+      }
+      unifuse::FlushMode::Fsync { datasync } => {
+        <Self as unifuse::UniFuseFilesystem>::fsync(self, &file.path, file.handle, datasync).await?;
+      }
+    }
+
+    let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, &file.path).await?;
+    Ok(unifuse::NodeMeta::new(file.path.clone(), attr))
+  }
+
+  async fn close(&self, file: unifuse::OpenedNode, _reason: unifuse::CloseReason) -> Result<(), FsError> {
+    <Self as unifuse::UniFuseFilesystem>::release(self, &file.path, file.handle).await
+  }
+
+  async fn read_dir(
+    &self,
+    _state: &Self::MountState,
+    path: &Path,
+    page: unifuse::DirPageRequest
+  ) -> Result<unifuse::DirPage, FsError> {
+    let mut entries: Vec<_> = <Self as unifuse::UniFuseFilesystem>::readdir(self, path)
+      .await?
+      .into_iter()
+      .map(Into::into)
+      .collect();
+    if page.offset > 0 {
+      entries = entries.into_iter().skip(page.offset).collect();
+    }
+    if let Some(limit) = page.limit {
+      let next_offset = (entries.len() > limit).then_some(page.offset + limit);
+      entries.truncate(limit);
+      return Ok(unifuse::DirPage { entries, next_offset });
+    }
+
+    Ok(unifuse::DirPage::all(entries))
+  }
+
+  async fn mutate(
+    &self,
+    _state: &Self::MountState,
+    mutation: unifuse::FsMutation<'_>
+  ) -> Result<unifuse::NodeMeta, FsError> {
+    match mutation {
+      unifuse::FsMutation::Create { path, mode, .. } => {
+        let (_file, attr) = self.mutation_pipeline.create_file(path, mode).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::Mkdir { path, mode } => {
+        let attr = <Self as unifuse::UniFuseFilesystem>::mkdir(self, path, mode).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::Unlink { path } => {
+        <Self as unifuse::UniFuseFilesystem>::unlink(self, path).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), FileAttr::regular(0, 0o644)))
+      }
+      unifuse::FsMutation::Rmdir { path } => {
+        <Self as unifuse::UniFuseFilesystem>::rmdir(self, path).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), FileAttr::directory(0o755)))
+      }
+      unifuse::FsMutation::Rename { from, to, flags } => {
+        <Self as unifuse::UniFuseFilesystem>::rename(self, from, to, flags).await?;
+        let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, to).await?;
+        Ok(unifuse::NodeMeta::new(to.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::Symlink { target, link } => {
+        let attr = <Self as unifuse::UniFuseFilesystem>::symlink(self, target, link).await?;
+        Ok(unifuse::NodeMeta::new(link.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::SetAttr {
+        path,
+        size,
+        atime,
+        mtime,
+        mode
+      } => {
+        let attr = <Self as unifuse::UniFuseFilesystem>::setattr(self, path, size, atime, mtime, mode).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::SetXattr {
+        path,
+        name,
+        value,
+        flags
+      } => {
+        <Self as unifuse::UniFuseFilesystem>::setxattr(self, path, name, value, flags).await?;
+        let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, path).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::RemoveXattr { path, name } => {
+        <Self as unifuse::UniFuseFilesystem>::removexattr(self, path, name).await?;
+        let attr = <Self as unifuse::UniFuseFilesystem>::getattr(self, path).await?;
+        Ok(unifuse::NodeMeta::new(path.to_path_buf(), attr))
+      }
+      unifuse::FsMutation::Readlink { .. } => Err(FsError::NotSupported)
+    }
+  }
+
+  async fn statfs(&self, _state: &Self::MountState) -> Result<StatFs, FsError> {
+    <Self as unifuse::UniFuseFilesystem>::statfs(self, Path::new("/")).await
+  }
+}
+
 /// `OmniFuse` filesystem core.
 ///
 /// Implements async `UniFuseFilesystem`, delegating:
@@ -404,7 +551,7 @@ mod tests {
   use std::{ffi::OsStr, path::Path, sync::Arc};
 
   use tokio::sync::mpsc;
-  use unifuse::UniFuseFilesystem;
+  use unifuse::{CloseReason, FsMutation, MountContext, OpenIntent, UniFuseFilesystem, UnmountReason};
 
   use super::*;
   use crate::{
@@ -457,6 +604,47 @@ mod tests {
     let attr = vfs.getattr(Path::new("test.txt")).await.expect("getattr");
     assert_eq!(attr.kind, FileType::RegularFile);
     assert_eq!(attr.size, 5);
+  }
+
+  #[tokio::test]
+  async fn omnifuse_vfs_session_api_open_write_close_roundtrip() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let backend = Arc::new(MockBackend::new());
+    let (vfs, _rx) = create_test_vfs(tmp.path(), backend);
+    let state = unifuse::SessionPathFs::start(&vfs, MountContext::test(tmp.path()))
+      .await
+      .expect("start");
+
+    let meta = unifuse::SessionPathFs::mutate(
+      &vfs,
+      &state,
+      FsMutation::Create {
+        path: Path::new("doc.md"),
+        flags: OpenFlags::read_write(),
+        mode: 0o644
+      }
+    )
+    .await
+    .expect("create");
+    assert_eq!(meta.attr.kind, FileType::RegularFile);
+
+    let opened = unifuse::SessionPathFs::open(&vfs, &state, Path::new("doc.md"), OpenIntent::read_write())
+      .await
+      .expect("open");
+    unifuse::SessionPathFs::write_from(&vfs, &opened, 0, b"hello")
+      .await
+      .expect("write");
+    unifuse::SessionPathFs::close(&vfs, opened, CloseReason::Released)
+      .await
+      .expect("close");
+    unifuse::SessionPathFs::stop(&vfs, state, UnmountReason::Unmounted)
+      .await
+      .expect("stop");
+
+    assert_eq!(
+      std::fs::read_to_string(tmp.path().join("doc.md")).expect("read"),
+      "hello"
+    );
   }
 
   #[tokio::test]
