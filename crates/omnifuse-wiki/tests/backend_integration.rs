@@ -187,6 +187,51 @@ async fn sync_dirty_auto_merges_non_overlapping_remote_change() {
 }
 
 #[tokio::test]
+async fn poll_remote_returns_batch_with_content_and_snapshot() {
+  eprintln!("[TEST] poll_remote_returns_batch_with_content_and_snapshot");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (session, state, _tmp) = setup_session_with_root().await;
+    session.initialize().await.expect("init");
+    state
+      .update_content_by_slug("root", "# Remote", "2024-02-01T00:00:00Z")
+      .await;
+
+    let batch = session.poll_remote().await.expect("poll");
+
+    assert_eq!(batch.changes.len(), 1);
+    assert!(batch.snapshots.iter().any(|(page, _)| page.slug.as_str() == "root"));
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn apply_remote_updates_file_base_meta_and_index_together() {
+  eprintln!("[TEST] apply_remote_updates_file_base_meta_and_index_together");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (session, state, tmp) = setup_session_with_root().await;
+    session.initialize().await.expect("init");
+    state
+      .update_content_by_slug("root", "# Remote", "2024-02-01T00:00:00Z")
+      .await;
+    let batch = session.poll_remote().await.expect("poll");
+
+    session.apply_remote(batch).await.expect("apply");
+
+    assert_eq!(
+      std::fs::read_to_string(tmp.path().join("root.md")).expect("file"),
+      "# Remote"
+    );
+    assert_eq!(
+      std::fs::read_to_string(tmp.path().join(".vfs/base/root.md")).expect("base"),
+      "# Remote"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
 async fn test_should_track_md_only() {
   eprintln!("[TEST] test_should_track_md_only");
   let config = WikiConfig {

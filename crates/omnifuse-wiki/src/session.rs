@@ -5,8 +5,8 @@ use std::{
   sync::Arc
 };
 
-use omnifuse_core::{InitResult, SyncResult};
-use tokio::sync::RwLock;
+use omnifuse_core::{InitResult, RemoteChange, SyncResult};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -26,13 +26,50 @@ pub struct DirtyBatch<'a> {
   pub paths: &'a [PathBuf]
 }
 
+/// Remote changes plus wiki snapshots needed for coherent apply.
+#[derive(Debug, Clone, Default)]
+pub struct RemoteBatch {
+  /// Core-level file changes.
+  pub changes: Vec<RemoteChange>,
+  /// Wiki page snapshots matching modified changes.
+  pub snapshots: Vec<(PageRef, PageSnapshot)>
+}
+
+impl RemoteBatch {
+  /// Build a compatibility batch from core changes without wiki snapshots.
+  #[must_use]
+  pub fn from_changes(changes: Vec<RemoteChange>) -> Self {
+    Self {
+      changes,
+      snapshots: Vec::new()
+    }
+  }
+
+  fn snapshot_for_path(&self, path: &Path) -> Option<(&PageRef, &PageSnapshot)> {
+    self
+      .snapshots
+      .iter()
+      .find_map(|(page_ref, snapshot)| (page_ref.path == path).then_some((page_ref, snapshot)))
+  }
+}
+
+/// Result of applying a remote batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ApplyReport {
+  /// Modified files written locally.
+  pub modified: usize,
+  /// Deleted files removed locally.
+  pub deleted: usize
+}
+
 /// Wiki page sync state bound to a concrete local directory.
 pub struct WikiPageSyncSession {
   config: WikiConfig,
   client: Arc<Client>,
   local_dir: PathBuf,
   meta_store: MetaStore,
-  page_index: RwLock<PageIndex>
+  page_index: RwLock<PageIndex>,
+  pending_remote: Mutex<Option<RemoteBatch>>
 }
 
 impl WikiPageSyncSession {
@@ -50,7 +87,8 @@ impl WikiPageSyncSession {
       client,
       local_dir,
       meta_store,
-      page_index: RwLock::new(PageIndex::default())
+      page_index: RwLock::new(PageIndex::default()),
+      pending_remote: Mutex::new(None)
     })
   }
 
@@ -138,6 +176,109 @@ impl WikiPageSyncSession {
         synced_files: synced,
         conflict_files: conflicts
       })
+    }
+  }
+
+  /// Poll remote wiki tree and return a batch with content and page snapshots.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the remote tree or modified page content cannot be fetched.
+  pub async fn poll_remote(&self) -> anyhow::Result<RemoteBatch> {
+    let tree = self
+      .client
+      .get_page_tree(&self.config.root_slug, self.config.max_pages, self.config.max_depth)
+      .await?;
+
+    let mut nodes = Vec::new();
+    collect_tree_nodes(&tree.root, self.config.max_depth, 0, &mut nodes);
+
+    let mut batch = RemoteBatch::default();
+    for node in nodes {
+      let page_ref = PageRef::from_slug(&self.local_dir, Slug::new(&node.slug))
+        .ok_or_else(|| anyhow::anyhow!("invalid wiki page slug: {}", node.slug))?;
+      let local_snapshot = self.snapshot_for(&page_ref).await;
+      let needs_update = local_snapshot
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.modified_at != node.modified_at);
+
+      if needs_update {
+        let page = self.client.get_page_by_slug(page_ref.slug.as_str()).await?;
+        let content = page.content.unwrap_or_default();
+        let snapshot = PageSnapshot {
+          id: node.id,
+          title: node.title.clone(),
+          modified_at: node.modified_at.clone()
+        };
+
+        batch.changes.push(RemoteChange::Modified {
+          path: page_ref.path.clone(),
+          content: content.into_bytes()
+        });
+        batch.snapshots.push((page_ref, snapshot));
+      }
+    }
+
+    if !batch.changes.is_empty() {
+      info!(count = batch.changes.len(), "remote changes detected");
+    }
+
+    *self.pending_remote.lock().await = Some(batch.clone());
+    Ok(batch)
+  }
+
+  /// Apply a previously polled remote batch to local files, base content, metadata and index.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when local files or metadata cannot be updated.
+  pub async fn apply_remote(&self, batch: RemoteBatch) -> anyhow::Result<ApplyReport> {
+    let mut report = ApplyReport::default();
+
+    for change in &batch.changes {
+      match change {
+        RemoteChange::Modified { path, content } => {
+          if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+          }
+          std::fs::write(path, content)?;
+
+          let content = String::from_utf8_lossy(content);
+          if let Some((page_ref, snapshot)) = batch.snapshot_for_path(path) {
+            self.save_page_state(page_ref, snapshot.clone(), &content).await?;
+          } else if let Some(page_ref) = PageRef::from_path(&self.local_dir, path) {
+            self.meta_store.save_base(page_ref.slug.as_str(), &content)?;
+          }
+
+          report.modified += 1;
+          debug!(path = %path.display(), "remote change applied");
+        }
+        RemoteChange::Deleted { path } => {
+          let _ = std::fs::remove_file(path);
+
+          if let Some(page_ref) = PageRef::from_path(&self.local_dir, path) {
+            self.meta_store.remove(page_ref.slug.as_str());
+            self.page_index.write().await.remove_path(path);
+          }
+
+          report.deleted += 1;
+          debug!(path = %path.display(), "file deleted (remote)");
+        }
+      }
+    }
+
+    Ok(report)
+  }
+
+  pub(crate) async fn take_pending_remote(&self, changes: &[RemoteChange]) -> Option<RemoteBatch> {
+    let mut pending = self.pending_remote.lock().await;
+    if pending
+      .as_ref()
+      .is_some_and(|batch| remote_change_paths_match(&batch.changes, changes))
+    {
+      pending.take()
+    } else {
+      None
     }
   }
 
@@ -345,4 +486,8 @@ fn absolute_local_dir(local_dir: &Path) -> anyhow::Result<PathBuf> {
   } else {
     Ok(std::env::current_dir()?.join(local_dir))
   }
+}
+
+fn remote_change_paths_match(left: &[RemoteChange], right: &[RemoteChange]) -> bool {
+  left.len() == right.len() && left.iter().zip(right).all(|(left, right)| left.path() == right.path())
 }

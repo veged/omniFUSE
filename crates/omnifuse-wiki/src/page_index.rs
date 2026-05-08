@@ -35,6 +35,15 @@ impl PageIndex {
       .insert(ref_.slug.as_str().to_string(), PageEntry { ref_, snapshot });
   }
 
+  /// Remove an entry by absolute local path.
+  pub fn remove_path(&mut self, path: &Path) {
+    let Some(slug) = self.slug_by_path.remove(path) else {
+      return;
+    };
+
+    self.by_slug.remove(&slug);
+  }
+
   /// Resolve an entry by remote slug.
   #[must_use]
   pub fn by_slug(&self, slug: &str) -> Option<&PageEntry> {
