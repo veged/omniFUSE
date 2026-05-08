@@ -41,6 +41,15 @@ const MAX_WRITE: std::num::NonZeroU32 = match std::num::NonZeroU32::new(1024 * 1
   None => panic!("MAX_WRITE cannot be zero")
 };
 
+/// Convert libc mode constants to rfuse3 mode bits without target-specific casts.
+#[inline]
+fn mode_bits<T>(bits: T) -> u32
+where
+  u32: From<T>
+{
+  u32::from(bits)
+}
+
 /// Adapter: converts inode-based rfuse3 calls into path-based async `SessionPathFs` calls.
 ///
 /// Contains an `InodeMap` for inode-to-path mapping.
@@ -428,8 +437,8 @@ impl<F: SessionPathFs> rfuse3::raw::Filesystem for Rfuse3Adapter<F> {
   }
 
   async fn mknod(&self, _req: Request, parent: u64, name: &OsStr, mode: u32, _rdev: u32) -> Result<ReplyEntry> {
-    let file_type = mode & u32::from(libc::S_IFMT);
-    if file_type != u32::from(libc::S_IFREG) {
+    let file_type = mode & mode_bits(libc::S_IFMT);
+    if file_type != mode_bits(libc::S_IFREG) {
       return Err(Errno::from(libc::ENOTSUP));
     }
 
