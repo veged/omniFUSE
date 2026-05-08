@@ -1,14 +1,14 @@
-//! Adapter from WinFsp to async `UniFuseFilesystem`.
+//! Adapter from WinFsp to async `SessionPathFs`.
 //!
 //! Converts synchronous WinFsp `FileSystemContext` callbacks
-//! into path-based async calls to the `UniFuseFilesystem` trait.
+//! into path-based async calls to the `SessionPathFs` trait.
 //!
 //! Type mapping:
 //! - `U16CStr` (NT path) -> `Path` (via `nt_path_to_pathbuf`)
 //! - `unifuse::FileAttr` -> `winfsp::FileInfo` (via `fill_file_info`)
 //! - `unifuse::FsError` -> `NTSTATUS` (via `FsError::to_ntstatus()`)
 //!
-//! Key design decision: WinFsp is synchronous, but `UniFuseFilesystem` is async.
+//! Key design decision: WinFsp is synchronous, but `SessionPathFs` is async.
 //! The bridge uses `tokio::runtime::Handle::block_on()` to call async methods
 //! from a synchronous context.
 
@@ -31,7 +31,10 @@ use winfsp::{
   filesystem::{DirInfo, DirMarker, FileSecurity, FileSystemContext, OpenFileInfo, WideNameInfo}
 };
 
-use crate::{FileHandle, FileType, FsError, OpenFlags, UniFuseFilesystem, types::FileAttr};
+use crate::{
+  CloseReason, DirPageRequest, FileType, FlushMode, FsError, FsMutation, OpenFlags, OpenIntent, OpenedNode,
+  SessionPathFs, types::FileAttr
+};
 
 // --- Constants ---
 
@@ -49,10 +52,10 @@ const INTERVALS_PER_SEC: u64 = 10_000_000;
 /// WinFsp does not pass the file path to `read()`/`write()`/`get_file_info()`,
 /// so we store it at `open()`/`create()` time and retrieve it in subsequent calls.
 pub struct WinfspFileContext {
+  /// Opened node for file contexts.
+  opened: Option<OpenedNode>,
   /// Path to the file (relative to the filesystem root).
   path: PathBuf,
-  /// File handle returned by `UniFuseFilesystem::open()`.
-  handle: FileHandle,
   /// Whether this context represents a directory.
   is_directory: bool,
   /// Marked for deletion (set by `set_delete`, executed in `cleanup`).
@@ -62,21 +65,32 @@ pub struct WinfspFileContext {
 // --- Adapter ---
 
 /// Adapter: converts synchronous WinFsp `FileSystemContext` calls
-/// into async `UniFuseFilesystem` calls via `block_on()`.
-pub struct WinfspAdapter<F: UniFuseFilesystem> {
+/// into async `SessionPathFs` calls via `block_on()`.
+pub struct WinfspAdapter<F: SessionPathFs> {
   inner: Arc<F>,
+  state: Arc<F::MountState>,
   rt: tokio::runtime::Handle
 }
 
-impl<F: UniFuseFilesystem> WinfspAdapter<F> {
+impl<F: SessionPathFs> WinfspAdapter<F> {
   /// Create a new WinFsp adapter.
-  pub fn new(fs: Arc<F>, rt: tokio::runtime::Handle) -> Self {
-    Self { inner: fs, rt }
+  pub fn new(fs: Arc<F>, state: Arc<F::MountState>, rt: tokio::runtime::Handle) -> Self {
+    Self { inner: fs, state, rt }
   }
 
   /// Run an async future on the tokio runtime.
   fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
     self.rt.block_on(future)
+  }
+
+  fn file_info(&self, path: &Path) -> Result<FileAttr, FsError> {
+    self
+      .block_on(self.inner.lookup(&self.state, path))
+      .map(|meta| meta.attr)
+  }
+
+  fn unsupported<T>() -> winfsp::Result<T> {
+    Err(winfsp::FspError::from(fs_error_to_ntstatus(&FsError::NotSupported)))
   }
 }
 
@@ -146,7 +160,7 @@ fn fs_error_to_ntstatus(err: &FsError) -> NTSTATUS {
 
 // --- FileSystemContext implementation ---
 
-impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
+impl<F: SessionPathFs> FileSystemContext for WinfspAdapter<F> {
   type FileContext = WinfspFileContext;
 
   fn get_security_by_name(
@@ -164,7 +178,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(?path, "get_security_by_name");
 
     let attr = self
-      .block_on(self.inner.getattr(&path))
+      .file_info(&path)
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     let attributes = file_type_to_win_attrs(attr.kind, attr.perm);
@@ -187,24 +201,26 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(?path, "open");
 
     let attr = self
-      .block_on(self.inner.getattr(&path))
+      .file_info(&path)
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     let is_directory = attr.kind == FileType::Directory;
 
-    let handle = if is_directory {
-      FileHandle(0)
+    let opened = if is_directory {
+      None
     } else {
-      self
-        .block_on(self.inner.open(&path, OpenFlags::read_write()))
-        .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?
+      Some(
+        self
+          .block_on(self.inner.open(&self.state, &path, OpenIntent::read_write()))
+          .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?
+      )
     };
 
     fill_file_info(&attr, file_info.as_mut());
 
     Ok(WinfspFileContext {
+      opened,
       path,
-      handle,
       is_directory,
       delete_on_close: false
     })
@@ -212,8 +228,8 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
 
   fn close(&self, context: Self::FileContext) {
     debug!(path = ?context.path, "close");
-    if !context.is_directory {
-      let _ = self.block_on(self.inner.release(&context.path, context.handle));
+    if let Some(opened) = context.opened {
+      let _ = self.block_on(self.inner.close(opened, CloseReason::Released));
     }
   }
 
@@ -233,28 +249,44 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(?path, is_directory, "create");
 
     if is_directory {
-      let attr = self
-        .block_on(self.inner.mkdir(&path, 0o755))
+      let meta = self
+        .block_on(self.inner.mutate(
+          &self.state,
+          FsMutation::Mkdir {
+            path: &path,
+            mode: 0o755
+          }
+        ))
         .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
-      fill_file_info(&attr, file_info.as_mut());
+      fill_file_info(&meta.attr, file_info.as_mut());
 
       Ok(WinfspFileContext {
+        opened: None,
         path,
-        handle: FileHandle(0),
         is_directory: true,
         delete_on_close: false
       })
     } else {
-      let (handle, attr) = self
-        .block_on(self.inner.create(&path, OpenFlags::read_write(), 0o644))
+      let meta = self
+        .block_on(self.inner.mutate(
+          &self.state,
+          FsMutation::Create {
+            path: &path,
+            flags: OpenFlags::read_write(),
+            mode: 0o644
+          }
+        ))
+        .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
+      let opened = self
+        .block_on(self.inner.open(&self.state, &path, OpenIntent::read_write()))
         .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
-      fill_file_info(&attr, file_info.as_mut());
+      fill_file_info(&meta.attr, file_info.as_mut());
 
       Ok(WinfspFileContext {
+        opened: Some(opened),
         path,
-        handle,
         is_directory: false,
         delete_on_close: false
       })
@@ -264,15 +296,13 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
   fn read(&self, context: &Self::FileContext, buffer: &mut [u8], offset: u64) -> winfsp::Result<u32> {
     debug!(path = ?context.path, offset, len = buffer.len(), "read");
 
-    #[allow(clippy::cast_possible_truncation)]
-    let size = buffer.len() as u32;
+    let Some(opened) = context.opened.as_ref() else {
+      return Self::unsupported();
+    };
 
-    let data = self
-      .block_on(self.inner.read(&context.path, context.handle, offset, size))
+    let bytes_read = self
+      .block_on(self.inner.read_into(opened, offset, buffer))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
-
-    let bytes_read = data.len().min(buffer.len());
-    buffer[..bytes_read].copy_from_slice(&data[..bytes_read]);
 
     #[allow(clippy::cast_possible_truncation)]
     Ok(bytes_read as u32)
@@ -289,16 +319,21 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
   ) -> winfsp::Result<u32> {
     debug!(path = ?context.path, offset, len = buffer.len(), "write");
 
+    let Some(opened) = context.opened.as_ref() else {
+      return Self::unsupported();
+    };
+
     let written = self
-      .block_on(self.inner.write(&context.path, context.handle, offset, buffer))
+      .block_on(self.inner.write_from(opened, offset, buffer))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     // Update file info after write.
-    if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
+    if let Ok(attr) = self.file_info(&context.path) {
       fill_file_info(&attr, file_info);
     }
 
-    Ok(written)
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(written as u32)
   }
 
   fn get_file_info(
@@ -309,7 +344,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(path = ?context.path, "get_file_info");
 
     let attr = self
-      .block_on(self.inner.getattr(&context.path))
+      .file_info(&context.path)
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     fill_file_info(&attr, file_info);
@@ -348,10 +383,19 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
       None
     };
 
-    let _ = self.block_on(self.inner.setattr(&context.path, None, atime, mtime, mode));
+    let _ = self.block_on(self.inner.mutate(
+      &self.state,
+      FsMutation::SetAttr {
+        path: &context.path,
+        size: None,
+        atime,
+        mtime,
+        mode
+      }
+    ));
 
     // Re-read attributes.
-    if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
+    if let Ok(attr) = self.file_info(&context.path) {
       fill_file_info(&attr, file_info);
     }
 
@@ -368,10 +412,19 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(path = ?context.path, new_size, "set_file_size");
 
     self
-      .block_on(self.inner.setattr(&context.path, Some(new_size), None, None, None))
+      .block_on(self.inner.mutate(
+        &self.state,
+        FsMutation::SetAttr {
+          path: &context.path,
+          size: Some(new_size),
+          atime: None,
+          mtime: None,
+          mode: None
+        }
+      ))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
-    if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
+    if let Ok(attr) = self.file_info(&context.path) {
       fill_file_info(&attr, file_info);
     }
 
@@ -381,11 +434,11 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
   fn flush(&self, context: &Self::FileContext, file_info: &mut winfsp::filesystem::FileInfo) -> winfsp::Result<()> {
     debug!(path = ?context.path, "flush");
 
-    if !context.is_directory {
-      let _ = self.block_on(self.inner.flush(&context.path, context.handle));
+    if let Some(opened) = context.opened.as_ref() {
+      let _ = self.block_on(self.inner.flush(opened, FlushMode::Flush));
     }
 
-    if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
+    if let Ok(attr) = self.file_info(&context.path) {
       fill_file_info(&attr, file_info);
     }
 
@@ -397,9 +450,17 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
 
     if context.delete_on_close {
       if context.is_directory {
-        let _ = self.block_on(self.inner.rmdir(&context.path));
+        let _ = self.block_on(
+          self
+            .inner
+            .mutate(&self.state, FsMutation::Rmdir { path: &context.path })
+        );
       } else {
-        let _ = self.block_on(self.inner.unlink(&context.path));
+        let _ = self.block_on(
+          self
+            .inner
+            .mutate(&self.state, FsMutation::Unlink { path: &context.path })
+        );
       }
     }
   }
@@ -421,7 +482,14 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(from = ?context.path, to = ?new_path, "rename");
 
     self
-      .block_on(self.inner.rename(&context.path, &new_path, 0))
+      .block_on(self.inner.mutate(
+        &self.state,
+        FsMutation::Rename {
+          from: &context.path,
+          to: &new_path,
+          flags: 0
+        }
+      ))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     context.path = new_path;
@@ -438,7 +506,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!(path = ?context.path, "read_directory");
 
     let entries = self
-      .block_on(self.inner.readdir(&context.path))
+      .block_on(self.inner.read_dir(&self.state, &context.path, DirPageRequest::all()))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
     let mut cursor = 0_u32;
@@ -462,7 +530,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
 
     // Add real entries.
     let mut past = past_marker;
-    for entry in &entries {
+    for entry in &entries.entries {
       if !past {
         if let Some(ref mname) = marker_name {
           if entry.name == mname.to_string_lossy().as_ref() {
@@ -478,7 +546,7 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
       }
 
       let child_path = context.path.join(&entry.name);
-      if let Ok(attr) = self.block_on(self.inner.getattr(&child_path)) {
+      if let Ok(attr) = self.file_info(&child_path) {
         fill_file_info(&attr, dir_info.file_info_mut());
       } else {
         dir_info.file_info_mut().file_attributes = match entry.kind {
@@ -499,7 +567,8 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
     debug!("get_volume_info");
 
     let root = PathBuf::from("/");
-    if let Ok(stat) = self.block_on(self.inner.statfs(&root)) {
+    let _root = PathBuf::from("/");
+    if let Ok(stat) = self.block_on(self.inner.statfs(&self.state)) {
       let block_size = u64::from(stat.bsize);
       out_volume_info.total_size = stat.blocks * block_size;
       out_volume_info.free_size = stat.bfree * block_size;
@@ -524,10 +593,19 @@ impl<F: UniFuseFilesystem> FileSystemContext for WinfspAdapter<F> {
 
     // Truncate the file to zero.
     self
-      .block_on(self.inner.setattr(&context.path, Some(0), None, None, None))
+      .block_on(self.inner.mutate(
+        &self.state,
+        FsMutation::SetAttr {
+          path: &context.path,
+          size: Some(0),
+          atime: None,
+          mtime: None,
+          mode: None
+        }
+      ))
       .map_err(|e| winfsp::FspError::from(fs_error_to_ntstatus(&e)))?;
 
-    if let Ok(attr) = self.block_on(self.inner.getattr(&context.path)) {
+    if let Ok(attr) = self.file_info(&context.path) {
       fill_file_info(&attr, file_info);
     }
 

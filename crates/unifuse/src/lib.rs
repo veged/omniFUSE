@@ -335,7 +335,9 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
     use winfsp_adapter::WinfspAdapter;
 
     let rt = tokio::runtime::Handle::current();
-    let adapter = WinfspAdapter::new(Arc::clone(&self.fs), rt);
+    let fs = Arc::new(CompatSessionFs::from_arc(Arc::clone(&self.fs)));
+    let state = Arc::new(fs.start(MountContext::test(mountpoint)).await?);
+    let adapter = WinfspAdapter::new(Arc::clone(&fs), Arc::clone(&state), rt);
 
     let mut volume_params = VolumeParams::new();
     volume_params
@@ -367,6 +369,8 @@ impl<F: UniFuseFilesystem> UniFuseHost<F> {
 
     host.stop();
     host.unmount();
+    let state = Arc::try_unwrap(state).map_err(|_| FsError::Other("mount state still shared".to_string()))?;
+    fs.stop(state, UnmountReason::Unmounted).await?;
     Ok(())
   }
 
