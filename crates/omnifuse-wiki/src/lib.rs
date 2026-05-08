@@ -25,11 +25,11 @@ use std::{
 };
 
 pub use error::{WikiError, classify_wiki_error};
-use omnifuse_core::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult};
+use omnifuse_core::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult};
 
 use crate::{
   client::Client,
-  session::{DirtyBatch, RemoteBatch, WikiPageSyncSession}
+  session::{DirtyBatch, WikiPageSyncSession}
 };
 
 /// Wiki backend configuration.
@@ -115,15 +115,6 @@ impl Backend for WikiBackend {
 
   async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
     self.session()?.refresh_remote(request).await
-  }
-
-  async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
-    Ok(self.session()?.poll_remote().await?.changes)
-  }
-
-  async fn apply_remote(&self, changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    self.session()?.apply_remote(RemoteBatch::from_changes(changes)).await?;
-    Ok(())
   }
 
   fn should_track(&self, path: &Path) -> bool {

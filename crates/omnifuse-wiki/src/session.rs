@@ -5,9 +5,7 @@ use std::{
   sync::Arc
 };
 
-use omnifuse_core::{
-  InitResult, RemoteApplyMode, RemoteChange, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult
-};
+use omnifuse_core::{InitResult, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -31,14 +29,14 @@ pub struct DirtyBatch<'a> {
 /// Remote changes plus wiki snapshots needed for coherent apply.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteBatch {
-  /// Core-level file changes.
+  /// File changes detected in the wiki tree.
   pub changes: Vec<RemoteChange>,
   /// Wiki page snapshots matching modified changes.
   pub snapshots: Vec<(PageRef, PageSnapshot)>
 }
 
 impl RemoteBatch {
-  /// Build a compatibility batch from core changes without wiki snapshots.
+  /// Build a batch from explicit wiki file changes without remote snapshots.
   #[must_use]
   pub fn from_changes(changes: Vec<RemoteChange>) -> Self {
     Self {
@@ -52,6 +50,33 @@ impl RemoteBatch {
       .snapshots
       .iter()
       .find_map(|(page_ref, snapshot)| (page_ref.path == path).then_some((page_ref, snapshot)))
+  }
+}
+
+/// Wiki remote file change.
+#[derive(Debug, Clone)]
+pub enum RemoteChange {
+  /// Page was modified or created.
+  Modified {
+    /// Local markdown file path.
+    path: PathBuf,
+    /// New markdown content.
+    content: Vec<u8>
+  },
+  /// Page was deleted.
+  Deleted {
+    /// Local markdown file path.
+    path: PathBuf
+  }
+}
+
+impl RemoteChange {
+  /// Get the local file path affected by this change.
+  #[must_use]
+  pub fn path(&self) -> &Path {
+    match self {
+      Self::Modified { path, .. } | Self::Deleted { path } => path
+    }
   }
 }
 

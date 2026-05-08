@@ -31,55 +31,7 @@ pub trait Backend: Send + Sync + 'static {
   fn refresh_remote(
     &self,
     request: RemoteRefresh<'_>
-  ) -> impl Future<Output = anyhow::Result<RemoteRefreshResult>> + Send {
-    async move {
-      let changes = self.poll_remote().await?;
-      if changes.is_empty() {
-        return Ok(RemoteRefreshResult::Unchanged);
-      }
-
-      let affected: Vec<PathBuf> = changes.iter().map(|change| change.path().to_path_buf()).collect();
-      let protected: Vec<PathBuf> = affected
-        .iter()
-        .filter(|path| request.protected_paths.is_protected(path))
-        .cloned()
-        .collect();
-
-      if !protected.is_empty() {
-        return Ok(RemoteRefreshResult::Deferred {
-          affected: protected,
-          reason: RemoteDeferReason::ProtectedLocalChange
-        });
-      }
-
-      if matches!(request.mode, RemoteApplyMode::DetectOnly) {
-        return Ok(RemoteRefreshResult::Deferred {
-          affected,
-          reason: RemoteDeferReason::DetectOnly
-        });
-      }
-
-      let mut changed = Vec::new();
-      let mut deleted = Vec::new();
-      for change in &changes {
-        match change {
-          RemoteChange::Modified { path, .. } => changed.push(path.clone()),
-          RemoteChange::Deleted { path } => deleted.push(path.clone())
-        }
-      }
-
-      self.apply_remote(changes).await?;
-      Ok(RemoteRefreshResult::Applied { changed, deleted })
-    }
-  }
-
-  /// Check remote for changes (periodic poll).
-  fn poll_remote(&self) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send;
-
-  /// Apply remote changes to the local directory.
-  ///
-  /// Does NOT overwrite dirty files (`SyncEngine` checks for that).
-  fn apply_remote(&self, changes: Vec<RemoteChange>) -> impl Future<Output = anyhow::Result<()>> + Send;
+  ) -> impl Future<Output = anyhow::Result<RemoteRefreshResult>> + Send;
 
   /// Should this file be synchronized with remote?
   ///
@@ -188,31 +140,4 @@ pub enum SyncResult {
   },
   /// Remote is unavailable.
   Offline
-}
-
-/// Remote change.
-#[derive(Debug, Clone)]
-pub enum RemoteChange {
-  /// File was modified.
-  Modified {
-    /// File path.
-    path: PathBuf,
-    /// New content.
-    content: Vec<u8>
-  },
-  /// File was deleted.
-  Deleted {
-    /// File path.
-    path: PathBuf
-  }
-}
-
-impl RemoteChange {
-  /// Get the file path from the change.
-  #[must_use]
-  pub fn path(&self) -> &Path {
-    match self {
-      Self::Modified { path, .. } | Self::Deleted { path } => path
-    }
-  }
 }

@@ -13,7 +13,7 @@ use std::{
 
 use crate::{
   OperationalEvent,
-  backend::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult},
+  backend::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult},
   events::{LogLevel, VfsEventHandler}
 };
 
@@ -23,22 +23,14 @@ use crate::{
 pub struct MockBackend {
   /// Recorded `sync()` calls — each with a list of files.
   pub sync_calls: Arc<Mutex<Vec<Vec<PathBuf>>>>,
-  /// Call counter for `poll_remote()`.
-  pub poll_calls: Arc<AtomicUsize>,
-  /// Recorded `apply_remote()` calls.
-  pub apply_calls: Arc<Mutex<Vec<Vec<RemoteChange>>>>,
   /// Call counter for `refresh_remote()`.
   pub refresh_calls: Arc<AtomicUsize>,
   /// Result returned by `sync()`.
   pub sync_result: Arc<Mutex<SyncResult>>,
-  /// Changes returned by `poll_remote()`.
-  pub poll_result: Arc<Mutex<Vec<RemoteChange>>>,
   /// Result returned by `refresh_remote()`.
   pub refresh_result: Arc<Mutex<RemoteRefreshResult>>,
   /// Error returned by `sync()` (if set).
   pub sync_error: Arc<Mutex<Option<String>>>,
-  /// Error returned by `poll_remote()` (if set).
-  pub poll_error: Arc<Mutex<Option<String>>>,
   /// Error returned by `refresh_remote()` (if set).
   pub refresh_error: Arc<Mutex<Option<String>>>,
   /// The `should_track` function.
@@ -63,14 +55,10 @@ impl MockBackend {
   pub fn new() -> Self {
     Self {
       sync_calls: Arc::new(Mutex::new(Vec::new())),
-      poll_calls: Arc::new(AtomicUsize::new(0)),
-      apply_calls: Arc::new(Mutex::new(Vec::new())),
       refresh_calls: Arc::new(AtomicUsize::new(0)),
       sync_result: Arc::new(Mutex::new(SyncResult::Success { synced_files: 0 })),
-      poll_result: Arc::new(Mutex::new(Vec::new())),
       refresh_result: Arc::new(Mutex::new(RemoteRefreshResult::Unchanged)),
       sync_error: Arc::new(Mutex::new(None)),
-      poll_error: Arc::new(Mutex::new(None)),
       refresh_error: Arc::new(Mutex::new(None)),
       track_fn: Arc::new(|path| !path.to_string_lossy().contains(".git")),
       poll_interval_dur: Duration::from_secs(3600),
@@ -89,19 +77,9 @@ impl MockBackend {
     *self.sync_error.lock().expect("lock") = Some(msg.to_string());
   }
 
-  /// Set the changes returned by `poll_remote()`.
-  pub fn set_poll_result(&self, changes: Vec<RemoteChange>) {
-    *self.poll_result.lock().expect("lock") = changes;
-  }
-
   /// Set the result returned by `refresh_remote()`.
   pub fn set_refresh_result(&self, result: RemoteRefreshResult) {
     *self.refresh_result.lock().expect("lock") = result;
-  }
-
-  /// Set the `poll_remote()` error.
-  pub fn set_poll_error(&self, msg: &str) {
-    *self.poll_error.lock().expect("lock") = Some(msg.to_string());
   }
 
   /// Set the `refresh_remote()` error.
@@ -122,11 +100,6 @@ impl MockBackend {
   /// Number of `sync()` calls.
   pub fn sync_call_count(&self) -> usize {
     self.sync_calls.lock().expect("lock").len()
-  }
-
-  /// Number of `poll_remote()` calls.
-  pub fn poll_call_count(&self) -> usize {
-    self.poll_calls.load(Ordering::Relaxed)
   }
 
   /// Number of `refresh_remote()` calls.
@@ -170,21 +143,6 @@ impl Backend for MockBackend {
     }
 
     Ok(self.refresh_result.lock().expect("lock").clone())
-  }
-
-  async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
-    self.poll_calls.fetch_add(1, Ordering::Relaxed);
-
-    if let Some(ref msg) = *self.poll_error.lock().expect("lock") {
-      return Err(anyhow::anyhow!("{msg}"));
-    }
-
-    Ok(self.poll_result.lock().expect("lock").clone())
-  }
-
-  async fn apply_remote(&self, changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    self.apply_calls.lock().expect("lock").push(changes);
-    Ok(())
   }
 
   fn should_track(&self, path: &Path) -> bool {

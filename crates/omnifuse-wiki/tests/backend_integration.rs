@@ -11,7 +11,7 @@ use omnifuse_core::{Backend, InitResult, PathProtection, RemoteApplyMode, Remote
 use omnifuse_wiki::{
   WikiBackend, WikiConfig,
   client::Client,
-  session::{DirtyBatch, WikiPageSyncSession}
+  session::{DirtyBatch, RemoteBatch, RemoteChange, WikiPageSyncSession}
 };
 
 /// Timeout for async tests (30s — HTTP server operations).
@@ -426,8 +426,8 @@ async fn test_sync_update_page() {
 }
 
 #[tokio::test]
-async fn test_poll_remote_detects_changes() {
-  eprintln!("[TEST] test_poll_remote_detects_changes");
+async fn test_refresh_remote_applies_changes() {
+  eprintln!("[TEST] test_refresh_remote_applies_changes");
   tokio::time::timeout(TEST_TIMEOUT, async {
     let (backend, state, tmp, _url) = setup_backend().await;
     let local_dir = tmp.path().to_path_buf();
@@ -445,8 +445,20 @@ async fn test_poll_remote_detects_changes() {
       }
     }
 
-    let changes = backend.poll_remote().await.expect("poll_remote");
-    assert!(!changes.is_empty(), "remote changes should be detected");
+    let protected = StaticPathProtection::new(Vec::new());
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protected,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
+
+    assert!(matches!(result, RemoteRefreshResult::Applied { .. }));
+    assert_eq!(
+      std::fs::read_to_string(local_dir.join("root.md")).expect("read"),
+      "# Changed remotely"
+    );
   })
   .await
   .expect("test timed out — possible deadlock");
@@ -456,18 +468,21 @@ async fn test_poll_remote_detects_changes() {
 async fn test_apply_remote_writes() {
   eprintln!("[TEST] test_apply_remote_writes");
   tokio::time::timeout(TEST_TIMEOUT, async {
-    let (backend, _state, tmp, _url) = setup_backend().await;
+    let (session, _state, tmp) = setup_session_with_root().await;
     let local_dir = tmp.path().to_path_buf();
 
-    backend.init(&local_dir).await.expect("init");
+    session.initialize().await.expect("init");
 
     // Apply a remote change
-    let change = omnifuse_core::RemoteChange::Modified {
+    let change = RemoteChange::Modified {
       path: local_dir.join("root.md"),
       content: b"# Remote update".to_vec()
     };
 
-    backend.apply_remote(vec![change]).await.expect("apply_remote");
+    session
+      .apply_remote(RemoteBatch::from_changes(vec![change]))
+      .await
+      .expect("apply_remote");
 
     // Verify the file is updated
     let content = std::fs::read_to_string(local_dir.join("root.md")).expect("read");
@@ -601,18 +616,21 @@ async fn test_apply_remote_updates_base() {
   eprintln!("[TEST] test_apply_remote_updates_base");
   tokio::time::timeout(TEST_TIMEOUT, async {
     // apply_remote updates the base version for three-way merge
-    let (backend, _state, tmp, _url) = setup_backend().await;
+    let (session, _state, tmp) = setup_session_with_root().await;
     let local_dir = tmp.path().to_path_buf();
 
-    backend.init(&local_dir).await.expect("init");
+    session.initialize().await.expect("init");
 
     // Apply a remote change
-    let change = omnifuse_core::RemoteChange::Modified {
+    let change = RemoteChange::Modified {
       path: local_dir.join("root.md"),
       content: b"# Updated by remote".to_vec()
     };
 
-    backend.apply_remote(vec![change]).await.expect("apply_remote");
+    session
+      .apply_remote(RemoteBatch::from_changes(vec![change]))
+      .await
+      .expect("apply_remote");
 
     // Verify base is updated
     let base_path = local_dir.join(".vfs/base/root.md");
@@ -656,22 +674,25 @@ async fn test_sync_delete_page() {
 }
 
 #[tokio::test]
-async fn test_poll_remote_no_changes() {
-  eprintln!("[TEST] test_poll_remote_no_changes");
+async fn test_refresh_remote_no_changes() {
+  eprintln!("[TEST] test_refresh_remote_no_changes");
   tokio::time::timeout(TEST_TIMEOUT, async {
-    // poll_remote right after init (no server changes) -> empty list
+    // refresh_remote right after init (no server changes) -> Unchanged
     let (backend, _state, tmp, _url) = setup_backend().await;
     let local_dir = tmp.path().to_path_buf();
 
     backend.init(&local_dir).await.expect("init");
 
-    // Poll immediately - no changes
-    let changes = backend.poll_remote().await.expect("poll_remote");
-    assert!(
-      changes.is_empty(),
-      "poll_remote with no server changes -> empty list: {} items",
-      changes.len()
-    );
+    let protected = StaticPathProtection::new(Vec::new());
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protected,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
+
+    assert!(matches!(result, RemoteRefreshResult::Unchanged));
   })
   .await
   .expect("test timed out — possible deadlock");
@@ -775,21 +796,24 @@ async fn test_apply_remote_new_page() {
   eprintln!("[TEST] test_apply_remote_new_page");
   tokio::time::timeout(TEST_TIMEOUT, async {
     // apply_remote with RemoteChange::Modified for a new file -> file created on disk
-    let (backend, _state, tmp, _url) = setup_backend().await;
+    let (session, _state, tmp) = setup_session_with_root().await;
     let local_dir = tmp.path().to_path_buf();
 
-    backend.init(&local_dir).await.expect("init");
+    session.initialize().await.expect("init");
 
     // Apply a remote addition (new file)
     let new_path = local_dir.join("brand-new.md");
     assert!(!new_path.exists(), "file should not exist before apply");
 
-    let change = omnifuse_core::RemoteChange::Modified {
+    let change = RemoteChange::Modified {
       path: new_path.clone(),
       content: b"# Brand New Page".to_vec()
     };
 
-    backend.apply_remote(vec![change]).await.expect("apply_remote");
+    session
+      .apply_remote(RemoteBatch::from_changes(vec![change]))
+      .await
+      .expect("apply_remote");
 
     // Verify the file is created
     assert!(new_path.exists(), "new file should be created");
@@ -831,10 +855,10 @@ async fn test_sync_multiple_pages() {
 }
 
 #[tokio::test]
-async fn test_poll_remote_after_server_update() {
-  eprintln!("[TEST] test_poll_remote_after_server_update");
+async fn test_refresh_remote_after_server_update() {
+  eprintln!("[TEST] test_refresh_remote_after_server_update");
   tokio::time::timeout(TEST_TIMEOUT, async {
-    // mtime updates when content is changed remotely
+    // Local file updates when content is changed remotely
     let (backend, state, tmp, _url) = setup_backend().await;
     let local_dir = tmp.path().to_path_buf();
 
@@ -851,16 +875,19 @@ async fn test_poll_remote_after_server_update() {
       }
     }
 
-    let changes = backend.poll_remote().await.expect("poll_remote");
+    let protected = StaticPathProtection::new(Vec::new());
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protected,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
 
-    // A change for root/docs should be detected
-    let has_modified = changes.iter().any(|c| {
-      matches!(c, omnifuse_core::RemoteChange::Modified { path, .. }
-        if path.ends_with("root/docs.md"))
-    });
-    assert!(
-      has_modified,
-      "poll_remote should detect Modified for root/docs.md: {changes:?}"
+    assert!(matches!(result, RemoteRefreshResult::Applied { .. }));
+    assert_eq!(
+      std::fs::read_to_string(local_dir.join("root/docs.md")).expect("read"),
+      "# Updated documentation"
     );
   })
   .await
@@ -872,19 +899,22 @@ async fn test_apply_remote_deleted_page() {
   eprintln!("[TEST] test_apply_remote_deleted_page");
   tokio::time::timeout(TEST_TIMEOUT, async {
     // A page deleted on the server is removed from disk via apply_remote
-    let (backend, _state, tmp, _url) = setup_backend().await;
+    let (session, _state, tmp) = setup_session_with_root().await;
     let local_dir = tmp.path().to_path_buf();
 
-    backend.init(&local_dir).await.expect("init");
+    session.initialize().await.expect("init");
 
     let root_path = local_dir.join("root.md");
     assert!(root_path.exists(), "root.md should exist after init");
 
     // Apply a remote deletion
-    let change = omnifuse_core::RemoteChange::Deleted {
+    let change = RemoteChange::Deleted {
       path: root_path.clone()
     };
-    backend.apply_remote(vec![change]).await.expect("apply_remote");
+    session
+      .apply_remote(RemoteBatch::from_changes(vec![change]))
+      .await
+      .expect("apply_remote");
 
     // File should be deleted from disk
     assert!(
@@ -1051,24 +1081,27 @@ async fn test_read_page_with_subpages() {
   .expect("test timed out — possible deadlock");
 }
 
-/// Deleting a parent page via apply_remote(Deleted): file removed from disk.
+/// Deleting a parent page via a remote batch removes the file from disk.
 #[tokio::test]
 async fn test_delete_page_with_subpages() {
   eprintln!("[TEST] test_delete_page_with_subpages");
   tokio::time::timeout(TEST_TIMEOUT, async {
-    let (backend, _state, tmp, _url) = setup_backend().await;
+    let (session, _state, tmp) = setup_session_with_root().await;
     let local_dir = tmp.path().to_path_buf();
 
-    backend.init(&local_dir).await.expect("init");
+    session.initialize().await.expect("init");
 
     let root_path = local_dir.join("root.md");
     assert!(root_path.exists(), "root.md should exist after init");
 
     // Apply remote deletion for the parent page
-    let change = omnifuse_core::RemoteChange::Deleted {
+    let change = RemoteChange::Deleted {
       path: root_path.clone()
     };
-    backend.apply_remote(vec![change]).await.expect("apply_remote");
+    session
+      .apply_remote(RemoteBatch::from_changes(vec![change]))
+      .await
+      .expect("apply_remote");
 
     // Parent file should be deleted
     assert!(

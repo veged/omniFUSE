@@ -21,8 +21,7 @@ use std::{
 };
 
 pub use error::{GitError, classify_git_error};
-use omnifuse_core::{Backend, InitResult, RemoteChange, RemoteRefresh, RemoteRefreshResult, SyncResult};
-use tracing::{debug, info};
+use omnifuse_core::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult};
 
 use crate::{
   sync_lifecycle::{GitInit, GitSync, GitSyncLifecycle},
@@ -59,7 +58,7 @@ impl Default for GitConfig {
 /// Git backend for `OmniFuse`.
 ///
 /// Implements the `Backend` trait: init -> clone/fetch, sync -> commit+push,
-/// poll -> fetch+diff, apply -> pull.
+/// refresh -> fetch+safe pull.
 #[derive(Debug)]
 pub struct GitBackend {
   /// Configuration.
@@ -108,33 +107,6 @@ impl Backend for GitBackend {
 
   async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
     self.lifecycle()?.refresh_remote_protected(request).await
-  }
-
-  async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>> {
-    let changed_files = self.lifecycle()?.changed_remote_files().await?;
-
-    if changed_files.is_empty() {
-      return Ok(Vec::new());
-    }
-
-    info!(count = changed_files.len(), "remote changes detected");
-
-    let changes = changed_files
-      .into_iter()
-      .map(|path| RemoteChange::Modified {
-        path,
-        content: Vec::new()
-      })
-      .collect();
-
-    Ok(changes)
-  }
-
-  async fn apply_remote(&self, _changes: Vec<RemoteChange>) -> anyhow::Result<()> {
-    let result = self.lifecycle()?.refresh_remote().await?;
-    debug!(?result, "apply_remote: pull completed");
-
-    Ok(())
   }
 
   fn should_track(&self, path: &Path) -> bool {

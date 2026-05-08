@@ -156,8 +156,8 @@ mod tests {
 
   use omnifuse_core::{
     Backend, BufferConfig, Disposition, ErrorKind, EventSeverity, FuseMountOptions, InitResult, LoggingConfig,
-    MountConfig, ObservabilitySession, OperationKind, OperationalEvent, RemoteChange, SyncConfig, SyncResult,
-    run_mount
+    MountConfig, ObservabilitySession, OperationKind, OperationalEvent, RemoteRefresh, RemoteRefreshResult, SyncConfig,
+    SyncResult, run_mount
   };
   use serde_json::Value;
   use tauri::{Event, Listener};
@@ -175,12 +175,11 @@ mod tests {
       async { Ok(SyncResult::Success { synced_files: 0 }) }
     }
 
-    fn poll_remote(&self) -> impl Future<Output = anyhow::Result<Vec<RemoteChange>>> + Send {
-      async { Ok(Vec::new()) }
-    }
-
-    fn apply_remote(&self, _changes: Vec<RemoteChange>) -> impl Future<Output = anyhow::Result<()>> + Send {
-      async { Ok(()) }
+    fn refresh_remote(
+      &self,
+      _request: RemoteRefresh<'_>
+    ) -> impl Future<Output = anyhow::Result<RemoteRefreshResult>> + Send {
+      async { Ok(RemoteRefreshResult::Unchanged) }
     }
 
     fn should_track(&self, _path: &Path) -> bool {

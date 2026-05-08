@@ -8,13 +8,23 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use common::FakeWikiApi;
-use omnifuse_core::{Backend, InitResult, SyncResult};
+use omnifuse_core::{
+  Backend, InitResult, PathProtection, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult, SyncResult
+};
 use omnifuse_wiki::{WikiBackend, WikiConfig};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct NoPathProtection;
+
+impl PathProtection for NoPathProtection {
+  fn is_protected(&self, _path: &Path) -> bool {
+    false
+  }
+}
 
 /// Create a WikiBackend connected to the fake API with pre-loaded pages.
 async fn setup_backend() -> (WikiBackend, std::sync::Arc<common::FakeState>, tempfile::TempDir) {
@@ -272,10 +282,10 @@ async fn test_three_way_merge_resolves_different_lines() {
   .expect("test timed out — possible deadlock");
 }
 
-/// Test 7: Init → change server page → poll_remote → apply_remote → verify file updated on disk.
+/// Test 7: Init → change server page → refresh_remote → verify file updated on disk.
 #[tokio::test]
-async fn test_poll_detects_remote_change_and_apply_updates_disk() {
-  eprintln!("[TEST] test_poll_detects_remote_change_and_apply_updates_disk");
+async fn test_refresh_detects_remote_change_and_updates_disk() {
+  eprintln!("[TEST] test_refresh_detects_remote_change_and_updates_disk");
   tokio::time::timeout(TEST_TIMEOUT, async {
     let (backend, state, tmp) = setup_backend().await;
     let local_dir = tmp.path().to_path_buf();
@@ -296,15 +306,20 @@ async fn test_poll_detects_remote_change_and_apply_updates_disk() {
       }
     }
 
-    let changes = backend.poll_remote().await.expect("poll_remote");
-    assert!(!changes.is_empty(), "poll_remote should detect changes: {changes:?}");
-
-    backend.apply_remote(changes).await.expect("apply_remote");
+    let protection = NoPathProtection;
+    let result = backend
+      .refresh_remote(RemoteRefresh {
+        protected_paths: &protection,
+        mode: RemoteApplyMode::ApplySafe
+      })
+      .await
+      .expect("refresh");
+    assert!(matches!(result, RemoteRefreshResult::Applied { .. }));
 
     let updated_content = std::fs::read_to_string(&root_path).expect("read updated");
     assert_eq!(
       updated_content, "# Changed remotely",
-      "file should be updated after apply_remote"
+      "file should be updated after refresh_remote"
     );
   })
   .await
