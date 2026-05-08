@@ -5,18 +5,26 @@ use std::{
   sync::Arc
 };
 
-use omnifuse_core::InitResult;
+use omnifuse_core::{InitResult, SyncResult};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::{
   WikiConfig,
   client::Client,
+  error::classify_wiki_error,
+  merge::{MergeDecision, decide_merge},
   meta::{MetaStore, PageMeta},
-  models::PageTreeNodeSchema,
+  models::{PageFullDetailsSchema, PageTreeNodeSchema},
   page::{PageRef, PageSnapshot, Slug},
   page_index::PageIndex
 };
+
+/// Dirty local file batch.
+pub struct DirtyBatch<'a> {
+  /// Absolute local paths reported as dirty by the VFS layer.
+  pub paths: &'a [PathBuf]
+}
 
 /// Wiki page sync state bound to a concrete local directory.
 pub struct WikiPageSyncSession {
@@ -34,12 +42,13 @@ impl WikiPageSyncSession {
   ///
   /// Returns an error if the local metadata store cannot be created.
   pub async fn attach(config: WikiConfig, client: Arc<Client>, local_dir: &Path) -> anyhow::Result<Self> {
-    let meta_store = MetaStore::new(local_dir)?;
+    let local_dir = absolute_local_dir(local_dir)?;
+    let meta_store = MetaStore::new(&local_dir)?;
 
     Ok(Self {
       config,
       client,
-      local_dir: local_dir.to_path_buf(),
+      local_dir,
       meta_store,
       page_index: RwLock::new(PageIndex::default())
     })
@@ -97,6 +106,41 @@ impl WikiPageSyncSession {
     }
   }
 
+  /// Synchronize dirty local markdown files to remote wiki pages.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when local file reading fails or when an unexpected remote/API error occurs.
+  pub async fn sync_dirty(&self, dirty: DirtyBatch<'_>) -> anyhow::Result<SyncResult> {
+    let mut synced = 0;
+    let mut conflicts = Vec::new();
+
+    for path in dirty.paths {
+      match self.sync_dirty_file(path).await {
+        Ok(Some(true)) => synced += 1,
+        Ok(Some(false)) => conflicts.push(path.clone()),
+        Ok(None) => {}
+        Err(e) => match classify_wiki_error(&e) {
+          Some(omnifuse_core::ErrorKind::NotFound | omnifuse_core::ErrorKind::PermissionDenied) => {
+            warn!(path = %path.display(), error = %e, "skipping file");
+          }
+          Some(omnifuse_core::ErrorKind::Offline) => return Ok(SyncResult::Offline),
+          Some(omnifuse_core::ErrorKind::Conflict) => conflicts.push(path.clone()),
+          _ => return Err(e)
+        }
+      }
+    }
+
+    if conflicts.is_empty() {
+      Ok(SyncResult::Success { synced_files: synced })
+    } else {
+      Ok(SyncResult::Conflict {
+        synced_files: synced,
+        conflict_files: conflicts
+      })
+    }
+  }
+
   async fn materialize_node(&self, node: &PageTreeNodeSchema, index: &mut PageIndex) -> anyhow::Result<bool> {
     let page_ref = PageRef::from_slug(&self.local_dir, Slug::new(&node.slug))
       .ok_or_else(|| anyhow::anyhow!("invalid wiki page slug: {}", node.slug))?;
@@ -125,6 +169,129 @@ impl WikiPageSyncSession {
     debug!(slug = %page_ref.slug.as_str(), changed, "page downloaded");
     Ok(changed)
   }
+
+  async fn sync_dirty_file(&self, path: &Path) -> anyhow::Result<Option<bool>> {
+    let Some(page_ref) = PageRef::from_path(&self.local_dir, path) else {
+      return Ok(None);
+    };
+
+    let local_content =
+      std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+
+    let Some(snapshot) = self.snapshot_for(&page_ref).await else {
+      self.create_remote_page(&page_ref, &local_content).await?;
+      return Ok(Some(true));
+    };
+
+    let remote_page = self.client.get_page_by_slug(page_ref.slug.as_str()).await?;
+    let remote_content = remote_page.content.as_deref().unwrap_or("");
+
+    if remote_page.modified_at == snapshot.modified_at {
+      self
+        .update_remote_page(snapshot.id, &page_ref, &local_content, false, false)
+        .await?;
+      debug!(slug = %page_ref.slug.as_str(), "page updated (no conflict)");
+      return Ok(Some(true));
+    }
+
+    let base_content = self.meta_store.load_base(page_ref.slug.as_str()).unwrap_or_default();
+
+    match decide_merge(&base_content, &local_content, remote_content) {
+      MergeDecision::UploadLocal => {
+        self
+          .update_remote_page(snapshot.id, &page_ref, &local_content, true, false)
+          .await?;
+        Ok(Some(true))
+      }
+      MergeDecision::UploadMerged(merged) => {
+        self
+          .update_remote_page(snapshot.id, &page_ref, &merged, true, false)
+          .await?;
+        std::fs::write(path, &merged)?;
+        info!(slug = %page_ref.slug.as_str(), "merge successful");
+        Ok(Some(true))
+      }
+      MergeDecision::AcceptRemote(remote) => {
+        std::fs::write(path, &remote)?;
+        self
+          .save_page_state(&page_ref, snapshot_from_page(&remote_page), &remote)
+          .await?;
+        Ok(Some(true))
+      }
+      MergeDecision::AlreadySynced => {
+        self
+          .save_page_state(&page_ref, snapshot_from_page(&remote_page), remote_content)
+          .await?;
+        Ok(Some(true))
+      }
+      MergeDecision::Conflict => {
+        warn!(slug = %page_ref.slug.as_str(), "conflict: local wins");
+        self
+          .update_remote_page(snapshot.id, &page_ref, &local_content, true, false)
+          .await?;
+        Ok(Some(false))
+      }
+    }
+  }
+
+  async fn snapshot_for(&self, page_ref: &PageRef) -> Option<PageSnapshot> {
+    if let Some(entry) = self.page_index.read().await.by_path(&page_ref.path) {
+      return Some(entry.snapshot.clone());
+    }
+
+    self
+      .meta_store
+      .load_meta(page_ref.slug.as_str())
+      .map(|meta| PageSnapshot {
+        id: meta.id,
+        title: meta.title,
+        modified_at: meta.modified_at
+      })
+  }
+
+  async fn create_remote_page(&self, page_ref: &PageRef, local_content: &str) -> anyhow::Result<()> {
+    let page = self
+      .client
+      .create_page(
+        page_ref.slug.as_str(),
+        &title_from_slug(&page_ref.slug),
+        Some(local_content),
+        "page"
+      )
+      .await?;
+
+    self
+      .save_page_state(page_ref, snapshot_from_page(&page), local_content)
+      .await?;
+    info!(slug = %page_ref.slug.as_str(), "page created");
+    Ok(())
+  }
+
+  async fn update_remote_page(
+    &self,
+    id: u64,
+    page_ref: &PageRef,
+    content: &str,
+    allow_merge: bool,
+    update_local: bool
+  ) -> anyhow::Result<()> {
+    let updated = self.client.update_page(id, None, Some(content), allow_merge).await?;
+    if update_local {
+      std::fs::write(&page_ref.path, content)?;
+    }
+    self
+      .save_page_state(page_ref, snapshot_from_page(&updated), content)
+      .await
+  }
+
+  async fn save_page_state(&self, page_ref: &PageRef, snapshot: PageSnapshot, content: &str) -> anyhow::Result<()> {
+    self
+      .meta_store
+      .save_meta(page_ref.slug.as_str(), &page_meta(page_ref, &snapshot))?;
+    self.meta_store.save_base(page_ref.slug.as_str(), content)?;
+    self.page_index.write().await.insert(page_ref.clone(), snapshot);
+    Ok(())
+  }
 }
 
 fn collect_tree_nodes<'a>(
@@ -152,5 +319,30 @@ fn page_meta(page_ref: &PageRef, snapshot: &PageSnapshot) -> PageMeta {
     title: snapshot.title.clone(),
     slug: page_ref.slug.as_str().to_string(),
     modified_at: snapshot.modified_at.clone()
+  }
+}
+
+fn snapshot_from_page(page: &PageFullDetailsSchema) -> PageSnapshot {
+  PageSnapshot {
+    id: page.id,
+    title: page.title.clone(),
+    modified_at: page.modified_at.clone()
+  }
+}
+
+fn title_from_slug(slug: &Slug) -> String {
+  slug
+    .as_str()
+    .rsplit('/')
+    .next()
+    .unwrap_or(slug.as_str())
+    .replace(['-', '_'], " ")
+}
+
+fn absolute_local_dir(local_dir: &Path) -> anyhow::Result<PathBuf> {
+  if local_dir.is_absolute() {
+    Ok(local_dir.to_path_buf())
+  } else {
+    Ok(std::env::current_dir()?.join(local_dir))
   }
 }

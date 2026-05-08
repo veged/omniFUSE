@@ -8,7 +8,11 @@ use std::{path::Path, sync::Arc};
 
 use common::FakeWikiApi;
 use omnifuse_core::{Backend, InitResult};
-use omnifuse_wiki::{WikiBackend, WikiConfig, client::Client, session::WikiPageSyncSession};
+use omnifuse_wiki::{
+  WikiBackend, WikiConfig,
+  client::Client,
+  session::{DirtyBatch, WikiPageSyncSession}
+};
 
 /// Timeout for async tests (30s — HTTP server operations).
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -52,6 +56,44 @@ async fn setup_backend() -> (
   (backend, state, tmp, base_url)
 }
 
+async fn setup_session_with_root_content(
+  root_content: &str
+) -> (
+  WikiPageSyncSession,
+  std::sync::Arc<common::FakeState>,
+  tempfile::TempDir
+) {
+  let (base_url, state) = FakeWikiApi::spawn().await;
+  state
+    .add_page("root", "Root", root_content, "2024-01-01T00:00:00Z", None)
+    .await;
+
+  let config = WikiConfig {
+    base_url,
+    auth_token: "test-token".to_string(),
+    org_id: None,
+    root_slug: "root".to_string(),
+    poll_interval_secs: 60,
+    max_depth: 10,
+    max_pages: 500
+  };
+  let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
+  let tmp = tempfile::tempdir().expect("tempdir");
+  let session = WikiPageSyncSession::attach(config, client, tmp.path())
+    .await
+    .expect("attach");
+
+  (session, state, tmp)
+}
+
+async fn setup_session_with_root() -> (
+  WikiPageSyncSession,
+  std::sync::Arc<common::FakeState>,
+  tempfile::TempDir
+) {
+  setup_session_with_root_content("# Root").await
+}
+
 #[tokio::test]
 async fn session_initialize_downloads_tree_and_indexes_pages() {
   eprintln!("[TEST] session_initialize_downloads_tree_and_indexes_pages");
@@ -89,6 +131,56 @@ async fn session_initialize_downloads_tree_and_indexes_pages() {
     assert!(tmp.path().join("root/docs.md").exists());
     assert!(tmp.path().join(".vfs/meta/root.json").exists());
     assert!(tmp.path().join(".vfs/base/root.md").exists());
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn sync_dirty_creates_new_page_and_updates_snapshot() {
+  eprintln!("[TEST] sync_dirty_creates_new_page_and_updates_snapshot");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (session, state, tmp) = setup_session_with_root().await;
+    session.initialize().await.expect("init");
+
+    let path = tmp.path().join("root/new-page.md");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&path, "# New").expect("write");
+
+    let result = session
+      .sync_dirty(DirtyBatch { paths: &[path.clone()] })
+      .await
+      .expect("sync");
+
+    assert!(matches!(result, omnifuse_core::SyncResult::Success { synced_files: 1 }));
+    assert!(state.find_slug("root/new-page").await.is_some());
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn sync_dirty_auto_merges_non_overlapping_remote_change() {
+  eprintln!("[TEST] sync_dirty_auto_merges_non_overlapping_remote_change");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (session, state, tmp) = setup_session_with_root_content("line1\nline2\nline3").await;
+    session.initialize().await.expect("init");
+
+    let path = tmp.path().join("root.md");
+    std::fs::write(&path, "LOCAL\nline2\nline3").expect("local");
+    state
+      .update_content_by_slug("root", "line1\nline2\nREMOTE", "2024-02-01T00:00:00Z")
+      .await;
+
+    let result = session
+      .sync_dirty(DirtyBatch { paths: &[path.clone()] })
+      .await
+      .expect("sync");
+
+    assert!(matches!(result, omnifuse_core::SyncResult::Success { synced_files: 1 }));
+    let content = std::fs::read_to_string(&path).expect("merged");
+    assert!(content.contains("LOCAL"));
+    assert!(content.contains("REMOTE"));
   })
   .await
   .expect("test timed out — possible deadlock");

@@ -17,6 +17,22 @@ pub enum MergeResult {
   }
 }
 
+/// Domain action selected after comparing base, local and remote content.
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeDecision {
+  /// Upload local content to remote.
+  UploadLocal,
+  /// Upload auto-merged content to remote and local file.
+  UploadMerged(String),
+  /// Accept remote content locally without uploading.
+  AcceptRemote(String),
+  /// Local and remote content are already equivalent.
+  AlreadySynced,
+  /// Local and remote changes conflict.
+  Conflict
+}
+
 /// Three-way merge via diffy.
 ///
 /// # Arguments
@@ -60,6 +76,33 @@ pub fn three_way_merge(base: &str, local: &str, remote: &str) -> MergeResult {
         MergeResult::Merged(conflict)
       }
     }
+  }
+}
+
+/// Select an explicit synchronization action for a three-way content comparison.
+#[must_use]
+#[allow(clippy::module_name_repetitions)]
+pub fn decide_merge(base: &str, local: &str, remote: &str) -> MergeDecision {
+  if base == remote {
+    return if local == remote {
+      MergeDecision::AlreadySynced
+    } else {
+      MergeDecision::UploadLocal
+    };
+  }
+
+  if base == local {
+    return MergeDecision::AcceptRemote(remote.to_string());
+  }
+
+  if local == remote {
+    return MergeDecision::AlreadySynced;
+  }
+
+  match three_way_merge(base, local, remote) {
+    MergeResult::NoConflict => MergeDecision::AlreadySynced,
+    MergeResult::Merged(merged) => MergeDecision::UploadMerged(merged),
+    MergeResult::Failed { .. } => MergeDecision::Conflict
   }
 }
 

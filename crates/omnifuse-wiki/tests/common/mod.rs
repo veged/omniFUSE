@@ -77,6 +77,26 @@ impl FakeState {
     id
   }
 
+  /// Find a page by slug.
+  #[allow(dead_code)]
+  pub async fn find_slug(&self, slug: &str) -> Option<StoredPage> {
+    let id = self.slug_to_id.read().await.get(slug).copied()?;
+    self.pages.read().await.get(&id).cloned()
+  }
+
+  /// Update page content and timestamp by slug.
+  #[allow(dead_code)]
+  pub async fn update_content_by_slug(&self, slug: &str, content: &str, modified_at: &str) {
+    let Some(id) = self.slug_to_id.read().await.get(slug).copied() else {
+      return;
+    };
+
+    if let Some(page) = self.pages.write().await.get_mut(&id) {
+      page.content = content.to_string();
+      page.modified_at = modified_at.to_string();
+    }
+  }
+
   /// Set operation status for polling.
   #[allow(dead_code)]
   pub async fn set_op_status(&self, op_id: &str, status: &str) {
