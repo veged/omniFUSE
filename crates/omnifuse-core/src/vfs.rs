@@ -15,12 +15,18 @@ use std::{
   time::SystemTime
 };
 
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 use unifuse::{DirEntry, FileAttr, FileHandle, FileType, FsError, OpenFlags, StatFs};
 
 use crate::{
-  ErrorSource, ObservabilitySession, OperationKind, OperationalEvent, backend::Backend, buffer::FileBufferManager,
-  config::BufferConfig, events::VfsEventHandler, sync_engine::FsEvent
+  ObservabilitySession,
+  backend::Backend,
+  buffer::FileBufferManager,
+  config::BufferConfig,
+  events::VfsEventHandler,
+  file_mutations::{DirtySink, FileMutationPipeline, OpenFileMutation, metadata_to_attr},
+  sync_engine::FsEvent
 };
 
 /// `OmniFuse` filesystem core.
@@ -32,16 +38,12 @@ use crate::{
 pub struct OmniFuseVfs<B: Backend> {
   /// Local directory (working copy).
   local_dir: PathBuf,
-  /// File buffer manager.
-  buffer_manager: Arc<FileBufferManager>,
-  /// Channel for sending events to `SyncEngine`.
-  sync_tx: mpsc::Sender<FsEvent>,
+  /// File mutation pipeline.
+  mutation_pipeline: Arc<FileMutationPipeline>,
+  /// Open file mutation sessions.
+  open_files: DashMap<FileHandle, Arc<OpenFileMutation>>,
   /// Backend for filtering.
   backend: Arc<B>,
-  /// Event handler (UI/logs).
-  events: Arc<dyn VfsEventHandler>,
-  /// Shared observability session.
-  session: Arc<ObservabilitySession>,
   /// File handle counter.
   next_fh: AtomicU64
 }
@@ -72,13 +74,20 @@ impl<B: Backend> OmniFuseVfs<B> {
     session: Arc<ObservabilitySession>,
     buffer_config: BufferConfig
   ) -> Self {
+    let buffer_manager = Arc::new(FileBufferManager::new(buffer_config));
+    let mutation_pipeline = Arc::new(FileMutationPipeline::new(
+      local_dir.clone(),
+      buffer_manager,
+      DirtySink::new(sync_tx),
+      events,
+      session
+    ));
+
     Self {
       local_dir,
-      buffer_manager: Arc::new(FileBufferManager::new(buffer_config)),
-      sync_tx,
+      mutation_pipeline,
+      open_files: DashMap::new(),
       backend,
-      events,
-      session,
       next_fh: AtomicU64::new(1)
     }
   }
@@ -103,115 +112,13 @@ impl<B: Backend> OmniFuseVfs<B> {
     FileHandle(self.next_fh.fetch_add(1, Ordering::Relaxed))
   }
 
-  /// Send an event to `SyncEngine` (non-blocking).
-  fn send_event(&self, event: FsEvent) {
-    if self.sync_tx.try_send(event).is_err() {
-      let context = self.session.start_operation(OperationKind::File, 1, None);
-      self.events.on_event(&OperationalEvent::UserVisibleWarning {
-        context,
-        message: "sync event queue is full".to_string(),
-        source: ErrorSource::Vfs,
-        disposition: crate::Disposition::Retryable
-      });
+  async fn mutation_for_handle_or_path(&self, path: &Path, fh: FileHandle) -> Result<Arc<OpenFileMutation>, FsError> {
+    if let Some(file) = self.open_files.get(&fh) {
+      return Ok(Arc::clone(file.value()));
     }
+
+    Ok(Arc::new(self.mutation_pipeline.open_file(path).await?))
   }
-
-  fn emit_file_marked_dirty(&self, path: &Path) {
-    let context = self
-      .session
-      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
-    self.events.on_event(&OperationalEvent::FileMarkedDirty {
-      context,
-      path: path.to_path_buf()
-    });
-  }
-
-  fn emit_file_flushed(&self, path: &Path) {
-    let context = self
-      .session
-      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
-    self.events.on_event(&OperationalEvent::FileFlushed {
-      context,
-      path: path.to_path_buf()
-    });
-  }
-}
-
-/// Convert `tokio::fs::Metadata` to `FileAttr`.
-fn metadata_to_attr(meta: &std::fs::Metadata) -> FileAttr {
-  let kind = if meta.is_dir() {
-    FileType::Directory
-  } else if meta.is_symlink() {
-    FileType::Symlink
-  } else {
-    FileType::RegularFile
-  };
-
-  let now = SystemTime::now();
-
-  FileAttr {
-    size: meta.len(),
-    blocks: meta.len().div_ceil(512),
-    atime: meta.accessed().unwrap_or(now),
-    mtime: meta.modified().unwrap_or(now),
-    ctime: meta.modified().unwrap_or(now),
-    crtime: meta.created().unwrap_or(now),
-    kind,
-    perm: unix_perm(meta),
-    nlink: unix_nlink(meta),
-    uid: unix_uid(meta),
-    gid: unix_gid(meta),
-    rdev: 0,
-    flags: 0
-  }
-}
-
-#[cfg(unix)]
-fn unix_perm(meta: &std::fs::Metadata) -> u16 {
-  use std::os::unix::fs::MetadataExt;
-  #[allow(clippy::cast_possible_truncation)]
-  let perm = meta.mode() as u16 & 0o7777;
-  perm
-}
-
-#[cfg(not(unix))]
-fn unix_perm(meta: &std::fs::Metadata) -> u16 {
-  if meta.permissions().readonly() { 0o444 } else { 0o644 }
-}
-
-#[cfg(unix)]
-fn unix_nlink(meta: &std::fs::Metadata) -> u32 {
-  use std::os::unix::fs::MetadataExt;
-  #[allow(clippy::cast_possible_truncation)]
-  let nlink = meta.nlink() as u32;
-  nlink
-}
-
-#[cfg(not(unix))]
-const fn unix_nlink(_meta: &std::fs::Metadata) -> u32 {
-  1
-}
-
-#[cfg(unix)]
-fn unix_uid(meta: &std::fs::Metadata) -> u32 {
-  use std::os::unix::fs::MetadataExt;
-  meta.uid()
-}
-
-#[cfg(not(unix))]
-const fn unix_uid(_meta: &std::fs::Metadata) -> u32 {
-  0
-}
-
-#[cfg(unix)]
-fn unix_gid(meta: &std::fs::Metadata) -> u32 {
-  use std::os::unix::fs::MetadataExt;
-  meta.gid()
-}
-
-#[cfg(not(unix))]
-const fn unix_gid(_meta: &std::fs::Metadata) -> u32 {
-  0
 }
 
 impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
@@ -233,19 +140,8 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
 
     // Truncate
     if let Some(new_size) = size {
-      // If there is a buffer — truncate in the buffer
-      if let Some(buffer) = self.buffer_manager.get(&full_path) {
-        buffer.truncate(new_size).await;
-      }
-      // Truncate on disk
-      let file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(&full_path)
-        .await
-        .map_err(FsError::Io)?;
-      file.set_len(new_size).await.map_err(FsError::Io)?;
-      self.send_event(FsEvent::FileModified(path.to_path_buf()));
-      self.emit_file_marked_dirty(path);
+      let file = Arc::new(self.mutation_pipeline.open_file(path).await?);
+      file.truncate(new_size).await?;
     }
 
     // Set times
@@ -276,84 +172,51 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   }
 
   async fn open(&self, path: &Path, _flags: OpenFlags) -> Result<FileHandle, FsError> {
-    let full_path = self.full_path(path);
-
-    // Load file into buffer
-    self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
-
-    Ok(self.alloc_fh())
+    let file = Arc::new(self.mutation_pipeline.open_file(path).await?);
+    let fh = self.alloc_fh();
+    self.open_files.insert(fh, file);
+    Ok(fh)
   }
 
   async fn create(&self, path: &Path, _flags: OpenFlags, mode: u32) -> Result<(FileHandle, FileAttr), FsError> {
-    let full_path = self.full_path(path);
-
-    // Create file
-    tokio::fs::write(&full_path, b"").await.map_err(FsError::Io)?;
-
-    #[cfg(unix)]
-    set_mode_unix(&full_path, mode)?;
-
-    // Cache an empty buffer
-    self.buffer_manager.cache(&full_path, Vec::new()).await;
-
-    self.send_event(FsEvent::FileModified(path.to_path_buf()));
-    self.emit_file_marked_dirty(path);
-    self.events.on_file_created(path);
-
-    let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
-
-    Ok((self.alloc_fh(), metadata_to_attr(&meta)))
+    let (file, attr) = self.mutation_pipeline.create_file(path, mode).await?;
+    let fh = self.alloc_fh();
+    self.open_files.insert(fh, Arc::new(file));
+    Ok((fh, attr))
   }
 
-  async fn read(&self, path: &Path, _fh: FileHandle, offset: u64, size: u32) -> Result<Vec<u8>, FsError> {
-    let full_path = self.full_path(path);
-
-    let buffer = self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
-
-    Ok(buffer.read(offset, size).await)
+  async fn read(&self, path: &Path, fh: FileHandle, offset: u64, size: u32) -> Result<Vec<u8>, FsError> {
+    self
+      .mutation_for_handle_or_path(path, fh)
+      .await?
+      .read(offset, size)
+      .await
   }
 
-  async fn write(&self, path: &Path, _fh: FileHandle, offset: u64, data: &[u8]) -> Result<u32, FsError> {
-    let full_path = self.full_path(path);
-
-    let buffer = self.buffer_manager.get_or_load(&full_path).await.map_err(FsError::Io)?;
-
-    let written = buffer.write(offset, data).await;
-
-    self.send_event(FsEvent::FileModified(path.to_path_buf()));
-    self.emit_file_marked_dirty(path);
-    #[allow(clippy::cast_possible_truncation)]
-    let written_u32 = written as u32;
-    self.events.on_file_written(path, written);
-
-    Ok(written_u32)
+  async fn write(&self, path: &Path, fh: FileHandle, offset: u64, data: &[u8]) -> Result<u32, FsError> {
+    self
+      .mutation_for_handle_or_path(path, fh)
+      .await?
+      .write(offset, data)
+      .await
   }
 
-  async fn flush(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
-    let full_path = self.full_path(path);
-    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
-    self.emit_file_flushed(path);
-    Ok(())
+  async fn flush(&self, path: &Path, fh: FileHandle) -> Result<(), FsError> {
+    self.mutation_for_handle_or_path(path, fh).await?.flush().await
   }
 
-  async fn release(&self, path: &Path, _fh: FileHandle) -> Result<(), FsError> {
-    let full_path = self.full_path(path);
+  async fn release(&self, path: &Path, fh: FileHandle) -> Result<(), FsError> {
+    let file = self.open_files.remove(&fh).map(|(_, file)| file);
+    let file = match file {
+      Some(file) => file,
+      None => Arc::new(self.mutation_pipeline.open_file(path).await?)
+    };
 
-    // Flush to disk
-    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
-    self.emit_file_flushed(path);
-
-    // Notify sync engine
-    self.send_event(FsEvent::FileClosed(path.to_path_buf()));
-
-    Ok(())
+    file.close().await
   }
 
-  async fn fsync(&self, path: &Path, _fh: FileHandle, _datasync: bool) -> Result<(), FsError> {
-    let full_path = self.full_path(path);
-    self.buffer_manager.flush(&full_path).await.map_err(FsError::Io)?;
-    self.emit_file_flushed(path);
-    Ok(())
+  async fn fsync(&self, path: &Path, fh: FileHandle, _datasync: bool) -> Result<(), FsError> {
+    self.mutation_for_handle_or_path(path, fh).await?.flush().await
   }
 
   async fn readdir(&self, path: &Path) -> Result<Vec<DirEntry>, FsError> {
@@ -404,48 +267,15 @@ impl<B: Backend> unifuse::UniFuseFilesystem for OmniFuseVfs<B> {
   }
 
   async fn unlink(&self, path: &Path) -> Result<(), FsError> {
-    let full_path = self.full_path(path);
-
-    // Remove from buffer
-    self.buffer_manager.remove(&full_path).await;
-
-    tokio::fs::remove_file(&full_path).await.map_err(FsError::Io)?;
-
-    self.send_event(FsEvent::FileModified(path.to_path_buf()));
-    self.events.on_file_deleted(path);
-
-    Ok(())
+    self.mutation_pipeline.unlink(path).await
   }
 
   async fn rename(&self, from: &Path, to: &Path, _flags: u32) -> Result<(), FsError> {
-    let full_from = self.full_path(from);
-    let full_to = self.full_path(to);
-
-    tokio::fs::rename(&full_from, &full_to).await.map_err(FsError::Io)?;
-
-    // Update buffer
-    self.buffer_manager.remove(&full_from).await;
-
-    self.send_event(FsEvent::FileModified(from.to_path_buf()));
-    self.send_event(FsEvent::FileModified(to.to_path_buf()));
-    self.events.on_file_renamed(from, to);
-
-    Ok(())
+    self.mutation_pipeline.rename(from, to).await
   }
 
   async fn symlink(&self, target: &Path, link: &Path) -> Result<FileAttr, FsError> {
-    let full_link = self.full_path(link);
-
-    #[cfg(unix)]
-    tokio::fs::symlink(target, &full_link).await.map_err(FsError::Io)?;
-
-    #[cfg(not(unix))]
-    return Err(FsError::NotSupported);
-
-    let meta = tokio::fs::symlink_metadata(&full_link).await.map_err(FsError::Io)?;
-
-    self.send_event(FsEvent::FileModified(link.to_path_buf()));
-    Ok(metadata_to_attr(&meta))
+    self.mutation_pipeline.symlink(target, link).await
   }
 
   async fn readlink(&self, path: &Path) -> Result<PathBuf, FsError> {
