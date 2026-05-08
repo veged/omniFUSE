@@ -12,6 +12,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
+  OperationalEvent,
   backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
   events::{LogLevel, VfsEventHandler},
@@ -180,6 +181,22 @@ async fn test_e2e_create_write_close_syncs() {
     assert!(
       created.iter().any(|p| p.ends_with("document.md")),
       "on_file_created should have been called for document.md"
+    );
+
+    let written = events.written_calls.lock().expect("lock");
+    assert!(
+      written
+        .iter()
+        .any(|(path, bytes)| path.ends_with("document.md") && *bytes == content.len()),
+      "on_file_written should have been called for document.md"
+    );
+
+    let operational_events = events.operational_event_calls.lock().expect("lock");
+    assert!(
+      operational_events
+        .iter()
+        .any(|event| matches!(event, OperationalEvent::FileFlushed { path, .. } if path.ends_with("document.md"))),
+      "FileFlushed should have been emitted for document.md"
     );
   })
   .await;
