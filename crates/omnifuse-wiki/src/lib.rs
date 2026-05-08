@@ -15,6 +15,8 @@ pub mod models;
 pub mod page;
 /// Bidirectional index of known wiki pages.
 pub mod page_index;
+/// Wiki page synchronization session.
+pub mod session;
 
 use std::{
   future::Future,

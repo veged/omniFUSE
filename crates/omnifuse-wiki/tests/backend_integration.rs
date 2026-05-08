@@ -4,11 +4,11 @@
 
 mod common;
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use common::FakeWikiApi;
-use omnifuse_core::Backend;
-use omnifuse_wiki::{WikiBackend, WikiConfig};
+use omnifuse_core::{Backend, InitResult};
+use omnifuse_wiki::{WikiBackend, WikiConfig, client::Client, session::WikiPageSyncSession};
 
 /// Timeout for async tests (30s — HTTP server operations).
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -50,6 +50,48 @@ async fn setup_backend() -> (
   let tmp = tempfile::tempdir().expect("tempdir");
 
   (backend, state, tmp, base_url)
+}
+
+#[tokio::test]
+async fn session_initialize_downloads_tree_and_indexes_pages() {
+  eprintln!("[TEST] session_initialize_downloads_tree_and_indexes_pages");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (base_url, state) = FakeWikiApi::spawn().await;
+    let root_id = state
+      .add_page("root", "Root", "# Root", "2024-01-01T00:00:00Z", None)
+      .await;
+    state
+      .add_page("root/docs", "Docs", "# Docs", "2024-01-01T00:00:01Z", Some(root_id))
+      .await;
+
+    let config = WikiConfig {
+      base_url,
+      auth_token: "token".to_string(),
+      org_id: None,
+      root_slug: "root".to_string(),
+      poll_interval_secs: 60,
+      max_depth: 10,
+      max_pages: 500
+    };
+    let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let session = WikiPageSyncSession::attach(config, client, tmp.path())
+      .await
+      .expect("attach");
+
+    let result = session.initialize().await.expect("init");
+
+    assert!(matches!(result, InitResult::Updated));
+    assert_eq!(
+      std::fs::read_to_string(tmp.path().join("root.md")).expect("root"),
+      "# Root"
+    );
+    assert!(tmp.path().join("root/docs.md").exists());
+    assert!(tmp.path().join(".vfs/meta/root.json").exists());
+    assert!(tmp.path().join(".vfs/base/root.md").exists());
+  })
+  .await
+  .expect("test timed out — possible deadlock");
 }
 
 #[tokio::test]
