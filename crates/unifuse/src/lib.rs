@@ -27,6 +27,7 @@
 pub mod inode;
 #[cfg(unix)]
 pub mod rfuse3_adapter;
+pub mod session;
 pub mod types;
 #[cfg(windows)]
 pub mod winfsp_adapter;
@@ -39,6 +40,7 @@ use std::{
 };
 
 pub use inode::{InodeMap, NodeKind, ROOT_INODE};
+pub use session::*;
 pub use types::*;
 
 /// Cross-platform async path-based filesystem trait.
