@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use omnifuse_app::{GitMountArgs, MountService, WikiMountArgs};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
@@ -49,30 +50,6 @@ pub async fn mount_git(
   }
 
   let mnt = PathBuf::from(&mount_point);
-
-  let git_config = omnifuse_git::GitConfig {
-    source: source.clone(),
-    branch: branch.unwrap_or_else(|| "main".to_string()),
-    max_push_retries: 10,
-    poll_interval_secs: 30,
-    local_dir: mnt.clone()
-  };
-
-  let git_backend = omnifuse_git::GitBackend::new(git_config);
-
-  let mount_config = omnifuse_core::MountConfig {
-    mount_point: mnt.clone(),
-    local_dir: mnt.clone(),
-    sync: omnifuse_core::SyncConfig::default(),
-    buffer: omnifuse_core::BufferConfig::default(),
-    mount_options: omnifuse_core::FuseMountOptions {
-      fs_name: "omnifuse-git".to_string(),
-      allow_other: false,
-      read_only: false
-    },
-    logging: omnifuse_core::LoggingConfig::default()
-  };
-
   let _ = app.emit(
     "vfs:log",
     serde_json::json!({
@@ -82,6 +59,14 @@ pub async fn mount_git(
   );
 
   let events = TauriEventHandler::new(app.clone());
+  let args = GitMountArgs {
+    source,
+    mount_point: mnt,
+    branch,
+    poll_interval_secs: Some(30),
+    allow_other: false,
+    read_only: false
+  };
   let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
   *state.cancel_token.lock().await = Some(cancel_tx);
@@ -91,8 +76,9 @@ pub async fn mount_git(
   let state_clone = Arc::clone(&state);
 
   tokio::spawn(async move {
+    let service = MountService::default();
     tokio::select! {
-        result = omnifuse_core::run_mount(mount_config, git_backend, events) => {
+        result = service.run_git(args, events) => {
             if let Err(e) = result {
                 tracing::error!("VFS error: {e}");
                 let _ = app.emit("vfs:error", serde_json::json!({
@@ -130,33 +116,6 @@ pub async fn mount_wiki(
   }
 
   let mnt = PathBuf::from(&mount_point);
-
-  let wiki_config = omnifuse_wiki::WikiConfig {
-    base_url: base_url.clone(),
-    auth_token,
-    org_id: None,
-    root_slug: root_slug.clone(),
-    poll_interval_secs: 60,
-    max_depth: 10,
-    max_pages: 500
-  };
-
-  let wiki_backend =
-    omnifuse_wiki::WikiBackend::new(wiki_config).map_err(|e| format!("failed to create wiki backend: {e}"))?;
-
-  let mount_config = omnifuse_core::MountConfig {
-    mount_point: mnt.clone(),
-    local_dir: mnt.clone(),
-    sync: omnifuse_core::SyncConfig::default(),
-    buffer: omnifuse_core::BufferConfig::default(),
-    mount_options: omnifuse_core::FuseMountOptions {
-      fs_name: "omnifuse-wiki".to_string(),
-      allow_other: false,
-      read_only: false
-    },
-    logging: omnifuse_core::LoggingConfig::default()
-  };
-
   let _ = app.emit(
     "vfs:log",
     serde_json::json!({
@@ -166,6 +125,16 @@ pub async fn mount_wiki(
   );
 
   let events = TauriEventHandler::new(app.clone());
+  let args = WikiMountArgs {
+    base_url,
+    root_slug,
+    auth_token,
+    org_id: None,
+    mount_point: mnt,
+    poll_interval_secs: Some(60),
+    allow_other: false,
+    read_only: false
+  };
   let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
   *state.cancel_token.lock().await = Some(cancel_tx);
@@ -175,8 +144,9 @@ pub async fn mount_wiki(
   let state_clone = Arc::clone(&state);
 
   tokio::spawn(async move {
+    let service = MountService::default();
     tokio::select! {
-        result = omnifuse_core::run_mount(mount_config, wiki_backend, events) => {
+        result = service.run_wiki(args, events) => {
             if let Err(e) = result {
                 tracing::error!("VFS error: {e}");
                 let _ = app.emit("vfs:error", serde_json::json!({

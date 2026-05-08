@@ -22,9 +22,8 @@ workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+omnifuse-app = { path = "../../omnifuse-app" }
 omnifuse-core = { path = "../../omnifuse-core" }
-omnifuse-git = { path = "../../omnifuse-git" }
-omnifuse-wiki = { path = "../../omnifuse-wiki" }
 tauri = { version = "2", features = ["test"] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
