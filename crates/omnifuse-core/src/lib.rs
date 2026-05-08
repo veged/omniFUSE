@@ -31,6 +31,7 @@ pub mod config;
 /// Shared dirty path index for remote refresh protection.
 pub mod dirty_index;
 pub mod events;
+pub mod file_mutations;
 pub mod observability;
 pub mod sync_engine;
 #[cfg(any(test, feature = "test-utils"))]
