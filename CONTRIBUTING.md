@@ -1,5 +1,14 @@
 # Contributing to omniFUSE
 
+## Language
+
+This project is maintained in English.
+
+All project-facing artifacts must be written in English: documentation, plans,
+changelogs, release notes, PR descriptions, issue text, code comments, test
+fixtures, and commit messages. Chat language does not change repository
+language.
+
 ## Prerequisites
 
 - Rust nightly toolchain (`rustup toolchain install nightly`)

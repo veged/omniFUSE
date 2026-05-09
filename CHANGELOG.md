@@ -1,42 +1,42 @@
 # Changelog
 
-Все заметные изменения проекта фиксируются в этом файле.
+All notable changes to this project are documented in this file.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-проект следует [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.0] - 2026-05-09
 
-### Добавлено
+### Added
 
-- Общий application-level mount service для CLI и GUI.
-- Session-based VFS pipeline: dirty index, file mutation sessions, структурные операции и refresh-контракт для удалённых изменений.
-- Session filesystem API и адаптеры для `rfuse3`/WinFsp compatibility path.
-- Реалистичные smoke-тесты для Git/Wiki mount, включая сценарии редакционной работы через headless `nvim`.
-- Архитектурные планы развития кодовой базы.
+- Shared application-level mount service for the CLI and GUI.
+- Session-based VFS pipeline: dirty index, file mutation sessions, structural operations, and the remote refresh contract.
+- Session filesystem API and adapters for the `rfuse3` and WinFsp compatibility paths.
+- Realistic Git/Wiki mount smoke tests, including editorial workflows driven through headless `nvim`.
+- Architecture plans for the next codebase improvements.
 
-### Изменено
+### Changed
 
-- Git и Wiki backend переведены на lifecycle/session-ориентированную синхронизацию.
-- Wiki backend получил доменную модель страницы и явное разделение dirty/remote sync.
-- CI на Sourcecraft разделён на unit/integration контуры, чтобы flaky FUSE-сценарии не маскировали обычные unit-проверки.
-- Внутренние workspace-зависимости теперь имеют явные версии для публикации crates.io packages.
+- Git and Wiki backends now use lifecycle/session-oriented synchronization.
+- Wiki backend now has a dedicated page domain model and explicit dirty/remote sync boundaries.
+- Sourcecraft CI now separates unit and integration checks so flaky FUSE scenarios do not mask normal unit failures.
+- Internal workspace dependencies now include explicit versions for crates.io publication.
 
-### Исправлено
+### Fixed
 
-- Clippy-предупреждения Linux mode conversions и cache directory handling.
-- Нестабильный concurrent read/write тест больше не закрепляет некорректный transient invariant.
-- Восстановлены generated Tauri schemas.
+- Clippy warnings for Linux mode conversions and cache directory handling.
+- Concurrent read/write test no longer asserts an invalid transient invariant.
+- Restored generated Tauri schemas.
 
 ## [0.1.0] - 2025-02-09
 
-### Добавлено
+### Added
 
-- **unifuse**: cross-platform async FUSE abstraction (`rfuse3` на Unix, WinFsp на Windows).
-- **omnifuse-core**: VFS kernel с `Backend`, `SyncEngine` (debounce + polling), `FileBufferManager` (LRU eviction).
-- **omnifuse-git**: Git backend с clone, commit, push/pull retry и `.gitignore` filtering.
-- **omnifuse-wiki**: Wiki backend с HTTP API client, three-way merge через `diffy` и `MetaStore`.
-- **omnifuse-cli**: CLI binary `of` с командами `mount git`, `mount wiki`, `check`, `gen-config`.
-- **omnifuse-gui**: Tauri desktop GUI с Git/Wiki backend support.
-- Testing: 320+ unit и integration tests во всех crates.
-- CI/CD pipeline для Sourcecraft.dev.
+- **unifuse**: cross-platform async FUSE abstraction (`rfuse3` on Unix, WinFsp on Windows).
+- **omnifuse-core**: VFS kernel with `Backend`, `SyncEngine` (debounce + polling), and `FileBufferManager` (LRU eviction).
+- **omnifuse-git**: Git backend with clone, commit, push/pull retry, and `.gitignore` filtering.
+- **omnifuse-wiki**: Wiki backend with HTTP API client, three-way merge via `diffy`, and `MetaStore`.
+- **omnifuse-cli**: CLI binary `of` with `mount git`, `mount wiki`, `check`, and `gen-config`.
+- **omnifuse-gui**: Tauri desktop GUI with Git/Wiki backend support.
+- Testing: 320+ unit and integration tests across all crates.
+- CI/CD pipeline for Sourcecraft.dev.
