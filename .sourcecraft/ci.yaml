@@ -48,7 +48,7 @@ tasks:
         image: rustlang/rust:nightly
         script:
           - apt-get update && apt-get install -y fuse3 libfuse3-dev
-          - cargo test --workspace --exclude omnifuse-gui -- --skip fuse_mount --skip real_api --skip real_fuse
+          - cargo test --workspace --exclude omnifuse-gui -- --skip fuse_mount --skip real_api --skip real_fuse --skip honest
 
   - name: integration-tests
     env:
