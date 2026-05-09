@@ -11,3 +11,8 @@ node_modules/
 dist/
 .claude/
 .codeassistant/mcp.json
+
+# Local planning artifacts
+.sisyphus/
+docs/superpowers/plans/
+plans/
