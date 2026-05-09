@@ -8,7 +8,10 @@
 
 mod common;
 
-use std::{path::Path, time::Duration};
+use std::{
+  path::{Path, PathBuf},
+  time::Duration
+};
 
 use common::FakeWikiApi;
 use omnifuse_core::{
@@ -54,6 +57,123 @@ async fn setup_backend() -> (WikiBackend, std::sync::Arc<common::FakeState>, tem
   let backend = WikiBackend::new(config).expect("backend");
   let tmp = tempfile::tempdir().expect("tempdir");
   (backend, state, tmp)
+}
+
+async fn setup_editorial_state() -> (String, std::sync::Arc<common::FakeState>) {
+  let (base_url, state) = FakeWikiApi::spawn().await;
+  let root_id = state
+    .add_page("root", "Root", "# Редакционный проект\n", "2024-01-01T00:00:00Z", None)
+    .await;
+  let media_id = state
+    .add_page(
+      "root/media",
+      "Посевы",
+      "# Посевы\n",
+      "2024-01-01T00:00:01Z",
+      Some(root_id)
+    )
+    .await;
+
+  state
+    .add_page(
+      "root/plan",
+      "План",
+      "# План публикации\n\n- Тема: запуск OmniFuse\n- Тезис: быстрый черновик с ачепяткой\n- Проверка фактов: ожидается\n",
+      "2024-01-01T00:00:02Z",
+      Some(root_id)
+    )
+    .await;
+  state
+    .add_page(
+      "root/article",
+      "Статья",
+      "# Статья\n\nЧерновик ожидается.\n",
+      "2024-01-01T00:00:03Z",
+      Some(root_id)
+    )
+    .await;
+  state
+    .add_page(
+      "root/media/telegram",
+      "Telegram",
+      "# Telegram\n\nЧерновик ожидается.\n",
+      "2024-01-01T00:00:04Z",
+      Some(media_id)
+    )
+    .await;
+  state
+    .add_page(
+      "root/media/vk",
+      "VK",
+      "# VK\n\nЧерновик ожидается.\n",
+      "2024-01-01T00:00:05Z",
+      Some(media_id)
+    )
+    .await;
+
+  (base_url, state)
+}
+
+async fn init_editorial_workspace(base_url: &str) -> (WikiBackend, tempfile::TempDir, PathBuf) {
+  let backend = WikiBackend::new(WikiConfig {
+    base_url: base_url.to_string(),
+    auth_token: "test-token".to_string(),
+    org_id: None,
+    root_slug: "root".to_string(),
+    poll_interval_secs: 60,
+    max_depth: 10,
+    max_pages: 500
+  })
+  .expect("backend");
+  let tmp = tempfile::tempdir().expect("tempdir");
+  let local_dir = tmp.path().to_path_buf();
+
+  backend.init(&local_dir).await.expect("init editorial workspace");
+  (backend, tmp, local_dir)
+}
+
+async fn refresh_workspace(backend: &WikiBackend) {
+  let protection = NoPathProtection;
+  let result = backend
+    .refresh_remote(RemoteRefresh {
+      protected_paths: &protection,
+      mode: RemoteApplyMode::ApplySafe
+    })
+    .await
+    .expect("refresh workspace");
+
+  assert!(
+    matches!(
+      result,
+      RemoteRefreshResult::Applied { .. } | RemoteRefreshResult::Unchanged
+    ),
+    "refresh should either apply remote changes or report no changes: {result:?}"
+  );
+}
+
+async fn bump_modified_at(state: &common::FakeState, slug: &str, modified_at: &str) {
+  let page = state.find_slug(slug).await.expect("page exists");
+  state.update_content_by_slug(slug, &page.content, modified_at).await;
+}
+
+fn read_text(path: impl AsRef<Path>) -> String {
+  std::fs::read_to_string(path).expect("read text file")
+}
+
+fn assert_contains_all(content: &str, markers: &[&str]) {
+  for marker in markers {
+    assert!(
+      content.contains(marker),
+      "content should contain {marker:?}:\n{content}"
+    );
+  }
+}
+
+fn assert_no_conflict_markers(content: &str) {
+  assert!(
+    !content.contains("<<<<<<<") && !content.contains("=======") && !content.contains(">>>>>>>"),
+    "content should not contain conflict markers:\n{content}"
+  );
 }
 
 /// Test 1: Init wiki backend → verify root.md and root/docs.md exist with correct content.
@@ -359,6 +479,162 @@ async fn test_nested_pages_create_edit_sync() {
     assert!(
       slug_map.contains_key("root/docs/api"),
       "root/docs/api should exist after sync"
+    );
+  })
+  .await
+  .expect("test timed out — possible deadlock");
+}
+
+#[tokio::test]
+async fn test_editorial_team_collaboration_converges_across_workspaces() {
+  eprintln!("[TEST] test_editorial_team_collaboration_converges_across_workspaces");
+  tokio::time::timeout(TEST_TIMEOUT, async {
+    let (base_url, state) = setup_editorial_state().await;
+    let (planner_backend, _planner_tmp, planner_dir) = init_editorial_workspace(&base_url).await;
+    let (corrector_backend, _corrector_tmp, corrector_dir) = init_editorial_workspace(&base_url).await;
+    let (producer_backend, _producer_tmp, producer_dir) = init_editorial_workspace(&base_url).await;
+
+    let corrector_plan_path = corrector_dir.join("root/plan.md");
+    let corrected_plan = read_text(&corrector_plan_path).replace("ачепяткой", "опечаткой");
+    std::fs::write(&corrector_plan_path, corrected_plan).expect("write corrected plan");
+
+    let remote_plan = format!(
+      "{}\n- Каналы посева: Telegram, VK и email.\n- Ритм публикации: большая статья, затем короткие форматы.\n",
+      state.find_slug("root/plan").await.expect("plan").content
+    );
+    state
+      .update_content_by_slug("root/plan", &remote_plan, "2024-02-01T10:00:00Z")
+      .await;
+
+    let result = corrector_backend
+      .sync(&[corrector_plan_path.clone()])
+      .await
+      .expect("sync merged plan");
+    assert!(
+      matches!(result, SyncResult::Success { .. }),
+      "non-overlapping plan edits should merge: {result:?}"
+    );
+    bump_modified_at(&state, "root/plan", "2024-02-01T10:00:01Z").await;
+
+    refresh_workspace(&planner_backend).await;
+    refresh_workspace(&producer_backend).await;
+
+    let plan_markers = [
+      "Тезис: быстрый черновик с опечаткой",
+      "Каналы посева: Telegram, VK и email",
+      "Ритм публикации"
+    ];
+    for local_dir in [&planner_dir, &corrector_dir, &producer_dir] {
+      let plan = read_text(local_dir.join("root/plan.md"));
+      assert_contains_all(&plan, &plan_markers);
+      assert!(!plan.contains("ачепяткой"), "typo should be gone from plan:\n{plan}");
+      assert_no_conflict_markers(&plan);
+    }
+
+    let article = r"# Большая статья
+
+## Лид
+Материал объясняет запуск OmniFuse для публикацыи в нескольких медиа.
+
+## Основной текст
+Редакция сначала согласует план, потом готовит большую статью и короткие посевы.
+Важный инвариант: исправления и новые пункты не теряются при параллельной работе.
+
+## Финал
+Эталонный текст должен сойтись у всех участников.
+";
+    let planner_article_path = planner_dir.join("root/article.md");
+    std::fs::write(&planner_article_path, article).expect("write article");
+
+    let result = planner_backend
+      .sync(&[planner_article_path])
+      .await
+      .expect("sync article");
+    assert!(
+      matches!(result, SyncResult::Success { .. }),
+      "article sync should succeed: {result:?}"
+    );
+    bump_modified_at(&state, "root/article", "2024-02-01T10:01:00Z").await;
+
+    refresh_workspace(&producer_backend).await;
+
+    let telegram_path = producer_dir.join("root/media/telegram.md");
+    let vk_path = producer_dir.join("root/media/vk.md");
+    std::fs::write(
+      &telegram_path,
+      "# Telegram\n\nКороткий посев: OmniFuse помогает редакции не терять правки.\n\nCTA: читать полную статью.\n"
+    )
+    .expect("write telegram");
+    std::fs::write(
+      &vk_path,
+      "# VK\n\nСокращённая версия: план, статья и посевы синхронизируются между участниками.\n"
+    )
+    .expect("write vk");
+
+    let result = producer_backend
+      .sync(&[telegram_path, vk_path])
+      .await
+      .expect("sync media seeds");
+    assert!(
+      matches!(result, SyncResult::Success { .. }),
+      "media seed sync should succeed: {result:?}"
+    );
+    bump_modified_at(&state, "root/media/telegram", "2024-02-01T10:02:00Z").await;
+    bump_modified_at(&state, "root/media/vk", "2024-02-01T10:02:01Z").await;
+
+    refresh_workspace(&corrector_backend).await;
+
+    let corrector_article_path = corrector_dir.join("root/article.md");
+    let corrected_article = read_text(&corrector_article_path).replace("публикацыи", "публикации");
+    std::fs::write(&corrector_article_path, corrected_article).expect("write corrected article");
+
+    let result = corrector_backend
+      .sync(&[corrector_article_path])
+      .await
+      .expect("sync corrected article");
+    assert!(
+      matches!(result, SyncResult::Success { .. }),
+      "corrected article sync should succeed: {result:?}"
+    );
+    bump_modified_at(&state, "root/article", "2024-02-01T10:03:00Z").await;
+
+    refresh_workspace(&planner_backend).await;
+    refresh_workspace(&producer_backend).await;
+
+    for local_dir in [&planner_dir, &corrector_dir, &producer_dir] {
+      let plan = read_text(local_dir.join("root/plan.md"));
+      let article = read_text(local_dir.join("root/article.md"));
+      let telegram = read_text(local_dir.join("root/media/telegram.md"));
+      let vk = read_text(local_dir.join("root/media/vk.md"));
+
+      assert_contains_all(&plan, &plan_markers);
+      assert_contains_all(
+        &article,
+        &[
+          "## Лид",
+          "## Основной текст",
+          "## Финал",
+          "публикации в нескольких медиа",
+          "Эталонный текст"
+        ]
+      );
+      assert!(
+        !article.contains("публикацыи"),
+        "article typo should be fixed:\n{article}"
+      );
+      assert_contains_all(&telegram, &["Короткий посев", "читать полную статью"]);
+      assert_contains_all(&vk, &["Сокращённая версия", "синхронизируются между участниками"]);
+
+      for content in [&plan, &article, &telegram, &vk] {
+        assert_no_conflict_markers(content);
+      }
+    }
+
+    let server_article = state.find_slug("root/article").await.expect("server article").content;
+    assert_contains_all(&server_article, &["публикации в нескольких медиа", "Эталонный текст"]);
+    assert!(
+      !server_article.contains("публикацыи"),
+      "server article typo should be fixed:\n{server_article}"
     );
   })
   .await

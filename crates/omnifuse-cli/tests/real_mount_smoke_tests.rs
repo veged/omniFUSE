@@ -24,7 +24,7 @@ fn git_mount_append_is_pushed_to_bare_remote() -> Result<()> {
     return Ok(());
   }
 
-  let of_bin = assert_cmd::cargo::cargo_bin("of");
+  let of_bin = assert_cmd::cargo::cargo_bin!("of");
   if !of_check_passes(&of_bin)? {
     eprintln!("SKIP: `of check` reported that FUSE/WinFsp is unavailable");
     return Ok(());
@@ -81,7 +81,7 @@ fn wiki_mount_nvim_and_concurrent_api_edits_are_synced() -> Result<()> {
     return Ok(());
   }
 
-  let of_bin = assert_cmd::cargo::cargo_bin("of");
+  let of_bin = assert_cmd::cargo::cargo_bin!("of");
   if !of_check_passes(&of_bin)? {
     eprintln!("SKIP: `of check` reported that FUSE/WinFsp is unavailable");
     return Ok(());
@@ -119,6 +119,90 @@ fn wiki_mount_nvim_and_concurrent_api_edits_are_synced() -> Result<()> {
     eprintln!("WARN: failed to delete disposable Wiki page {test_slug}: {error}");
   }
 
+  result
+}
+
+#[test]
+fn wiki_mount_editorial_collaboration_flow_is_synced() -> Result<()> {
+  if std::env::var(ENABLE_REAL_WIKI_MOUNT_SMOKE).as_deref() != Ok("1") {
+    eprintln!("SKIP: set {ENABLE_REAL_WIKI_MOUNT_SMOKE}=1 to run the real Wiki FUSE CLI smoke test");
+    return Ok(());
+  }
+
+  let of_bin = assert_cmd::cargo::cargo_bin!("of");
+  if !of_check_passes(&of_bin)? {
+    eprintln!("SKIP: `of check` reported that FUSE/WinFsp is unavailable");
+    return Ok(());
+  }
+
+  let config = RealWikiSmokeConfig::from_env()?;
+  let rt = tokio::runtime::Runtime::new().context("create tokio runtime for Wiki editorial smoke")?;
+  let client = Client::new(&config.base_url, &config.token, config.org_id.as_deref()).context("create Wiki client")?;
+  let root_slug = config.editorial_test_slug()?;
+  let mut created_pages = Vec::new();
+
+  let result = (|| -> Result<()> {
+    create_disposable_wiki_page(
+      &rt,
+      &client,
+      &mut created_pages,
+      &root_slug,
+      "OmniFuse editorial smoke",
+      "# Редакционный проект\n"
+    )?;
+    let plan_slug = format!("{root_slug}/plan");
+    let article_slug = format!("{root_slug}/article");
+    let media_slug = format!("{root_slug}/media");
+    let telegram_slug = format!("{media_slug}/telegram");
+    let vk_slug = format!("{media_slug}/vk");
+
+    let plan_id = create_disposable_wiki_page(
+      &rt,
+      &client,
+      &mut created_pages,
+      &plan_slug,
+      "План",
+      "# План публикации\n\n- Тема: запуск OmniFuse\n- Тезис: быстрый черновик с ачепяткой\n- Проверка фактов: ожидается\n"
+    )?;
+    create_disposable_wiki_page(
+      &rt,
+      &client,
+      &mut created_pages,
+      &article_slug,
+      "Статья",
+      "# Статья\n\nЧерновик ожидается.\n"
+    )?;
+    create_disposable_wiki_page(&rt, &client, &mut created_pages, &media_slug, "Посевы", "# Посевы\n")?;
+    let telegram_id = create_disposable_wiki_page(
+      &rt,
+      &client,
+      &mut created_pages,
+      &telegram_slug,
+      "Telegram",
+      "# Telegram\n\nЧерновик ожидается.\n"
+    )?;
+    create_disposable_wiki_page(
+      &rt,
+      &client,
+      &mut created_pages,
+      &vk_slug,
+      "VK",
+      "# VK\n\nЧерновик ожидается.\n"
+    )?;
+
+    let pages = EditorialSmokePages {
+      plan_slug,
+      article_slug,
+      telegram_slug,
+      vk_slug,
+      plan_id,
+      telegram_id
+    };
+
+    run_real_wiki_editorial_smoke(&of_bin, &config, &client, &rt, &root_slug, &pages)
+  })();
+
+  cleanup_wiki_pages(&rt, &client, &created_pages);
   result
 }
 
@@ -201,6 +285,228 @@ fn run_real_wiki_mount_smoke(
   Ok(())
 }
 
+struct EditorialSmokePages {
+  plan_slug: String,
+  article_slug: String,
+  telegram_slug: String,
+  vk_slug: String,
+  plan_id: u64,
+  telegram_id: u64
+}
+
+fn run_real_wiki_editorial_smoke(
+  of_bin: &Path,
+  config: &RealWikiSmokeConfig,
+  client: &Client,
+  rt: &tokio::runtime::Runtime,
+  root_slug: &str,
+  pages: &EditorialSmokePages
+) -> Result<()> {
+  let tmp = tempfile::Builder::new()
+    .prefix("omnifuse-real-wiki-editorial-smoke-")
+    .tempdir_in("/tmp")
+    .context("create Wiki editorial smoke tempdir under /tmp")?
+    .keep();
+  let mountpoint = tmp.join("mount").join("wiki");
+  fs::create_dir_all(&mountpoint).context("create Wiki editorial mountpoint")?;
+
+  let mut mount = CliMount::spawn_wiki(of_bin, config, root_slug, &mountpoint, &tmp)?;
+  let mounted_plan = page_path_for_slug(&mountpoint, &pages.plan_slug);
+  let mounted_article = page_path_for_slug(&mountpoint, &pages.article_slug);
+  let mounted_telegram = page_path_for_slug(&mountpoint, &pages.telegram_slug);
+  let mounted_vk = page_path_for_slug(&mountpoint, &pages.vk_slug);
+
+  wait_until("editorial Wiki pages become readable", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    Ok(
+      path_is_file_with_timeout(&mounted_plan, Duration::from_secs(2))?
+        && path_is_file_with_timeout(&mounted_article, Duration::from_secs(2))?
+        && path_is_file_with_timeout(&mounted_telegram, Duration::from_secs(2))?
+        && path_is_file_with_timeout(&mounted_vk, Duration::from_secs(2))?
+    )
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  rt.block_on(client.update_page(
+    pages.plan_id,
+    Some("План"),
+    Some("# План публикации\n\n- Тема: запуск OmniFuse\n- Тезис: быстрый черновик с ачепяткой\n- Проверка фактов: ожидается\n- Каналы посева: Telegram, VK и email.\n"),
+    false
+  ))
+  .context("append plan section through Wiki API")?;
+
+  wait_until("API plan update is pulled into mounted file", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    path_contains_with_timeout(&mounted_plan, "Каналы посева", Duration::from_secs(2))
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  let plan_stderr_log = tmp.join("headless-nvim-plan.stderr.log");
+  let plan_commands = [String::from("%s/с ачепяткой/без опечатки/ge")];
+  let mut plan_nvim = spawn_headless_nvim_edit(
+    &mounted_plan,
+    &plan_commands,
+    Duration::from_millis(300),
+    &plan_stderr_log
+  )?;
+  wait_process_success(
+    &mut plan_nvim,
+    Duration::from_secs(45),
+    "headless nvim plan correction",
+    &plan_stderr_log
+  )?;
+
+  wait_until("corrected plan is visible through Wiki API", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    let page = rt.block_on(client.get_page_by_slug(&pages.plan_slug))?;
+    let content = page.content.unwrap_or_default();
+    if content.contains("без опечатки")
+      && content.contains("Каналы посева")
+      && !content.contains("<<<<<<<")
+      && !content.contains(">>>>>>>")
+    {
+      Ok(true)
+    } else {
+      Err(anyhow::anyhow!("current plan content:\n{content}"))
+    }
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  wait_until("corrected plan is visible through mounted file", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    Ok(
+      path_contains_with_timeout(&mounted_plan, "без опечатки", Duration::from_secs(2))?
+        && path_contains_with_timeout(&mounted_plan, "Каналы посева", Duration::from_secs(2))?
+    )
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  let article_stderr_log = tmp.join("headless-nvim-article.stderr.log");
+  let mut article_nvim = spawn_headless_nvim_append_lines(
+    &mounted_article,
+    &[
+      "",
+      "## Лид",
+      "Материал объясняет запуск OmniFuse для публикацыи в нескольких медиа.",
+      "",
+      "## Основной текст",
+      "Редакция сначала согласует план, затем готовит большую статью и короткие посевы.",
+      "Важный инвариант: исправления и новые пункты не теряются при параллельной работе.",
+      "",
+      "## Финал",
+      "Эталонный текст должен сойтись у всех участников."
+    ],
+    Duration::from_millis(300),
+    &article_stderr_log
+  )?;
+  wait_process_success(
+    &mut article_nvim,
+    Duration::from_secs(45),
+    "headless nvim article draft",
+    &article_stderr_log
+  )?;
+
+  wait_until("article draft is pushed to Wiki API", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    let page = rt.block_on(client.get_page_by_slug(&pages.article_slug))?;
+    Ok(
+      page
+        .content
+        .as_deref()
+        .is_some_and(|content| content.contains("публикацыи") && content.contains("Эталонный текст"))
+    )
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  let article_fix_stderr_log = tmp.join("headless-nvim-article-fix.stderr.log");
+  let article_fix_commands = [String::from(
+    "%s/публикацыи в нескольких медиа/публикации во внешних медиа/ge"
+  )];
+  let mut article_fix_nvim = spawn_headless_nvim_edit(
+    &mounted_article,
+    &article_fix_commands,
+    Duration::from_millis(1500),
+    &article_fix_stderr_log
+  )?;
+  thread::sleep(Duration::from_millis(300));
+
+  rt.block_on(client.update_page(
+    pages.telegram_id,
+    Some("Telegram"),
+    Some("# Telegram\n\nКороткий посев: OmniFuse помогает редакции не терять правки.\n\nCTA: читать полную статью.\n"),
+    false
+  ))
+  .context("write Telegram seed through Wiki API")?;
+  wait_process_success(
+    &mut article_fix_nvim,
+    Duration::from_secs(45),
+    "headless nvim article correction",
+    &article_fix_stderr_log
+  )?;
+
+  let vk_marker = format!("vk {}", smoke_marker()?);
+  let vk_stderr_log = tmp.join("headless-nvim-vk.stderr.log");
+  let mut vk_nvim = spawn_headless_nvim_append_lines(
+    &mounted_vk,
+    &[
+      "",
+      "Сокращённая версия: план, статья и посевы синхронизируются между участниками.",
+      &vk_marker
+    ],
+    Duration::from_millis(300),
+    &vk_stderr_log
+  )?;
+  wait_process_success(
+    &mut vk_nvim,
+    Duration::from_secs(45),
+    "headless nvim VK seed",
+    &vk_stderr_log
+  )?;
+
+  wait_until("final article correction is pushed to Wiki API", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    let page = rt.block_on(client.get_page_by_slug(&pages.article_slug))?;
+    let content = page.content.unwrap_or_default();
+    Ok(content.contains("публикации во внешних медиа") && !content.contains("публикацыи"))
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  wait_until("Telegram API update is pulled into mounted file", SMOKE_TIMEOUT, || {
+    mount.ensure_running()?;
+    path_contains_with_timeout(&mounted_telegram, "Короткий посев", Duration::from_secs(2))
+  })
+  .with_context(|| mount.diagnostics())?;
+
+  wait_until(
+    "VK seed written through mount is pushed to Wiki API",
+    SMOKE_TIMEOUT,
+    || {
+      mount.ensure_running()?;
+      let page = rt.block_on(client.get_page_by_slug(&pages.vk_slug))?;
+      Ok(
+        page
+          .content
+          .as_deref()
+          .is_some_and(|content| content.contains(&vk_marker))
+      )
+    }
+  )
+  .with_context(|| mount.diagnostics())?;
+
+  let article = rt.block_on(client.get_page_by_slug(&pages.article_slug))?;
+  assert!(
+    article
+      .content
+      .as_deref()
+      .is_some_and(|content| content.contains("Эталонный текст") && !content.contains("<<<<<<<")),
+    "article should keep canonical text without conflict markers"
+  );
+
+  mount.stop()?;
+  cleanup_smoke_dir(&tmp);
+  Ok(())
+}
+
 struct RealWikiSmokeConfig {
   base_url: String,
   root_slug: String,
@@ -224,6 +530,15 @@ impl RealWikiSmokeConfig {
     let suffix = smoke_marker()?.replace(' ', "-");
     Ok(format!(
       "{}/omnifuse-mount-smoke-{}",
+      self.root_slug.trim_matches('/'),
+      suffix
+    ))
+  }
+
+  fn editorial_test_slug(&self) -> Result<String> {
+    let suffix = smoke_marker()?.replace(' ', "-");
+    Ok(format!(
+      "{}/omnifuse-editorial-smoke-{}",
       self.root_slug.trim_matches('/'),
       suffix
     ))
@@ -402,6 +717,29 @@ fn env_or_default(name: &str, default: &str) -> String {
     .unwrap_or_else(|| default.to_string())
 }
 
+fn create_disposable_wiki_page(
+  rt: &tokio::runtime::Runtime,
+  client: &Client,
+  created_pages: &mut Vec<(String, u64)>,
+  slug: &str,
+  title: &str,
+  content: &str
+) -> Result<u64> {
+  let page = rt
+    .block_on(client.create_page(slug, title, Some(content), "page"))
+    .with_context(|| format!("create disposable Wiki page {slug}"))?;
+  created_pages.push((slug.to_string(), page.id));
+  Ok(page.id)
+}
+
+fn cleanup_wiki_pages(rt: &tokio::runtime::Runtime, client: &Client, created_pages: &[(String, u64)]) {
+  for (slug, id) in created_pages.iter().rev() {
+    if let Err(error) = rt.block_on(client.delete_page(*id)) {
+      eprintln!("WARN: failed to delete disposable Wiki page {slug}: {error}");
+    }
+  }
+}
+
 fn seed_bare_remote(bare_remote: &Path, seed_clone: &Path) -> Result<()> {
   let mut init = Command::new("git");
   init.args(["init", "--bare", "-b", "main"]).arg(bare_remote);
@@ -482,14 +820,46 @@ fn append_marker(path: &Path, marker: &str) -> Result<()> {
 }
 
 fn spawn_headless_nvim_append(path: &Path, marker: &str, stderr_log: &Path) -> Result<Child> {
-  let append_cmd = format!("call append(line('$'), ['', '{marker}'])");
+  spawn_headless_nvim_append_lines(path, &["", marker], Duration::from_millis(1500), stderr_log)
+}
+
+fn spawn_headless_nvim_append_lines(
+  path: &Path,
+  lines: &[&str],
+  sleep_before_write: Duration,
+  stderr_log: &Path
+) -> Result<Child> {
+  let quoted_lines = lines
+    .iter()
+    .map(|line| format!("'{}'", vim_single_quoted(line)))
+    .collect::<Vec<_>>()
+    .join(", ");
+  let commands = [format!("call append(line('$'), [{quoted_lines}])")];
+  spawn_headless_nvim_edit(path, &commands, sleep_before_write, stderr_log)
+}
+
+fn spawn_headless_nvim_edit(
+  path: &Path,
+  commands: &[String],
+  sleep_before_write: Duration,
+  stderr_log: &Path
+) -> Result<Child> {
   let stderr = fs::File::create(stderr_log).context("create nvim stderr log")?;
-  Command::new("nvim")
+  let mut command = Command::new("nvim");
+  command
     .args(["--headless", "--clean", "-n"])
     .arg(path)
-    .arg("+set nomore noswapfile nobackup nowritebackup backupcopy=yes backupskip=*")
-    .arg(format!("+{append_cmd}"))
-    .arg("+sleep 1500m")
+    .arg("+set nomore noswapfile nobackup nowritebackup backupcopy=yes backupskip=*");
+
+  for edit_command in commands {
+    command.arg(format!("+{edit_command}"));
+  }
+
+  if !sleep_before_write.is_zero() {
+    command.arg(format!("+sleep {}m", sleep_before_write.as_millis()));
+  }
+
+  command
     .arg("+write!")
     .arg("+if v:errmsg != '' | cquit | endif")
     .arg("+quitall!")
@@ -498,6 +868,10 @@ fn spawn_headless_nvim_append(path: &Path, marker: &str, stderr_log: &Path) -> R
     .stderr(Stdio::from(stderr))
     .spawn()
     .with_context(|| format!("spawn headless nvim for {}", path.display()))
+}
+
+fn vim_single_quoted(value: &str) -> String {
+  value.replace('\\', "\\\\").replace('\'', "''")
 }
 
 fn smoke_marker() -> Result<String> {
