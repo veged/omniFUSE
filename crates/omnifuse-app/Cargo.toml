@@ -13,9 +13,9 @@ description = "Application-level mount preparation for OmniFuse"
 workspace = true
 
 [dependencies]
-omnifuse-core = { path = "../omnifuse-core" }
-omnifuse-git = { path = "../omnifuse-git" }
-omnifuse-wiki = { path = "../omnifuse-wiki" }
+omnifuse-core = { version = "0.2.0", path = "../omnifuse-core" }
+omnifuse-git = { version = "0.2.0", path = "../omnifuse-git" }
+omnifuse-wiki = { version = "0.2.0", path = "../omnifuse-wiki" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 

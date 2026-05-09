@@ -19,7 +19,7 @@ test-utils = []
 workspace = true
 
 [dependencies]
-unifuse = { path = "../unifuse" }
+unifuse = { version = "0.2.0", path = "../unifuse" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

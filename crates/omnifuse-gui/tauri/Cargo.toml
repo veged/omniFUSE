@@ -10,6 +10,7 @@ rust-version.workspace = true
 description = "OmniFuse GUI (Tauri)"
 keywords = ["fuse", "gui", "tauri", "vfs", "filesystem"]
 categories = ["gui", "filesystem"]
+publish = false
 
 [[bin]]
 name = "omnifuse-gui"
@@ -22,8 +23,8 @@ workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-omnifuse-app = { path = "../../omnifuse-app" }
-omnifuse-core = { path = "../../omnifuse-core" }
+omnifuse-app = { version = "0.2.0", path = "../../omnifuse-app" }
+omnifuse-core = { version = "0.2.0", path = "../../omnifuse-core" }
 tauri = { version = "2", features = ["test"] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }

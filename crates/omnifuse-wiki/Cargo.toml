@@ -15,7 +15,7 @@ categories = ["filesystem"]
 workspace = true
 
 [dependencies]
-omnifuse-core = { path = "../omnifuse-core" }
+omnifuse-core = { version = "0.2.0", path = "../omnifuse-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
