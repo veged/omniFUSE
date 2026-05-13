@@ -186,11 +186,11 @@ impl WikiPageSyncSession {
         Ok(Some(false)) => conflicts.push(path.clone()),
         Ok(None) => {}
         Err(e) => match classify_wiki_error(&e) {
-          Some(omnifuse_core::ErrorKind::NotFound | omnifuse_core::ErrorKind::PermissionDenied) => {
+          Some(omnifuse_core::Code::NotFound | omnifuse_core::Code::PermissionDenied) => {
             warn!(path = %path.display(), error = %e, "skipping file");
           }
-          Some(omnifuse_core::ErrorKind::Offline) => return Ok(SyncResult::Offline),
-          Some(omnifuse_core::ErrorKind::Conflict) => conflicts.push(path.clone()),
+          Some(omnifuse_core::Code::Offline) => return Ok(SyncResult::Offline),
+          Some(omnifuse_core::Code::Conflict) => conflicts.push(path.clone()),
           _ => return Err(e)
         }
       }

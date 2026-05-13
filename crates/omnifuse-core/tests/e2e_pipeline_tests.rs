@@ -3,19 +3,25 @@
 //! These tests exercise the full pipeline as a complete system:
 //! user writes a file through VFS -> VFS sends FsEvent to SyncEngine ->
 //! SyncEngine batches and calls Backend.sync() -> events are emitted
-//! to VfsEventHandler.
+//! to Sink.
 //!
 //! Run: `cargo test -p omnifuse-core --test e2e_pipeline_tests`
 
-#![allow(clippy::expect_used)]
+// Scenario tests intentionally keep long tuples and lock-based assertions readable.
+#![allow(
+  clippy::cast_possible_truncation,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::significant_drop_tightening,
+  clippy::type_complexity
+)]
 
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
-  OperationalEvent,
+  Kind, Level, Sink,
   backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
-  events::{LogLevel, VfsEventHandler},
   sync_engine::SyncEngine,
   test_utils::{MockBackend, TEST_TIMEOUT, TestEventHandler, with_timeout},
   vfs::OmniFuseVfs
@@ -51,7 +57,7 @@ fn create_pipeline(
     debounce_timeout_secs: debounce_secs,
     ..SyncConfig::default()
   };
-  let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+  let events_dyn: Arc<dyn Sink> = events.clone();
   let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
   // Wire VFS to SyncEngine via the engine's sender
@@ -59,7 +65,7 @@ fn create_pipeline(
     tmp.path().to_path_buf(),
     engine.sender(),
     backend.clone(),
-    events.clone() as Arc<dyn VfsEventHandler>,
+    events.clone() as Arc<dyn Sink>,
     BufferConfig::default()
   );
 
@@ -191,12 +197,16 @@ async fn test_e2e_create_write_close_syncs() {
       "on_file_written should have been called for document.md"
     );
 
-    let operational_events = events.operational_event_calls.lock().expect("lock");
+    let operational_events = events.event_calls.lock().expect("lock");
     assert!(
-      operational_events
-        .iter()
-        .any(|event| matches!(event, OperationalEvent::FileFlushed { path, .. } if path.ends_with("document.md"))),
-      "FileFlushed should have been emitted for document.md"
+      operational_events.iter().any(|event| event.kind == Kind::FileFlush
+        && event
+          .data
+          .as_ref()
+          .and_then(|data| data.get("path"))
+          .and_then(serde_json::Value::as_str)
+          .is_some_and(|path| path.ends_with("document.md"))),
+      "file.flush should have been emitted for document.md"
     );
   })
   .await;
@@ -221,14 +231,14 @@ async fn test_e2e_multiple_files_batched() {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
     let vfs = Arc::new(OmniFuseVfs::new(
       tmp.path().to_path_buf(),
       engine.sender(),
       backend.clone(),
-      events.clone() as Arc<dyn VfsEventHandler>,
+      events.clone() as Arc<dyn Sink>,
       BufferConfig::default()
     ));
 
@@ -423,7 +433,7 @@ async fn test_e2e_sync_error_logged() {
 
     // Error should have been logged via event handler
     assert!(
-      events.log_count(LogLevel::Error) > 0,
+      events.log_count(Level::Error) > 0,
       "sync error should have been logged via on_log(Error)"
     );
 
@@ -431,7 +441,7 @@ async fn test_e2e_sync_error_logged() {
     let logs = events.log_calls.lock().expect("lock");
     let has_error_msg = logs
       .iter()
-      .any(|(level, msg)| *level == LogLevel::Error && msg.contains("remote storage unavailable"));
+      .any(|(level, msg)| *level == Level::Error && msg.contains("remote storage unavailable"));
     assert!(has_error_msg, "error log should contain the backend error message");
   })
   .await;
@@ -495,7 +505,7 @@ async fn test_e2e_poll_remote_applies_changes() {
     let events = Arc::new(TestEventHandler::new());
 
     let config = SyncConfig::default();
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let (engine, _handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
     // Create VFS (even though we don't write through it, the pipeline is wired)
@@ -503,7 +513,7 @@ async fn test_e2e_poll_remote_applies_changes() {
       tmp.path().to_path_buf(),
       engine.sender(),
       backend.clone(),
-      events.clone() as Arc<dyn VfsEventHandler>,
+      events.clone() as Arc<dyn Sink>,
       BufferConfig::default()
     );
 

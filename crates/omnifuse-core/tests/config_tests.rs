@@ -2,7 +2,8 @@
 //!
 //! Run: `cargo test -p omnifuse-core --test config_tests`
 
-#![allow(clippy::expect_used)]
+// Scenario tests keep examples literal; avoid pedantic churn unrelated to behavior.
+#![allow(clippy::doc_markdown, clippy::expect_used, clippy::identity_op)]
 
 use std::path::PathBuf;
 

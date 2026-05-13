@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use omnifuse_app::{GitMountArgs, MountService, WikiMountArgs};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 
@@ -50,15 +50,8 @@ pub async fn mount_git(
   }
 
   let mnt = PathBuf::from(&mount_point);
-  let _ = app.emit(
-    "vfs:log",
-    serde_json::json!({
-        "level": "info",
-        "message": format!("starting mount: {} -> {}", source, mnt.display())
-    })
-  );
 
-  let events = TauriEventHandler::new(app.clone());
+  let events = TauriEventHandler::new(app);
   let args = GitMountArgs {
     source,
     mount_point: mnt,
@@ -81,15 +74,10 @@ pub async fn mount_git(
         result = service.run_git(args, events) => {
             if let Err(e) = result {
                 tracing::error!("VFS error: {e}");
-                let _ = app.emit("vfs:error", serde_json::json!({
-                    "message": e.to_string()
-                }));
-                let _ = app.emit("vfs:unmounted", ());
             }
         }
         () = async { let _ = cancel_rx.await; } => {
             tracing::info!("VFS cancelled");
-            let _ = app.emit("vfs:unmounted", ());
         }
     }
 
@@ -116,15 +104,8 @@ pub async fn mount_wiki(
   }
 
   let mnt = PathBuf::from(&mount_point);
-  let _ = app.emit(
-    "vfs:log",
-    serde_json::json!({
-        "level": "info",
-        "message": format!("starting mount: {} ({}) -> {}", base_url, root_slug, mnt.display())
-    })
-  );
 
-  let events = TauriEventHandler::new(app.clone());
+  let events = TauriEventHandler::new(app);
   let args = WikiMountArgs {
     base_url,
     root_slug,
@@ -149,15 +130,10 @@ pub async fn mount_wiki(
         result = service.run_wiki(args, events) => {
             if let Err(e) = result {
                 tracing::error!("VFS error: {e}");
-                let _ = app.emit("vfs:error", serde_json::json!({
-                    "message": e.to_string()
-                }));
-                let _ = app.emit("vfs:unmounted", ());
             }
         }
         () = async { let _ = cancel_rx.await; } => {
             tracing::info!("VFS cancelled");
-            let _ = app.emit("vfs:unmounted", ());
         }
     }
 

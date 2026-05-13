@@ -176,6 +176,8 @@ impl<F: UniFuseFilesystem> SessionPathFs for CompatSessionFs<F> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use std::{
     ffi::OsStr,
     path::{Path, PathBuf}
@@ -224,8 +226,12 @@ mod tests {
         return Err(FsError::NotFound);
       }
 
-      let start = offset as usize;
-      let end = (start + size as usize).min(self.content.len());
+      let start = usize::try_from(offset).map_err(|_| FsError::Other("offset too large".to_string()))?;
+      if start >= self.content.len() {
+        return Ok(Vec::new());
+      }
+      let size = usize::try_from(size).unwrap_or(usize::MAX);
+      let end = start.saturating_add(size).min(self.content.len());
       Ok(self.content[start..end].to_vec())
     }
 
@@ -254,10 +260,10 @@ mod tests {
   async fn compat_session_delegates_open_read_close_to_old_trait() {
     let old = RecordingOldFs::with_file("doc.md", b"hello");
     let compat = CompatSessionFs::new(old);
-    let state = compat.start(MountContext::test("/mnt/test")).await.expect("start");
+    compat.start(MountContext::test("/mnt/test")).await.expect("start");
 
     let opened = compat
-      .open(&state, Path::new("doc.md"), OpenIntent::read_only())
+      .open(&(), Path::new("doc.md"), OpenIntent::read_only())
       .await
       .expect("open");
     let mut out = vec![0; 5];

@@ -8,7 +8,7 @@ use std::{
   time::Duration
 };
 
-use crate::{ErrorKind, PathProtection};
+use crate::{Code, PathProtection};
 
 /// Backend for a synchronized storage.
 ///
@@ -49,8 +49,8 @@ pub trait Backend: Send + Sync + 'static {
   fn name(&self) -> &'static str;
 
   /// Classify backend-specific error into shared taxonomy.
-  fn classify_error(&self, _error: &anyhow::Error) -> ErrorKind {
-    ErrorKind::Internal
+  fn classify_error(&self, _error: &anyhow::Error) -> Code {
+    Code::Internal
   }
 }
 

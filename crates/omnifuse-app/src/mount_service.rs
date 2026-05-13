@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use omnifuse_core::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig, VfsEventHandler};
+use omnifuse_core::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, Sink, SyncConfig};
 use omnifuse_git::{GitBackend, GitConfig};
 use omnifuse_wiki::{WikiBackend, WikiConfig};
 
@@ -186,7 +186,7 @@ impl<E: MountEnvironment> MountService<E> {
   /// # Errors
   ///
   /// Returns an error if preparation or mounting fails.
-  pub async fn run_git(&self, args: GitMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()>
+  pub async fn run_git(&self, args: GitMountArgs, events: impl Sink) -> anyhow::Result<()>
   where
     E: Sync
   {
@@ -199,7 +199,7 @@ impl<E: MountEnvironment> MountService<E> {
   /// # Errors
   ///
   /// Returns an error if preparation or mounting fails.
-  pub async fn run_wiki(&self, args: WikiMountArgs, events: impl VfsEventHandler) -> anyhow::Result<()>
+  pub async fn run_wiki(&self, args: WikiMountArgs, events: impl Sink) -> anyhow::Result<()>
   where
     E: Sync
   {

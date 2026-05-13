@@ -6,7 +6,15 @@
 //! Run: `cargo test -p omnifuse-core --test honest_fuse_tests`
 //! Skip: `OMNIFUSE_FUSE_TESTS=0 cargo test -p omnifuse-core --test honest_fuse_tests`
 
-#![allow(clippy::expect_used)]
+// External-process FUSE tests favor workflow readability over pedantic rewrites.
+#![allow(
+  clippy::cast_possible_truncation,
+  clippy::cast_sign_loss,
+  clippy::expect_used,
+  clippy::items_after_statements,
+  clippy::needless_collect,
+  clippy::used_underscore_binding
+)]
 
 use std::{
   path::{Path, PathBuf},

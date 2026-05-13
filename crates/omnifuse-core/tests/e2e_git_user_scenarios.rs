@@ -6,14 +6,21 @@
 //!
 //! Run: `cargo test -p omnifuse-core --test e2e_git_user_scenarios`
 
-#![allow(clippy::expect_used)]
+// User-scenario tests intentionally keep tuple fixtures and lock assertions direct.
+#![allow(
+  clippy::cast_possible_truncation,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::significant_drop_tightening,
+  clippy::type_complexity
+)]
 
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
+  Level, Sink,
   backend::SyncResult,
   config::{BufferConfig, SyncConfig},
-  events::{LogLevel, VfsEventHandler},
   sync_engine::SyncEngine,
   test_utils::{MockBackend, TEST_TIMEOUT, TestEventHandler, with_timeout},
   vfs::OmniFuseVfs
@@ -43,14 +50,14 @@ fn create_pipeline(
     debounce_timeout_secs: debounce_secs,
     ..SyncConfig::default()
   };
-  let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+  let events_dyn: Arc<dyn Sink> = events.clone();
   let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
   let vfs = OmniFuseVfs::new(
     tmp.path().to_path_buf(),
     engine.sender(),
     backend.clone(),
-    events.clone() as Arc<dyn VfsEventHandler>,
+    events.clone() as Arc<dyn Sink>,
     BufferConfig::default()
   );
 
@@ -288,14 +295,14 @@ async fn test_user_edits_multiple_files_batched_sync() {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
     let vfs = Arc::new(OmniFuseVfs::new(
       tmp.path().to_path_buf(),
       engine.sender(),
       backend.clone(),
-      events.clone() as Arc<dyn VfsEventHandler>,
+      events.clone() as Arc<dyn Sink>,
       BufferConfig::default()
     ));
 
@@ -374,14 +381,14 @@ async fn test_user_edit_with_remote_change_conflict() {
 
     // Event handler should have received a Warn log about the conflict
     assert!(
-      events.log_count(LogLevel::Warn) > 0,
+      events.log_count(Level::Warn) > 0,
       "on_log(Warn) should have been called for conflict"
     );
 
     let logs = events.log_calls.lock().expect("lock");
     let has_conflict_warn = logs
       .iter()
-      .any(|(level, msg)| *level == LogLevel::Warn && msg.contains("conflict"));
+      .any(|(level, msg)| *level == Level::Warn && msg.contains("conflict"));
     assert!(has_conflict_warn, "warn log should mention conflict, got: {logs:?}");
   })
   .await;

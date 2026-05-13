@@ -5,14 +5,22 @@
 //!
 //! Run: `cargo test -p omnifuse-core --test e2e_cross_backend_scenarios`
 
-#![allow(clippy::expect_used)]
+// Scenario tests intentionally keep long tuples and lock-based assertions readable.
+#![allow(
+  clippy::await_holding_lock,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::redundant_closure_for_method_calls,
+  clippy::significant_drop_tightening,
+  clippy::type_complexity
+)]
 
 use std::{path::Path, sync::Arc, time::Duration};
 
 use omnifuse_core::{
+  Level, Sink,
   backend::{RemoteRefreshResult, SyncResult},
   config::{BufferConfig, SyncConfig},
-  events::{LogLevel, VfsEventHandler},
   sync_engine::{FsEvent, SyncEngine},
   test_utils::{MockBackend, TEST_TIMEOUT, TestEventHandler, with_timeout},
   vfs::OmniFuseVfs
@@ -44,14 +52,14 @@ fn create_pipeline(
     debounce_timeout_secs: debounce_secs,
     ..SyncConfig::default()
   };
-  let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+  let events_dyn: Arc<dyn Sink> = events.clone();
   let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
   let vfs = OmniFuseVfs::new(
     tmp.path().to_path_buf(),
     engine.sender(),
     backend.clone(),
-    events.clone() as Arc<dyn VfsEventHandler>,
+    events.clone() as Arc<dyn Sink>,
     BufferConfig::default()
   );
 
@@ -117,7 +125,7 @@ async fn test_offline_then_recovery_syncs_all() {
     // Offline: no push should have happened, but Warn should be logged
     assert_eq!(events.push_count(), 0, "no push should occur while offline");
     assert!(
-      events.log_count(LogLevel::Warn) >= 1,
+      events.log_count(Level::Warn) >= 1,
       "offline status should log a warning"
     );
 
@@ -180,7 +188,7 @@ async fn test_conflict_result_logs_warning() {
 
     // Warning should have been logged
     assert!(
-      events.log_count(LogLevel::Warn) >= 1,
+      events.log_count(Level::Warn) >= 1,
       "conflict result should log a warning"
     );
 
@@ -188,7 +196,7 @@ async fn test_conflict_result_logs_warning() {
     let logs = events.log_calls.lock().expect("lock");
     let has_conflict = logs
       .iter()
-      .any(|(level, msg)| *level == LogLevel::Warn && msg.to_lowercase().contains("conflict"));
+      .any(|(level, msg)| *level == Level::Warn && msg.to_lowercase().contains("conflict"));
     assert!(has_conflict, "warning log should mention 'conflict', got: {logs:?}");
   })
   .await;
@@ -206,7 +214,7 @@ async fn test_multiple_vfs_single_sync_engine() {
     backend.set_sync_result(SyncResult::Success { synced_files: 1 });
 
     let events = Arc::new(TestEventHandler::new());
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let config = SyncConfig {
       debounce_timeout_secs: 0,
       ..SyncConfig::default()
@@ -221,7 +229,7 @@ async fn test_multiple_vfs_single_sync_engine() {
     for v in 0..num_vfs {
       let tmp = tempfile::tempdir().expect("tempdir");
       let sender = engine.sender();
-      let vfs_events: Arc<dyn VfsEventHandler> = Arc::new(omnifuse_core::events::NoopEventHandler);
+      let vfs_events: Arc<dyn Sink> = Arc::new(omnifuse_core::NoopSink);
       let vfs = OmniFuseVfs::new(
         tmp.path().to_path_buf(),
         sender,
@@ -294,14 +302,14 @@ async fn test_shutdown_final_sync_no_data_loss() {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
     let vfs = OmniFuseVfs::new(
       tmp.path().to_path_buf(),
       engine.sender(),
       backend.clone(),
-      events.clone() as Arc<dyn VfsEventHandler>,
+      events.clone() as Arc<dyn Sink>,
       BufferConfig::default()
     );
 
@@ -371,7 +379,7 @@ async fn test_poll_error_graceful_handling() {
     let events = Arc::new(TestEventHandler::new());
 
     let config = SyncConfig::default();
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+    let events_dyn: Arc<dyn Sink> = events.clone();
     let (engine, _handle) = SyncEngine::start(config, backend.clone(), events_dyn);
 
     // Create VFS to keep the pipeline wired
@@ -379,7 +387,7 @@ async fn test_poll_error_graceful_handling() {
       tmp.path().to_path_buf(),
       engine.sender(),
       backend.clone(),
-      events.clone() as Arc<dyn VfsEventHandler>,
+      events.clone() as Arc<dyn Sink>,
       BufferConfig::default()
     );
 
@@ -394,13 +402,13 @@ async fn test_poll_error_graceful_handling() {
     );
 
     // Warning should have been logged for the poll error
-    assert!(events.log_count(LogLevel::Warn) >= 1, "poll error should log a warning");
+    assert!(events.log_count(Level::Warn) >= 1, "poll error should log a warning");
 
     // Verify the log mentions the error
     let logs = events.log_calls.lock().expect("lock");
     let has_network_error = logs
       .iter()
-      .any(|(level, msg)| *level == LogLevel::Warn && msg.contains("network down"));
+      .any(|(level, msg)| *level == Level::Warn && msg.contains("network down"));
     assert!(
       has_network_error,
       "warning log should mention 'network down', got: {logs:?}"
@@ -464,7 +472,7 @@ async fn test_sync_error_retry_on_next_event() {
 
     // Error should have been logged
     assert!(
-      events.log_count(LogLevel::Error) >= 1,
+      events.log_count(Level::Error) >= 1,
       "sync error should have been logged via on_log(Error)"
     );
 
@@ -472,7 +480,7 @@ async fn test_sync_error_retry_on_next_event() {
     let logs = events.log_calls.lock().expect("lock");
     let has_transient = logs
       .iter()
-      .any(|(level, msg)| *level == LogLevel::Error && msg.contains("transient failure"));
+      .any(|(level, msg)| *level == Level::Error && msg.contains("transient failure"));
     assert!(
       has_transient,
       "error log should mention 'transient failure', got: {logs:?}"

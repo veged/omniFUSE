@@ -7,7 +7,16 @@
 //! Run: `cargo test -p omnifuse-core --test fuse_mount_tests`
 //! Skip: `cargo test -- --skip fuse_mount`
 
-#![allow(clippy::expect_used)]
+// Scenario modules share helpers via glob imports; keep the test layout compact.
+#![allow(
+  clippy::cast_possible_truncation,
+  clippy::cast_sign_loss,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::items_after_statements,
+  clippy::redundant_closure_for_method_calls,
+  unused_imports
+)]
 
 use std::{path::PathBuf, time::Duration};
 

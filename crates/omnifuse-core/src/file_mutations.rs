@@ -13,9 +13,8 @@ use tokio::sync::mpsc;
 use unifuse::{FileAttr, FileType, FsError};
 
 use crate::{
-  Disposition, ErrorSource, ObservabilitySession, OperationKind, OperationalEvent,
+  Action, EventError, Kind, Level, Session, Sink, Source,
   buffer::{FileBuffer, FileBufferManager},
-  events::VfsEventHandler,
   sync_engine::FsEvent
 };
 
@@ -24,8 +23,8 @@ pub struct FileMutationPipeline {
   local_dir: PathBuf,
   buffer_manager: Arc<FileBufferManager>,
   dirty_sink: DirtySink,
-  events: Arc<dyn VfsEventHandler>,
-  session: Arc<ObservabilitySession>
+  events: Arc<dyn Sink>,
+  session: Arc<Session>
 }
 
 impl FileMutationPipeline {
@@ -35,8 +34,8 @@ impl FileMutationPipeline {
     local_dir: PathBuf,
     buffer_manager: Arc<FileBufferManager>,
     dirty_sink: DirtySink,
-    events: Arc<dyn VfsEventHandler>,
-    session: Arc<ObservabilitySession>
+    events: Arc<dyn Sink>,
+    session: Arc<Session>
   ) -> Self {
     Self {
       local_dir,
@@ -79,7 +78,7 @@ impl FileMutationPipeline {
 
     let buffer = self.buffer_manager.cache(&full_path, Vec::new()).await;
     self.mark_modified(path);
-    self.events.on_file_created(path);
+    self.emit_file_event(Kind::FileCreate, path, None);
 
     let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(FsError::Io)?;
     let file = OpenFileMutation {
@@ -104,7 +103,7 @@ impl FileMutationPipeline {
     tokio::fs::remove_file(&full_path).await.map_err(FsError::Io)?;
 
     self.queue_modified(path);
-    self.events.on_file_deleted(path);
+    self.emit_file_event(Kind::FileDelete, path, None);
     Ok(())
   }
 
@@ -122,7 +121,16 @@ impl FileMutationPipeline {
 
     self.queue_modified(from);
     self.queue_modified(to);
-    self.events.on_file_renamed(from, to);
+    let op = self.session.op();
+    self.events.emit(
+      self
+        .session
+        .op_event(&op, Kind::FileRename, Level::Info, Source::Vfs)
+        .data(serde_json::json!({
+            "oldPath": from.display().to_string(),
+            "newPath": to.display().to_string()
+        }))
+    );
     Ok(())
   }
 
@@ -174,33 +182,44 @@ impl FileMutationPipeline {
   }
 
   fn emit_queue_full_warning(&self) {
-    let context = self.session.start_operation(OperationKind::File, 1, None);
-    self.events.on_event(&OperationalEvent::UserVisibleWarning {
-      context,
-      message: "sync event queue is full".to_string(),
-      source: ErrorSource::Vfs,
-      disposition: Disposition::Retryable
-    });
+    let op = self.session.op();
+    self.events.emit(
+      self
+        .session
+        .op_event(&op, Kind::QueueDrop, Level::Warn, Source::Vfs)
+        .error(EventError::new(
+          "sync event queue is full",
+          crate::Code::Internal,
+          Action::Retry
+        ))
+    );
   }
 
   fn emit_file_marked_dirty(&self, path: &Path) {
-    let context = self
-      .session
-      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
-    self.events.on_event(&OperationalEvent::FileMarkedDirty {
-      context,
-      path: path.to_path_buf()
-    });
+    self.emit_file_event(Kind::FileChange, path, None);
   }
 
   fn emit_file_flushed(&self, path: &Path) {
-    let context = self
-      .session
-      .start_operation(OperationKind::File, 1, Some(path.to_path_buf()));
-    self.events.on_event(&OperationalEvent::FileFlushed {
-      context,
-      path: path.to_path_buf()
+    self.emit_file_event(Kind::FileFlush, path, None);
+  }
+
+  fn emit_file_written(&self, path: &Path, bytes: usize) {
+    self.emit_file_event(Kind::FileChange, path, Some(bytes));
+  }
+
+  fn emit_file_event(&self, kind: Kind, path: &Path, bytes: Option<usize>) {
+    let op = self.session.op();
+    let mut data = serde_json::json!({
+        "path": path.display().to_string()
     });
+
+    if let Some(bytes) = bytes {
+      data["bytes"] = serde_json::json!(bytes);
+    }
+
+    self
+      .events
+      .emit(self.session.op_event(&op, kind, Level::Info, Source::Vfs).data(data));
   }
 }
 
@@ -232,7 +251,7 @@ impl OpenFileMutation {
     let written = self.buffer.write(offset, data).await;
     self.dirty_notified.store(true, Ordering::SeqCst);
     self.pipeline.mark_modified(&self.path);
-    self.pipeline.events.on_file_written(&self.path, written);
+    self.pipeline.emit_file_written(&self.path, written);
 
     #[allow(clippy::cast_possible_truncation)]
     let written_u32 = written as u32;
@@ -419,10 +438,12 @@ fn set_mode_unix(path: &Path, mode: u32) -> Result<(), FsError> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use std::sync::Arc;
 
   use super::*;
-  use crate::{BufferConfig, events::VfsEventHandler, test_utils::TestEventHandler};
+  use crate::{BufferConfig, Session, Sink, test_utils::TestEventHandler};
 
   fn test_pipeline(
     local_dir: &Path
@@ -433,12 +454,8 @@ mod tests {
   ) {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let events = Arc::new(TestEventHandler::new());
-    let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
-    let session = Arc::new(ObservabilitySession::new(
-      "test",
-      PathBuf::new(),
-      local_dir.to_path_buf()
-    ));
+    let events_dyn: Arc<dyn Sink> = events.clone();
+    let session = Arc::new(Session::new("test", PathBuf::new(), local_dir.to_path_buf()));
     let pipeline = Arc::new(FileMutationPipeline::new(
       local_dir.to_path_buf(),
       Arc::new(FileBufferManager::new(BufferConfig::default())),

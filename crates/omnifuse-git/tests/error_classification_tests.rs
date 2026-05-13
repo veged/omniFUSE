@@ -2,7 +2,7 @@
 
 #![allow(clippy::expect_used)]
 
-use omnifuse_core::ErrorKind;
+use omnifuse_core::Code;
 use omnifuse_git::{GitError, classify_git_error};
 
 #[test]
@@ -16,8 +16,8 @@ fn test_git_error_classification_maps_network_and_conflict() {
   }
   .into();
 
-  assert_eq!(classify_git_error(&network), Some(ErrorKind::Offline));
-  assert_eq!(classify_git_error(&conflict), Some(ErrorKind::Conflict));
+  assert_eq!(classify_git_error(&network), Some(Code::Offline));
+  assert_eq!(classify_git_error(&conflict), Some(Code::Conflict));
 }
 
 #[test]

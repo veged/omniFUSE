@@ -23,12 +23,84 @@ interface LogEntry {
 }
 
 type BackendKind = 'git' | 'wiki';
+type EventLevel = 'info' | 'warn' | 'error';
+
+interface OmniEvent {
+  version: number;
+  seq: number;
+  time: number;
+  mountId: string;
+  opId?: number;
+  kind: string;
+  level: EventLevel;
+  source: string;
+  data?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+    action: string;
+  };
+}
 
 const MAX_LOG_ENTRIES = 500;
 
 function appendLog(prev: LogEntry[], entry: LogEntry): LogEntry[] {
   const next = [...prev, entry];
   return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
+}
+
+function dataString(event: OmniEvent, key: string): string | undefined {
+  const value = event.data?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function dataNumber(event: OmniEvent, key: string): number | undefined {
+  const value = event.data?.[key];
+  return typeof value === 'number' ? value : undefined;
+}
+
+function eventMessage(event: OmniEvent): string {
+  if (event.error) return event.error.message;
+
+  switch (event.kind) {
+    case 'mount.start':
+      return `mounting ${dataString(event, 'backend') ?? 'backend'}`;
+    case 'mount.ready':
+      return `mounted ${dataString(event, 'mountPoint') ?? 'filesystem'}`;
+    case 'mount.stop':
+      return 'unmounted';
+    case 'file.change': {
+      const path = dataString(event, 'path') ?? 'file';
+      const bytes = dataNumber(event, 'bytes');
+      return bytes === undefined ? `changed ${path}` : `written ${path} (${bytes} bytes)`;
+    }
+    case 'file.flush':
+      return `flushed ${dataString(event, 'path') ?? 'file'}`;
+    case 'file.create':
+      return `created ${dataString(event, 'path') ?? 'file'}`;
+    case 'file.delete':
+      return `deleted ${dataString(event, 'path') ?? 'file'}`;
+    case 'file.rename':
+      return `renamed ${dataString(event, 'oldPath') ?? 'file'} -> ${dataString(event, 'newPath') ?? 'file'}`;
+    case 'sync.start':
+      return `sync started (${dataNumber(event, 'dirty') ?? 0} dirty)`;
+    case 'sync.done':
+      return `sync done (${dataNumber(event, 'synced') ?? 0} synced)`;
+    case 'sync.defer':
+      return 'sync deferred';
+    case 'remote.poll':
+      return 'remote poll';
+    case 'remote.change':
+      return `remote changed (${dataNumber(event, 'changed') ?? 0} changed, ${dataNumber(event, 'deleted') ?? 0} deleted)`;
+    case 'remote.defer':
+      return 'remote deferred';
+    case 'conflict':
+      return 'conflict detected';
+    case 'queue.drop':
+      return 'event queue dropped work';
+    default:
+      return event.kind;
+  }
 }
 
 type LogLevel = 'all' | 'info' | 'warn' | 'error';
@@ -90,113 +162,22 @@ function App() {
     checkFuse();
   }, []);
 
-  // Subscribe to VFS events
+  // Subscribe to product events
   useEffect(() => {
     const unlisteners: Promise<UnlistenFn>[] = [
-      listen('vfs:mounted', () => {
-        setMounted(true);
-        setLoading(false);
-      }),
-      listen('vfs:unmounted', () => {
-        setMounted(false);
-        setLoading(false);
-      }),
-      listen<{ level: string; message: string }>('vfs:log', (e) => {
+      listen<OmniEvent>('omnifuse:event', (e) => {
+        if (e.payload.kind === 'mount.ready') {
+          setMounted(true);
+          setLoading(false);
+        } else if (e.payload.kind === 'mount.stop' || e.payload.kind === 'mount.fail') {
+          setMounted(false);
+          setLoading(false);
+        }
+
         setLogs((prev) =>
           appendLog(prev, {
-            level: e.payload.level as 'info' | 'warn' | 'error',
-            message: e.payload.message,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ message: string }>('vfs:error', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'error',
-            message: e.payload.message,
-            timestamp: new Date(),
-          }),
-        );
-        setLoading(false);
-      }),
-      listen<{ result: string }>('vfs:sync', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `sync: ${e.payload.result}`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ path: string; bytes: number }>('vfs:file-written', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `written: ${e.payload.path} (${e.payload.bytes} bytes)`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ path: string }>('vfs:file-dirty', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `modified: ${e.payload.path}`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ path: string }>('vfs:file-created', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `created: ${e.payload.path}`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ path: string }>('vfs:file-deleted', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'warn',
-            message: `deleted: ${e.payload.path}`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ oldPath: string; newPath: string }>('vfs:file-renamed', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `renamed: ${e.payload.oldPath} -> ${e.payload.newPath}`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ hash: string; filesCount: number; message: string }>('vfs:commit', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `commit ${e.payload.hash.slice(0, 7)}: ${e.payload.message} (${e.payload.filesCount} files)`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen<{ commitsCount: number }>('vfs:push', (e) => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'info',
-            message: `push: ${e.payload.commitsCount} commit(s)`,
-            timestamp: new Date(),
-          }),
-        );
-      }),
-      listen('vfs:push-rejected', () => {
-        setLogs((prev) =>
-          appendLog(prev, {
-            level: 'warn',
-            message: 'push rejected — will retry after pull',
+            level: e.payload.level,
+            message: eventMessage(e.payload),
             timestamp: new Date(),
           }),
         );
@@ -257,6 +238,8 @@ function App() {
     setLoading(true);
     try {
       await invoke('unmount');
+      setMounted(false);
+      setLoading(false);
     } catch (e) {
       setLogs((prev) =>
         appendLog(prev, { level: 'error', message: String(e), timestamp: new Date() }),

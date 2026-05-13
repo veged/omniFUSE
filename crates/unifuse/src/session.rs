@@ -405,6 +405,8 @@ pub trait SessionPathFs: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use std::sync::atomic::{AtomicUsize, Ordering};
 
   use super::*;
@@ -483,11 +485,11 @@ mod tests {
   #[tokio::test]
   async fn recording_session_fs_start_and_stop_are_called_on_shared_ref() {
     let fs = RecordingSessionFs::default();
-    let state = fs.start(MountContext::test("/mnt/test")).await.expect("start");
+    fs.start(MountContext::test("/mnt/test")).await.expect("start");
 
     assert_eq!(fs.started_count(), 1);
 
-    fs.stop(state, UnmountReason::Unmounted).await.expect("stop");
+    fs.stop((), UnmountReason::Unmounted).await.expect("stop");
 
     assert_eq!(fs.stopped_count(), 1);
   }
@@ -495,12 +497,7 @@ mod tests {
   #[test]
   fn opened_node_carries_path_handle_kind_and_attr() {
     let attr = FileAttr::regular(5, 0o644);
-    let node = OpenedNode::new(
-      PathBuf::from("doc.md"),
-      FileHandle(7),
-      FileType::RegularFile,
-      attr.clone()
-    );
+    let node = OpenedNode::new(PathBuf::from("doc.md"), FileHandle(7), FileType::RegularFile, attr);
 
     assert_eq!(node.path.as_path(), Path::new("doc.md"));
     assert_eq!(node.handle, FileHandle(7));

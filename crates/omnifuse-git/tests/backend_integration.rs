@@ -1,6 +1,7 @@
 //! Integration tests for GitBackend.
 
-#![allow(clippy::expect_used)]
+// Integration fixtures keep helper functions ordinary and docs descriptive.
+#![allow(clippy::doc_markdown, clippy::expect_used, clippy::missing_const_for_fn)]
 
 use std::path::{Path, PathBuf};
 

@@ -2,7 +2,15 @@
 //!
 //! Provides `FakeWikiApi::spawn()` — starts an HTTP server on a random port.
 
-#![allow(clippy::expect_used)]
+// Fake server fixtures favor explicit state mutations over pedantic refactors.
+#![allow(
+  clippy::expect_used,
+  clippy::manual_let_else,
+  clippy::option_if_let_else,
+  clippy::significant_drop_tightening,
+  clippy::trait_duplication_in_bounds,
+  clippy::use_self
+)]
 
 use std::{
   collections::HashMap,

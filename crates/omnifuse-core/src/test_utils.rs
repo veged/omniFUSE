@@ -5,19 +5,22 @@
 use std::{
   path::{Path, PathBuf},
   sync::{
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicUsize, Ordering}
   },
   time::Duration
 };
 
 use crate::{
-  OperationalEvent,
-  backend::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult},
-  events::{LogLevel, VfsEventHandler}
+  Code, Event, Kind, Level, Sink,
+  backend::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult}
 };
 
-/// Mock Backend for unit testing SyncEngine and OmniFuseVfs.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+  mutex.lock().expect("test mutex should not be poisoned")
+}
+
+/// Mock `Backend` for unit testing `SyncEngine` and `OmniFuseVfs`.
 ///
 /// Records all calls for subsequent assertions.
 pub struct MockBackend {
@@ -50,7 +53,7 @@ impl Default for MockBackend {
 }
 
 impl MockBackend {
-  /// Create a MockBackend with default settings.
+  /// Create a `MockBackend` with default settings.
   #[must_use]
   pub fn new() -> Self {
     Self {
@@ -69,47 +72,50 @@ impl MockBackend {
 
   /// Set the `sync()` result.
   pub fn set_sync_result(&self, result: SyncResult) {
-    *self.sync_result.lock().expect("lock") = result;
+    *lock(&self.sync_result) = result;
   }
 
   /// Set the `sync()` error.
   pub fn set_sync_error(&self, msg: &str) {
-    *self.sync_error.lock().expect("lock") = Some(msg.to_string());
+    *lock(&self.sync_error) = Some(msg.to_string());
   }
 
   /// Set the result returned by `refresh_remote()`.
   pub fn set_refresh_result(&self, result: RemoteRefreshResult) {
-    *self.refresh_result.lock().expect("lock") = result;
+    *lock(&self.refresh_result) = result;
   }
 
   /// Set the `refresh_remote()` error.
   pub fn set_refresh_error(&self, msg: &str) {
-    *self.refresh_error.lock().expect("lock") = Some(msg.to_string());
+    *lock(&self.refresh_error) = Some(msg.to_string());
   }
 
   /// Set the delay before returning from `sync()`.
   pub fn set_sync_delay(&self, delay: Duration) {
-    *self.sync_delay.lock().expect("lock") = Some(delay);
+    *lock(&self.sync_delay) = Some(delay);
   }
 
   /// Clear the `sync()` delay.
   pub fn clear_sync_delay(&self) {
-    *self.sync_delay.lock().expect("lock") = None;
+    *lock(&self.sync_delay) = None;
   }
 
   /// Number of `sync()` calls.
+  #[must_use]
   pub fn sync_call_count(&self) -> usize {
-    self.sync_calls.lock().expect("lock").len()
+    lock(&self.sync_calls).len()
   }
 
   /// Number of `refresh_remote()` calls.
+  #[must_use]
   pub fn refresh_call_count(&self) -> usize {
     self.refresh_calls.load(Ordering::Relaxed)
   }
 
   /// Last set of files passed to `sync()`.
+  #[must_use]
   pub fn last_sync_files(&self) -> Option<Vec<PathBuf>> {
-    self.sync_calls.lock().expect("lock").last().cloned()
+    lock(&self.sync_calls).last().cloned()
   }
 }
 
@@ -119,30 +125,30 @@ impl Backend for MockBackend {
   }
 
   async fn sync(&self, dirty_files: &[PathBuf]) -> anyhow::Result<SyncResult> {
-    self.sync_calls.lock().expect("lock").push(dirty_files.to_vec());
+    lock(&self.sync_calls).push(dirty_files.to_vec());
 
     // Simulate sync delay (for race condition testing)
-    let delay = *self.sync_delay.lock().expect("lock");
+    let delay = *lock(&self.sync_delay);
     if let Some(d) = delay {
       tokio::time::sleep(d).await;
     }
 
-    let maybe_err = self.sync_error.lock().expect("lock").as_ref().map(ToString::to_string);
+    let maybe_err = lock(&self.sync_error).as_ref().map(ToString::to_string);
     if let Some(msg) = maybe_err {
       return Err(anyhow::anyhow!("{msg}"));
     }
 
-    Ok(self.sync_result.lock().expect("lock").clone())
+    Ok(lock(&self.sync_result).clone())
   }
 
   async fn refresh_remote(&self, _request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
     self.refresh_calls.fetch_add(1, Ordering::Relaxed);
 
-    if let Some(ref msg) = *self.refresh_error.lock().expect("lock") {
+    if let Some(ref msg) = *lock(&self.refresh_error) {
       return Err(anyhow::anyhow!("{msg}"));
     }
 
-    Ok(self.refresh_result.lock().expect("lock").clone())
+    Ok(lock(&self.refresh_result).clone())
   }
 
   fn should_track(&self, path: &Path) -> bool {
@@ -161,35 +167,35 @@ impl Backend for MockBackend {
     "mock"
   }
 
-  fn classify_error(&self, error: &anyhow::Error) -> crate::ErrorKind {
+  fn classify_error(&self, error: &anyhow::Error) -> Code {
     let message = error.to_string().to_lowercase();
     if message.contains("network") || message.contains("connection") {
-      crate::ErrorKind::Offline
+      Code::Offline
     } else if message.contains("conflict") {
-      crate::ErrorKind::Conflict
+      Code::Conflict
     } else {
-      crate::ErrorKind::Internal
+      Code::Internal
     }
   }
 }
 
 /// Test event handler that records all calls.
 pub struct TestEventHandler {
-  /// Recorded `on_event(event)` calls.
-  pub operational_event_calls: Arc<Mutex<Vec<OperationalEvent>>>,
-  /// Recorded `on_push(count)` calls.
+  /// Recorded events.
+  pub event_calls: Arc<Mutex<Vec<Event>>>,
+  /// Derived successful sync counts.
   pub push_calls: Arc<Mutex<Vec<usize>>>,
-  /// Recorded `on_sync(result)` calls.
+  /// Derived remote update markers.
   pub sync_calls: Arc<Mutex<Vec<String>>>,
-  /// Recorded `on_log(level, message)` calls.
-  pub log_calls: Arc<Mutex<Vec<(LogLevel, String)>>>,
-  /// Recorded `on_file_written(path, bytes)` calls.
+  /// Derived warning/error messages.
+  pub log_calls: Arc<Mutex<Vec<(Level, String)>>>,
+  /// Derived file writes.
   pub written_calls: Arc<Mutex<Vec<(PathBuf, usize)>>>,
-  /// Recorded `on_file_created(path)` calls.
+  /// Derived file creates.
   pub created_calls: Arc<Mutex<Vec<PathBuf>>>,
-  /// Recorded `on_file_deleted(path)` calls.
+  /// Derived file deletes.
   pub deleted_calls: Arc<Mutex<Vec<PathBuf>>>,
-  /// Recorded `on_file_renamed(old, new)` calls.
+  /// Derived file renames.
   pub renamed_calls: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>
 }
 
@@ -204,7 +210,7 @@ impl TestEventHandler {
   #[must_use]
   pub fn new() -> Self {
     Self {
-      operational_event_calls: Arc::new(Mutex::new(Vec::new())),
+      event_calls: Arc::new(Mutex::new(Vec::new())),
       push_calls: Arc::new(Mutex::new(Vec::new())),
       sync_calls: Arc::new(Mutex::new(Vec::new())),
       log_calls: Arc::new(Mutex::new(Vec::new())),
@@ -216,24 +222,27 @@ impl TestEventHandler {
   }
 
   /// Number of `on_push` calls.
+  #[must_use]
   pub fn push_count(&self) -> usize {
-    self.push_calls.lock().expect("lock").len()
+    lock(&self.push_calls).len()
   }
 
   /// Number of log entries at a given level.
-  pub fn log_count(&self, level: LogLevel) -> usize {
-    self
-      .log_calls
-      .lock()
-      .expect("lock")
-      .iter()
-      .filter(|(l, _)| *l == level)
-      .count()
+  #[must_use]
+  pub fn log_count(&self, level: Level) -> usize {
+    lock(&self.log_calls).iter().filter(|(l, _)| *l == level).count()
   }
 
-  /// Snapshot of structured operational events.
-  pub fn operational_events(&self) -> Vec<OperationalEvent> {
-    self.operational_event_calls.lock().expect("lock").clone()
+  /// Snapshot of product events.
+  #[must_use]
+  pub fn events(&self) -> Vec<Event> {
+    lock(&self.event_calls).clone()
+  }
+
+  /// Snapshot of product events.
+  #[must_use]
+  pub fn operational_events(&self) -> Vec<Event> {
+    self.events()
   }
 }
 
@@ -247,6 +256,10 @@ pub const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// - Prints `[TEST] Starting: <name>` at the beginning.
 /// - Prints `[TEST] Completed: <name>` on success.
 /// - Panics with a descriptive message if the timeout expires.
+///
+/// # Panics
+///
+/// Panics if the wrapped future does not complete before `TEST_TIMEOUT`.
 ///
 /// Usage:
 /// ```ignore
@@ -270,44 +283,81 @@ where
   result
 }
 
-impl VfsEventHandler for TestEventHandler {
-  fn on_event(&self, event: &OperationalEvent) {
-    self.operational_event_calls.lock().expect("lock").push(event.clone());
+impl Sink for TestEventHandler {
+  fn emit(&self, event: Event) {
+    self.record_derived_views(&event);
+    lock(&self.event_calls).push(event);
+  }
+}
+
+impl TestEventHandler {
+  fn record_derived_views(&self, event: &Event) {
+    match event.kind {
+      Kind::SyncDone => {
+        if let Some(synced) = event_data_usize(event, "synced") {
+          lock(&self.push_calls).push(synced);
+        }
+      }
+      Kind::RemoteChange => {
+        lock(&self.sync_calls).push("updated".to_string());
+      }
+      Kind::FileChange => {
+        if let (Some(path), Some(bytes)) = (event_data_path(event, "path"), event_data_usize(event, "bytes")) {
+          lock(&self.written_calls).push((path, bytes));
+        }
+      }
+      Kind::FileCreate => {
+        if let Some(path) = event_data_path(event, "path") {
+          lock(&self.created_calls).push(path);
+        }
+      }
+      Kind::FileDelete => {
+        if let Some(path) = event_data_path(event, "path") {
+          lock(&self.deleted_calls).push(path);
+        }
+      }
+      Kind::FileRename => {
+        if let (Some(old_path), Some(new_path)) = (event_data_path(event, "oldPath"), event_data_path(event, "newPath"))
+        {
+          lock(&self.renamed_calls).push((old_path, new_path));
+        }
+      }
+      _ => {}
+    }
+
+    if matches!(event.level, Level::Warn | Level::Error) {
+      lock(&self.log_calls).push((event.level, event_message(event)));
+    }
+  }
+}
+
+fn event_data_path(event: &Event, key: &str) -> Option<PathBuf> {
+  event.data.as_ref()?.get(key)?.as_str().map(PathBuf::from)
+}
+
+fn event_data_usize(event: &Event, key: &str) -> Option<usize> {
+  event
+    .data
+    .as_ref()?
+    .get(key)?
+    .as_u64()
+    .and_then(|value| value.try_into().ok())
+}
+
+fn event_message(event: &Event) -> String {
+  if let Some(error) = &event.error {
+    return error.message.clone();
   }
 
-  fn on_push(&self, items_count: usize) {
-    self.push_calls.lock().expect("lock").push(items_count);
+  if event.kind == Kind::Conflict {
+    return "conflict".to_string();
   }
 
-  fn on_sync(&self, result: &str) {
-    self.sync_calls.lock().expect("lock").push(result.to_string());
-  }
-
-  fn on_log(&self, level: LogLevel, message: &str) {
-    self.log_calls.lock().expect("lock").push((level, message.to_string()));
-  }
-
-  fn on_file_written(&self, path: &Path, bytes: usize) {
-    self
-      .written_calls
-      .lock()
-      .expect("lock")
-      .push((path.to_path_buf(), bytes));
-  }
-
-  fn on_file_created(&self, path: &Path) {
-    self.created_calls.lock().expect("lock").push(path.to_path_buf());
-  }
-
-  fn on_file_deleted(&self, path: &Path) {
-    self.deleted_calls.lock().expect("lock").push(path.to_path_buf());
-  }
-
-  fn on_file_renamed(&self, old_path: &Path, new_path: &Path) {
-    self
-      .renamed_calls
-      .lock()
-      .expect("lock")
-      .push((old_path.to_path_buf(), new_path.to_path_buf()));
-  }
+  event
+    .data
+    .as_ref()
+    .and_then(|data| data.get("message").or_else(|| data.get("reason")))
+    .and_then(serde_json::Value::as_str)
+    .unwrap_or("event")
+    .to_string()
 }

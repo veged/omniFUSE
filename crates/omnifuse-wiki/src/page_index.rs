@@ -60,6 +60,8 @@ impl PageIndex {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use std::path::Path;
 
   use crate::{

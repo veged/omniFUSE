@@ -1,6 +1,7 @@
 //! WikiClient tests via FakeWikiApi.
 
-#![allow(clippy::expect_used)]
+// Client integration tests share fake-server fixtures with descriptive docs.
+#![allow(clippy::doc_markdown, clippy::expect_used)]
 
 mod common;
 

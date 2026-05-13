@@ -6,6 +6,15 @@
 //!
 //! Run: `cargo test -p omnifuse-wiki --test e2e_wiki_user_scenarios`
 
+// User-scenario tests keep long flows and explicit fake-state assertions readable.
+#![allow(
+  clippy::cloned_ref_to_slice_refs,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::significant_drop_tightening,
+  clippy::too_many_lines
+)]
+
 mod common;
 
 use std::{

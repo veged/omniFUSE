@@ -5,7 +5,7 @@
 //! - `SyncEngine` — sync orchestration (debounce, poll, retry)
 //! - `OmniFuseVfs` — `UniFuseFilesystem` implementation (file operations via local dir + buffers)
 //! - `FileBufferManager` — in-memory file caching with LRU eviction
-//! - `VfsEventHandler` — trait for events (UI, logs)
+//! - `event::Sink` — product event sink for GUI, CLI and tests
 //!
 //! # Architecture
 //!
@@ -23,6 +23,20 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
+// Unit tests in this crate predate the stricter workspace-wide pedantic profile.
+// Keep production linting strict while avoiding broad rewrites of scenario tests.
+#![cfg_attr(
+  test,
+  allow(
+    clippy::cmp_owned,
+    clippy::doc_markdown,
+    clippy::let_unit_value,
+    clippy::needless_collect,
+    clippy::redundant_closure_for_method_calls,
+    clippy::significant_drop_tightening,
+    clippy::stable_sort_primitive
+  )
+)]
 
 pub mod backend;
 #[allow(clippy::cast_possible_truncation, clippy::significant_drop_tightening)]
@@ -30,7 +44,7 @@ pub mod buffer;
 pub mod config;
 /// Shared dirty path index for remote refresh protection.
 pub mod dirty_index;
-pub mod events;
+pub mod event;
 pub mod file_mutations;
 pub mod observability;
 pub mod sync_engine;
@@ -46,11 +60,10 @@ pub use backend::{
 pub use buffer::{FileBuffer, FileBufferManager};
 pub use config::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, SyncConfig};
 pub use dirty_index::{DirtyIndex, PathProtection};
-pub use events::{LogLevel, NoopEventHandler, VfsEventHandler};
-pub use observability::{
-  Disposition, ErrorKind, ErrorSource, EventSeverity, NoopOperationalEventSink, ObservabilitySession, OperationContext,
-  OperationKind, OperationOutcome, OperationalEvent, OperationalEventSink, RecordingEventSink, init_logging
+pub use event::{
+  Action, Code, Error as EventError, Event, Kind, Level, NoopSink, Op, RecordSink, Session, Sink, Source
 };
+pub use observability::init_logging;
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
 use tracing::info;
 pub use vfs::OmniFuseVfs;
@@ -66,28 +79,27 @@ pub use vfs::OmniFuseVfs;
 /// # Errors
 ///
 /// Returns an error if initialization or mounting fails.
-pub async fn run_mount<B: Backend>(
-  config: MountConfig,
-  backend: B,
-  events: impl VfsEventHandler
-) -> anyhow::Result<()> {
+pub async fn run_mount<B: Backend>(config: MountConfig, backend: B, events: impl Sink) -> anyhow::Result<()> {
   init_logging(&config.logging)?;
 
-  let events: Arc<dyn VfsEventHandler> = Arc::new(events);
+  let events: Arc<dyn Sink> = Arc::new(events);
   let backend = Arc::new(backend);
-  let observability = Arc::new(ObservabilitySession::new(
+  let session = Arc::new(Session::new(
     backend.name(),
     config.mount_point.clone(),
     config.local_dir.clone()
   ));
-  let mount_context = observability.start_operation(OperationKind::Mount, 1, None);
+  let mount_op = session.op();
 
-  events.on_event(&OperationalEvent::MountStarted {
-    context: mount_context.clone(),
-    backend: backend.name().to_string(),
-    mount_point: config.mount_point.clone(),
-    local_dir: config.local_dir.clone()
-  });
+  events.emit(
+    session
+      .op_event(&mount_op, Kind::MountStart, Level::Info, Source::Mount)
+      .data(serde_json::json!({
+          "backend": backend.name(),
+          "mountPoint": config.mount_point.display().to_string(),
+          "localDir": config.local_dir.display().to_string()
+      }))
+  );
 
   let result = async {
     // Check FUSE availability
@@ -95,30 +107,16 @@ pub async fn run_mount<B: Backend>(
       anyhow::bail!("FUSE/WinFsp is not installed");
     }
 
-    let init_context = observability.start_operation(OperationKind::Init, 1, None);
-    events.on_event(&OperationalEvent::BackendInitStarted {
-      context: init_context.clone(),
-      backend: backend.name().to_string()
-    });
-
     // Initialize backend
     let init_result = backend.init(&config.local_dir).await?;
     info!(?init_result, "backend initialized");
-    events.on_sync(&format!("{init_result:?}"));
-    events.on_event(&OperationalEvent::BackendInitFinished {
-      context: init_context.clone(),
-      outcome: init_result_outcome(&init_result),
-      backend: backend.name().to_string(),
-      details: Some(format!("{init_result:?}")),
-      elapsed_ms: init_context.elapsed_ms()
-    });
 
     // Start SyncEngine
     let (sync_engine, sync_handle) = SyncEngine::start_with_session(
       config.sync.clone(),
       Arc::clone(&backend),
       Arc::clone(&events),
-      Arc::clone(&observability)
+      Arc::clone(&session)
     );
 
     // Create VFS
@@ -127,7 +125,7 @@ pub async fn run_mount<B: Backend>(
       sync_engine.sender(),
       Arc::clone(&backend),
       Arc::clone(&events),
-      Arc::clone(&observability),
+      Arc::clone(&session),
       config.buffer.clone()
     );
 
@@ -142,7 +140,14 @@ pub async fn run_mount<B: Backend>(
     // Ensure mount point exists and is empty
     std::fs::create_dir_all(&config.mount_point)?;
 
-    events.on_mounted(backend.name(), &config.mount_point);
+    events.emit(
+      session
+        .op_event(&mount_op, Kind::MountReady, Level::Info, Source::Mount)
+        .data(serde_json::json!({
+            "backend": backend.name(),
+            "mountPoint": config.mount_point.display().to_string()
+        }))
+    );
     info!(
       mount_point = %config.mount_point.display(),
       backend = backend.name(),
@@ -152,7 +157,6 @@ pub async fn run_mount<B: Backend>(
     host.mount(&config.mount_point, &mount_options).await?;
 
     // Shutdown
-    events.on_unmounted();
     sync_engine.shutdown().await?;
     sync_handle.await?;
 
@@ -162,35 +166,30 @@ pub async fn run_mount<B: Backend>(
 
   match result {
     Ok(()) => {
-      events.on_event(&OperationalEvent::MountFinished {
-        context: mount_context.clone(),
-        outcome: OperationOutcome::Success,
-        elapsed_ms: mount_context.elapsed_ms()
-      });
+      events.emit(
+        session
+          .op_event(&mount_op, Kind::MountStop, Level::Info, Source::Mount)
+          .data(serde_json::json!({
+              "elapsedMs": mount_op.elapsed_ms()
+          }))
+      );
       Ok(())
     }
     Err(error) => {
-      events.on_error(&error.to_string());
-      let elapsed_ms = mount_context.elapsed_ms();
-      events.on_event(&OperationalEvent::MountFailed {
-        context: mount_context,
-        severity: EventSeverity::Error,
-        error_kind: backend.classify_error(&error),
-        source: ErrorSource::Mount,
-        disposition: Disposition::Fatal,
-        message: error.to_string(),
-        elapsed_ms
-      });
+      events.emit(
+        session
+          .op_event(&mount_op, Kind::MountFail, Level::Error, Source::Mount)
+          .data(serde_json::json!({
+              "elapsedMs": mount_op.elapsed_ms()
+          }))
+          .error(EventError::new(
+            error.to_string(),
+            backend.classify_error(&error),
+            Action::Stop
+          ))
+      );
       Err(error)
     }
-  }
-}
-
-const fn init_result_outcome(result: &InitResult) -> OperationOutcome {
-  match result {
-    InitResult::Fresh | InitResult::UpToDate | InitResult::Updated => OperationOutcome::Success,
-    InitResult::Conflicts { .. } => OperationOutcome::Conflict,
-    InitResult::Offline => OperationOutcome::Deferred
   }
 }
 

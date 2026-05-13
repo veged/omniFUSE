@@ -22,11 +22,10 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-  Disposition, EventSeverity, ObservabilitySession, OperationKind, OperationOutcome, OperationalEvent,
+  Action, EventError, Kind, Level, Session, Sink, Source,
   backend::{Backend, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult, SyncResult},
   config::SyncConfig,
-  dirty_index::DirtyIndex,
-  events::{LogLevel, VfsEventHandler}
+  dirty_index::DirtyIndex
 };
 
 /// Event from the FUSE layer.
@@ -91,22 +90,18 @@ impl SyncEngine {
   pub fn start<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>
+    events: Arc<dyn Sink>
   ) -> (Self, tokio::task::JoinHandle<()>) {
-    let observability = Arc::new(ObservabilitySession::new(
-      backend.name(),
-      PathBuf::new(),
-      PathBuf::new()
-    ));
-    Self::start_with_session(config, backend, events, observability)
+    let session = Arc::new(Session::new(backend.name(), PathBuf::new(), PathBuf::new()));
+    Self::start_with_session(config, backend, events, session)
   }
 
-  /// Create and start `SyncEngine` with a shared observability session.
+  /// Create and start `SyncEngine` with a shared event session.
   pub fn start_with_session<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
-    observability: Arc<ObservabilitySession>
+    events: Arc<dyn Sink>,
+    session: Arc<Session>
   ) -> (Self, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel(256);
     let metrics = Arc::new(WorkerMetrics::default());
@@ -120,16 +115,16 @@ impl SyncEngine {
       event_rx,
       Arc::clone(&dirty_index),
       dirty_metrics,
-      Arc::clone(&observability)
+      Arc::clone(&session)
     ));
 
     // Poll worker — separate task, JoinHandle stored for shutdown
     let poll_backend = backend;
     let poll_events = events;
     let poll_metrics = Arc::clone(&metrics);
-    let poll_observability = observability;
+    let poll_session = session;
     let poll_handle = tokio::spawn(async move {
-      Self::poll_worker(poll_backend, poll_events, dirty_index, poll_metrics, poll_observability).await;
+      Self::poll_worker(poll_backend, poll_events, dirty_index, poll_metrics, poll_session).await;
     });
 
     (
@@ -185,11 +180,11 @@ impl SyncEngine {
   async fn dirty_worker<B: Backend>(
     config: SyncConfig,
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
+    events: Arc<dyn Sink>,
     mut event_rx: mpsc::Receiver<FsEvent>,
     dirty_index: Arc<DirtyIndex>,
     metrics: Arc<WorkerMetrics>,
-    observability: Arc<ObservabilitySession>
+    session: Arc<Session>
   ) {
     info!(debounce_secs = config.debounce_timeout_secs, "dirty_worker started");
 
@@ -229,7 +224,7 @@ impl SyncEngine {
                   dirty_count = dirty_set.len(),
                   "dirty_worker: final sync before shutdown"
                 );
-                Self::do_sync(&backend, &events, &mut dirty_set, &dirty_index, &metrics, &observability).await;
+                Self::do_sync(&backend, &events, &mut dirty_set, &dirty_index, &metrics, &session).await;
               }
               break;
             }
@@ -242,15 +237,7 @@ impl SyncEngine {
       }
 
       if trigger_sync && !dirty_set.is_empty() {
-        Self::do_sync(
-          &backend,
-          &events,
-          &mut dirty_set,
-          &dirty_index,
-          &metrics,
-          &observability
-        )
-        .await;
+        Self::do_sync(&backend, &events, &mut dirty_set, &dirty_index, &metrics, &session).await;
         trigger_sync = false;
       }
     }
@@ -266,11 +253,11 @@ impl SyncEngine {
   #[allow(clippy::too_many_lines)]
   async fn do_sync<B: Backend>(
     backend: &Arc<B>,
-    events: &Arc<dyn VfsEventHandler>,
+    events: &Arc<dyn Sink>,
     dirty_set: &mut HashSet<PathBuf>,
     dirty_index: &Arc<DirtyIndex>,
     metrics: &WorkerMetrics,
-    observability: &Arc<ObservabilitySession>
+    session: &Arc<Session>
   ) {
     let files: Vec<PathBuf> = dirty_set.drain().filter(|f| backend.should_track(f)).collect();
 
@@ -280,32 +267,34 @@ impl SyncEngine {
 
     let iteration = metrics.sync_iterations.fetch_add(1, Ordering::Relaxed) + 1;
     let start = Instant::now();
-    let context = observability.start_operation(
-      OperationKind::Sync,
-      iteration.try_into().unwrap_or(u32::MAX),
-      files.first().cloned()
-    );
+    let op = session.op();
 
     debug!(count = files.len(), iteration, "syncing dirty files");
-    events.on_event(&OperationalEvent::SyncStarted {
-      context: context.clone(),
-      dirty_count: files.len()
-    });
+    events.emit(
+      session
+        .op_event(&op, Kind::SyncStart, Level::Info, Source::Sync)
+        .data(serde_json::json!({
+            "dirty": files.len(),
+            "iteration": iteration,
+            "path": files.first().map(|path| path.display().to_string())
+        }))
+    );
 
     match backend.sync(&files).await {
       Ok(SyncResult::Success { synced_files }) => {
         for file in &files {
           dirty_index.mark_clean(file);
         }
-        events.on_push(synced_files);
         debug!(synced_files, "sync successful");
-        events.on_event(&OperationalEvent::SyncFinished {
-          context: context.clone(),
-          outcome: OperationOutcome::Success,
-          synced_files,
-          conflict_files: 0,
-          elapsed_ms: context.elapsed_ms()
-        });
+        events.emit(
+          session
+            .op_event(&op, Kind::SyncDone, Level::Info, Source::Sync)
+            .data(serde_json::json!({
+                "synced": synced_files,
+                "conflicts": 0,
+                "elapsedMs": op.elapsed_ms()
+            }))
+        );
       }
       Ok(SyncResult::Conflict {
         synced_files,
@@ -319,52 +308,56 @@ impl SyncEngine {
             dirty_index.mark_clean(file);
           }
         }
-        events.on_push(synced_files);
         warn!(synced_files, conflicts = conflict_files.len(), "sync with conflicts");
-        events.on_log(LogLevel::Warn, &format!("conflicts: {conflict_files:?}"));
-        events.on_event(&OperationalEvent::ConflictDetected {
-          context: context.clone(),
-          conflict_files: conflict_files.len()
-        });
-        events.on_event(&OperationalEvent::SyncFinished {
-          context: context.clone(),
-          outcome: OperationOutcome::Conflict,
-          synced_files,
-          conflict_files: conflict_files.len(),
-          elapsed_ms: context.elapsed_ms()
-        });
+        events.emit(
+          session
+            .op_event(&op, Kind::Conflict, Level::Warn, Source::Sync)
+            .data(serde_json::json!({
+                "paths": conflict_files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>()
+            }))
+        );
+        events.emit(
+          session
+            .op_event(&op, Kind::SyncDone, Level::Warn, Source::Sync)
+            .data(serde_json::json!({
+                "synced": synced_files,
+                "conflicts": conflict_files.len(),
+                "elapsedMs": op.elapsed_ms()
+            }))
+        );
       }
       Ok(SyncResult::Offline) => {
         // Return files to dirty set — will sync on next attempt
         dirty_set.extend(files);
         warn!("remote unavailable, files will be synced later");
-        events.on_log(LogLevel::Warn, "remote unavailable");
-        events.on_event(&OperationalEvent::SyncFinished {
-          context: context.clone(),
-          outcome: OperationOutcome::Deferred,
-          synced_files: 0,
-          conflict_files: 0,
-          elapsed_ms: context.elapsed_ms()
-        });
+        events.emit(
+          session
+            .op_event(&op, Kind::SyncDefer, Level::Warn, Source::Sync)
+            .data(serde_json::json!({
+                "dirty": dirty_set.len(),
+                "elapsedMs": op.elapsed_ms()
+            }))
+            .error(EventError::new(
+              "remote unavailable",
+              crate::Code::Offline,
+              Action::Wait
+            ))
+        );
       }
       Err(e) => {
         // Return files to dirty set — will retry on next event
         dirty_set.extend(files);
         error!(error = %e, "sync error");
-        events.on_log(LogLevel::Error, &format!("sync error: {e}"));
-        events.on_event(&OperationalEvent::UserVisibleWarning {
-          context: context.clone(),
-          message: format!("sync error: {e}"),
-          source: crate::ErrorSource::SyncEngine,
-          disposition: Disposition::Retryable
-        });
-        events.on_event(&OperationalEvent::SyncFinished {
-          context: context.clone(),
-          outcome: OperationOutcome::Failure,
-          synced_files: 0,
-          conflict_files: 0,
-          elapsed_ms: context.elapsed_ms()
-        });
+        let code = backend.classify_error(&e);
+        events.emit(
+          session
+            .op_event(&op, Kind::SyncFail, Level::Error, Source::Sync)
+            .data(serde_json::json!({
+                "dirty": dirty_set.len(),
+                "elapsedMs": op.elapsed_ms()
+            }))
+            .error(EventError::new(format!("sync error: {e}"), code, Action::Retry))
+        );
       }
     }
 
@@ -372,11 +365,6 @@ impl SyncEngine {
     if elapsed > SLOW_ITERATION_THRESHOLD {
       metrics.slow_sync_count.fetch_add(1, Ordering::Relaxed);
       warn!(iteration, elapsed_ms = millis(elapsed), "slow sync iteration");
-      events.on_event(&OperationalEvent::SlowOperationDetected {
-        context,
-        elapsed_ms: millis(elapsed),
-        severity: EventSeverity::Warn
-      });
     }
   }
 
@@ -385,10 +373,10 @@ impl SyncEngine {
   /// Terminated via `JoinHandle::abort()` when `shutdown()` is called.
   async fn poll_worker<B: Backend>(
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
+    events: Arc<dyn Sink>,
     dirty_index: Arc<DirtyIndex>,
     metrics: Arc<WorkerMetrics>,
-    observability: Arc<ObservabilitySession>
+    session: Arc<Session>
   ) {
     let interval = backend.poll_interval();
     info!(interval_ms = millis(interval), "poll_worker started");
@@ -398,12 +386,16 @@ impl SyncEngine {
 
       let iteration = metrics.poll_iterations.fetch_add(1, Ordering::Relaxed) + 1;
       let start = Instant::now();
-      let context = observability.start_operation(OperationKind::Poll, iteration.try_into().unwrap_or(u32::MAX), None);
+      let op = session.op();
 
-      events.on_event(&OperationalEvent::RemotePollStarted {
-        context: context.clone(),
-        interval_ms: millis(interval)
-      });
+      events.emit(
+        session
+          .op_event(&op, Kind::RemotePoll, Level::Info, Source::Sync)
+          .data(serde_json::json!({
+              "intervalMs": millis(interval),
+              "iteration": iteration
+          }))
+      );
 
       let request = RemoteRefresh {
         protected_paths: dirty_index.as_path_protection(),
@@ -415,42 +407,61 @@ impl SyncEngine {
           let count = changed.len() + deleted.len();
           if count > 0 {
             debug!(count, iteration, "remote changes applied");
-            events.on_event(&OperationalEvent::RemoteChangesDetected {
-              context: context.clone(),
-              changed_files: count
-            });
-            events.on_sync("updated");
+            events.emit(
+              session
+                .op_event(&op, Kind::RemoteChange, Level::Info, Source::Sync)
+                .data(serde_json::json!({
+                    "changed": changed.len(),
+                    "deleted": deleted.len(),
+                    "elapsedMs": op.elapsed_ms()
+                }))
+            );
           }
         }
         Ok(RemoteRefreshResult::Deferred { affected, reason }) => {
           warn!(affected = affected.len(), ?reason, "remote refresh deferred");
-          events.on_log(
-            LogLevel::Warn,
-            &format!("remote refresh deferred: {reason:?}, affected: {affected:?}")
+          events.emit(
+            session
+              .op_event(&op, Kind::RemoteDefer, Level::Warn, Source::Sync)
+              .data(serde_json::json!({
+                  "affected": affected.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+                  "reason": format!("{reason:?}"),
+                  "elapsedMs": op.elapsed_ms()
+              }))
+              .error(EventError::new(
+                format!("remote refresh deferred: {reason:?}"),
+                crate::Code::Conflict,
+                Action::Retry
+              ))
           );
-          events.on_event(&OperationalEvent::UserVisibleWarning {
-            context: context.clone(),
-            message: format!("remote refresh deferred: {reason:?}"),
-            source: crate::ErrorSource::SyncEngine,
-            disposition: Disposition::Retryable
-          });
         }
         Ok(RemoteRefreshResult::Offline) => {
           warn!(iteration, "remote unavailable during refresh");
-          events.on_log(LogLevel::Warn, "remote unavailable");
+          events.emit(
+            session
+              .op_event(&op, Kind::RemoteDefer, Level::Warn, Source::Sync)
+              .data(serde_json::json!({
+                  "elapsedMs": op.elapsed_ms()
+              }))
+              .error(EventError::new(
+                "remote unavailable",
+                crate::Code::Offline,
+                Action::Wait
+              ))
+          );
         }
         Ok(RemoteRefreshResult::Unchanged) => {}
         Err(e) => {
           warn!(error = %e, iteration, "remote poll error");
-          events.on_log(LogLevel::Warn, &format!("poll failed: {e}"));
-          events.on_event(&OperationalEvent::RemotePollFailed {
-            context: context.clone(),
-            severity: EventSeverity::Warn,
-            error_kind: backend.classify_error(&e),
-            message: e.to_string(),
-            disposition: Disposition::AutoRetrying,
-            elapsed_ms: context.elapsed_ms()
-          });
+          let code = backend.classify_error(&e);
+          events.emit(
+            session
+              .op_event(&op, Kind::RemoteFail, Level::Warn, Source::Sync)
+              .data(serde_json::json!({
+                  "elapsedMs": op.elapsed_ms()
+              }))
+              .error(EventError::new(format!("poll failed: {e}"), code, Action::Wait))
+          );
         }
       }
 
@@ -458,11 +469,6 @@ impl SyncEngine {
       if elapsed > SLOW_ITERATION_THRESHOLD {
         metrics.slow_poll_count.fetch_add(1, Ordering::Relaxed);
         warn!(iteration, elapsed_ms = millis(elapsed), "slow poll iteration");
-        events.on_event(&OperationalEvent::SlowOperationDetected {
-          context,
-          elapsed_ms: millis(elapsed),
-          severity: EventSeverity::Warn
-        });
       }
 
       // Heartbeat: log status every N iterations
@@ -484,9 +490,9 @@ mod tests {
 
   use super::*;
   use crate::{
+    Level,
     backend::{RemoteDeferReason, RemoteRefreshResult, SyncResult},
     config::SyncConfig,
-    events::LogLevel,
     test_utils::{MockBackend, TestEventHandler}
   };
 
@@ -500,7 +506,7 @@ mod tests {
       debounce_timeout_secs: debounce_ms / 1000,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = events;
+    let events_dyn: Arc<dyn crate::Sink> = events;
     SyncEngine::start(config, backend, events_dyn)
   }
 
@@ -612,7 +618,7 @@ mod tests {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
     let (engine, handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
@@ -721,7 +727,7 @@ mod tests {
     wait_processing().await;
     safe_shutdown(&engine).await;
 
-    assert!(events.log_count(LogLevel::Warn) >= 1, "Conflict should log Warn");
+    assert!(events.log_count(Level::Warn) >= 1, "Conflict should log Warn");
   }
 
   #[tokio::test]
@@ -741,7 +747,7 @@ mod tests {
     wait_processing().await;
     safe_shutdown(&engine).await;
 
-    assert!(events.log_count(LogLevel::Warn) >= 1, "Offline should log Warn");
+    assert!(events.log_count(Level::Warn) >= 1, "Offline should log Warn");
   }
 
   #[tokio::test]
@@ -761,7 +767,7 @@ mod tests {
     wait_processing().await;
     safe_shutdown(&engine).await;
 
-    assert!(events.log_count(LogLevel::Error) >= 1, "Backend error should log Error");
+    assert!(events.log_count(Level::Error) >= 1, "Backend error should log Error");
   }
 
   #[tokio::test]
@@ -853,7 +859,7 @@ mod tests {
       });
       let events = Arc::new(TestEventHandler::new());
 
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       // Wait for 3-4 poll intervals
@@ -881,7 +887,7 @@ mod tests {
       });
       let events = Arc::new(TestEventHandler::new());
 
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(200)).await;
@@ -914,7 +920,7 @@ mod tests {
       });
 
       let events = Arc::new(TestEventHandler::new());
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(50)).await;
@@ -941,14 +947,14 @@ mod tests {
       });
 
       let events = Arc::new(TestEventHandler::new());
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(50)).await;
       safe_shutdown(&engine).await;
       safe_join(handle).await;
 
-      assert!(events.log_count(LogLevel::Warn) >= 1);
+      assert!(events.log_count(Level::Warn) >= 1);
     })
     .await;
   }
@@ -964,12 +970,12 @@ mod tests {
       backend.set_refresh_error("network down");
       let events = Arc::new(TestEventHandler::new());
 
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (_engine, _handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       tokio::time::sleep(Duration::from_millis(200)).await;
 
-      assert!(events.log_count(LogLevel::Warn) >= 1, "poll error should log Warn");
+      assert!(events.log_count(Level::Warn) >= 1, "poll error should log Warn");
     })
     .await;
   }
@@ -1125,7 +1131,7 @@ mod tests {
     wait_processing().await;
 
     // Verify: warning logged due to Offline
-    assert!(events.log_count(LogLevel::Warn) >= 1, "Offline should log Warn");
+    assert!(events.log_count(Level::Warn) >= 1, "Offline should log Warn");
     // push should not have occurred (Offline does not call on_push)
     assert_eq!(events.push_count(), 0, "Offline should not call on_push");
 
@@ -1226,7 +1232,7 @@ mod tests {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
     let (engine, _handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
@@ -1357,7 +1363,7 @@ mod tests {
 
     // Verify: sync was called and error was logged
     assert_eq!(backend.sync_call_count(), 1, "first sync should be called");
-    assert!(events.log_count(LogLevel::Error) >= 1, "sync error should be logged");
+    assert!(events.log_count(Level::Error) >= 1, "sync error should be logged");
 
     // Remove error — next sync will succeed
     *backend.sync_error.lock().expect("lock") = None;
@@ -1444,7 +1450,7 @@ mod tests {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
     let (engine, handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
@@ -1513,7 +1519,7 @@ mod tests {
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 1, "first sync should be called");
-    assert!(events.log_count(LogLevel::Warn) >= 1, "Offline should log Warn");
+    assert!(events.log_count(Level::Warn) >= 1, "Offline should log Warn");
 
     // Switch result to Success — next sync will succeed
     backend.set_sync_result(SyncResult::Success { synced_files: 1 });
@@ -1556,7 +1562,7 @@ mod tests {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
     let (engine, _handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
@@ -1679,14 +1685,14 @@ mod tests {
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 1, "first sync called");
-    assert!(events.log_count(LogLevel::Error) >= 1, "error should be logged");
+    assert!(events.log_count(Level::Error) >= 1, "error should be logged");
 
     // Second attempt — still error (file returned to dirty set)
     tx.send(FsEvent::Flush).await.expect("send flush 1");
     wait_processing().await;
 
     assert_eq!(backend.sync_call_count(), 2, "second sync called (retry)");
-    assert!(events.log_count(LogLevel::Error) >= 2, "error should be logged twice");
+    assert!(events.log_count(Level::Error) >= 2, "error should be logged twice");
 
     // Third attempt — error again
     tx.send(FsEvent::Flush).await.expect("send flush 2");
@@ -1791,7 +1797,7 @@ mod tests {
       debounce_timeout_secs: 3600,
       ..SyncConfig::default()
     };
-    let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
     let (engine, handle) = SyncEngine::start(config, Arc::clone(&backend), events_dyn);
 
     let tx = engine.sender();
@@ -1849,7 +1855,7 @@ mod tests {
       });
       let events = Arc::new(TestEventHandler::new());
 
-      let events_dyn: Arc<dyn crate::events::VfsEventHandler> = Arc::clone(&events) as _;
+      let events_dyn: Arc<dyn crate::Sink> = Arc::clone(&events) as _;
       let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
       // Let poll_worker run and accumulate iterations
@@ -1905,7 +1911,7 @@ mod tests {
       // Create and destroy 10 engines in a row
       for i in 0..10 {
         let events = Arc::new(TestEventHandler::new());
-        let events_dyn: Arc<dyn crate::events::VfsEventHandler> = events;
+        let events_dyn: Arc<dyn crate::Sink> = events;
         let (engine, handle) = SyncEngine::start(SyncConfig::default(), Arc::clone(&backend), events_dyn);
 
         tokio::time::sleep(Duration::from_millis(20)).await;

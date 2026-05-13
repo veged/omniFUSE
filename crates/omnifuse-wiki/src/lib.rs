@@ -138,7 +138,7 @@ impl Backend for WikiBackend {
     "wiki"
   }
 
-  fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
-    classify_wiki_error(error).unwrap_or(omnifuse_core::ErrorKind::Internal)
+  fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::Code {
+    classify_wiki_error(error).unwrap_or(omnifuse_core::Code::Internal)
   }
 }

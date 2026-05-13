@@ -1,6 +1,6 @@
 //! Wiki backend error taxonomy.
 
-use omnifuse_core::ErrorKind;
+use omnifuse_core::Code;
 use thiserror::Error;
 
 /// Structured wiki backend error.
@@ -60,17 +60,17 @@ pub enum WikiError {
 
 /// Classify wiki error into shared core taxonomy.
 #[must_use]
-pub fn classify_wiki_error(error: &anyhow::Error) -> Option<ErrorKind> {
+pub fn classify_wiki_error(error: &anyhow::Error) -> Option<Code> {
   match error.downcast_ref::<WikiError>() {
-    Some(WikiError::InvalidConfig(_)) => Some(ErrorKind::InvalidConfig),
-    Some(WikiError::PageNotFound) => Some(ErrorKind::NotFound),
-    Some(WikiError::AccessDenied) => Some(ErrorKind::PermissionDenied),
-    Some(WikiError::ChangesConflict) => Some(ErrorKind::Conflict),
-    Some(WikiError::SlugOccupiedOrReserved) => Some(ErrorKind::InvalidInput),
-    Some(WikiError::Transport(_)) => Some(ErrorKind::Offline),
-    Some(WikiError::RequestFailed(_) | WikiError::NotInitialized) => Some(ErrorKind::Internal),
+    Some(WikiError::InvalidConfig(_)) => Some(Code::InvalidConfig),
+    Some(WikiError::PageNotFound) => Some(Code::NotFound),
+    Some(WikiError::AccessDenied) => Some(Code::PermissionDenied),
+    Some(WikiError::ChangesConflict) => Some(Code::Conflict),
+    Some(WikiError::SlugOccupiedOrReserved) => Some(Code::InvalidInput),
+    Some(WikiError::Transport(_)) => Some(Code::Offline),
+    Some(WikiError::RequestFailed(_) | WikiError::NotInitialized) => Some(Code::Internal),
     Some(WikiError::Redirect { .. } | WikiError::Deserialization { .. } | WikiError::HttpStatus { .. }) => {
-      Some(ErrorKind::ProtocolViolation)
+      Some(Code::ProtocolViolation)
     }
     None => None
   }
@@ -78,6 +78,8 @@ pub fn classify_wiki_error(error: &anyhow::Error) -> Option<ErrorKind> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use super::*;
 
   #[test]
@@ -87,9 +89,9 @@ mod tests {
     let missing: anyhow::Error = WikiError::PageNotFound.into();
     let conflict: anyhow::Error = WikiError::ChangesConflict.into();
 
-    assert_eq!(classify_wiki_error(&offline), Some(ErrorKind::Offline));
-    assert_eq!(classify_wiki_error(&denied), Some(ErrorKind::PermissionDenied));
-    assert_eq!(classify_wiki_error(&missing), Some(ErrorKind::NotFound));
-    assert_eq!(classify_wiki_error(&conflict), Some(ErrorKind::Conflict));
+    assert_eq!(classify_wiki_error(&offline), Some(Code::Offline));
+    assert_eq!(classify_wiki_error(&denied), Some(Code::PermissionDenied));
+    assert_eq!(classify_wiki_error(&missing), Some(Code::NotFound));
+    assert_eq!(classify_wiki_error(&conflict), Some(Code::Conflict));
   }
 }

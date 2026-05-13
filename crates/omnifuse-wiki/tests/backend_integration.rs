@@ -1,6 +1,12 @@
 //! WikiBackend integration tests via FakeWikiApi.
 
-#![allow(clippy::expect_used)]
+// Integration fixtures prioritize scenario clarity over pedantic clone/doc lints.
+#![allow(
+  clippy::cloned_ref_to_slice_refs,
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::missing_const_for_fn
+)]
 
 mod common;
 

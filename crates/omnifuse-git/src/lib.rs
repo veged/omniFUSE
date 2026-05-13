@@ -5,6 +5,17 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
+// Unit tests use compact fixtures and legacy helper naming; keep production
+// linting strict without expanding test-only scaffolding.
+#![cfg_attr(
+  test,
+  allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::doc_markdown,
+    clippy::redundant_pub_crate,
+    clippy::used_underscore_binding
+  )
+)]
 
 pub mod engine;
 pub mod error;
@@ -135,9 +146,9 @@ impl Backend for GitBackend {
     "git"
   }
 
-  fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
+  fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::Code {
     self.lifecycle.get().map_or_else(
-      || classify_git_error(error).unwrap_or(omnifuse_core::ErrorKind::Internal),
+      || classify_git_error(error).unwrap_or(omnifuse_core::Code::Internal),
       |lifecycle| lifecycle.classify(error)
     )
   }

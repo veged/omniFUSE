@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use omnifuse_core::ErrorKind;
+use omnifuse_core::Code;
 use thiserror::Error;
 
 /// Structured git backend error.
@@ -53,13 +53,13 @@ pub enum GitError {
 
 /// Classify a git error into shared core taxonomy.
 #[must_use]
-pub fn classify_git_error(error: &anyhow::Error) -> Option<ErrorKind> {
+pub fn classify_git_error(error: &anyhow::Error) -> Option<Code> {
   match error.downcast_ref::<GitError>() {
-    Some(GitError::NetworkUnavailable { .. }) => Some(ErrorKind::Offline),
-    Some(GitError::Conflict { .. } | GitError::PushRejected { .. }) => Some(ErrorKind::Conflict),
-    Some(GitError::InvalidRepository { .. }) => Some(ErrorKind::InvalidConfig),
-    Some(GitError::CommandFailed { .. }) => Some(ErrorKind::BackendCommandFailed),
-    Some(GitError::NotInitialized) => Some(ErrorKind::Internal),
+    Some(GitError::NetworkUnavailable { .. }) => Some(Code::Offline),
+    Some(GitError::Conflict { .. } | GitError::PushRejected { .. }) => Some(Code::Conflict),
+    Some(GitError::InvalidRepository { .. }) => Some(Code::InvalidConfig),
+    Some(GitError::CommandFailed { .. }) => Some(Code::BackendCommandFailed),
+    Some(GitError::NotInitialized) => Some(Code::Internal),
     Some(GitError::NothingToCommit | GitError::NoFilesToCommit) | None => None
   }
 }
@@ -86,8 +86,8 @@ mod tests {
     .into();
     let nothing: anyhow::Error = GitError::NothingToCommit.into();
 
-    assert_eq!(classify_git_error(&offline), Some(ErrorKind::Offline));
-    assert_eq!(classify_git_error(&conflict), Some(ErrorKind::Conflict));
+    assert_eq!(classify_git_error(&offline), Some(Code::Offline));
+    assert_eq!(classify_git_error(&conflict), Some(Code::Conflict));
     assert_eq!(classify_git_error(&nothing), None);
     assert!(is_nothing_to_commit(&nothing));
   }

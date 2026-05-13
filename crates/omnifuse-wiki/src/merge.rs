@@ -107,8 +107,9 @@ pub fn decide_merge(base: &str, local: &str, remote: &str) -> MergeDecision {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
 mod tests {
+  #![allow(clippy::expect_used, clippy::panic)]
+
   use super::*;
 
   #[test]

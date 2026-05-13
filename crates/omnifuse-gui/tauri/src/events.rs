@@ -1,151 +1,32 @@
-//! Tauri event handler for VFS events.
+//! Tauri bridge for product events.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
-use omnifuse_core::{
-  OperationalEvent,
-  events::{LogLevel, VfsEventHandler}
-};
+use omnifuse_core::{Event, Sink};
 use tauri::{AppHandle, Emitter, Runtime};
 
-/// Event handler for Tauri.
-///
-/// Implements `VfsEventHandler` — converts core events
-/// into Tauri IPC events for the frontend.
+/// Tauri event bridge.
 pub struct TauriEventHandler<R: Runtime = tauri::Wry> {
-  /// Application handle.
   app: Arc<AppHandle<R>>
 }
 
 impl<R: Runtime> TauriEventHandler<R> {
-  /// Create a new event handler.
+  /// Create a new event bridge.
   pub fn new(app: AppHandle<R>) -> Self {
     Self { app: Arc::new(app) }
   }
 }
 
-impl<R: Runtime> VfsEventHandler for TauriEventHandler<R> {
-  fn on_event(&self, event: &OperationalEvent) {
-    let _ = self.app.emit("vfs:event", event);
-  }
-
-  fn on_mounted(&self, source: &str, mount_point: &Path) {
-    let _ = self.app.emit(
-      "vfs:mounted",
-      serde_json::json!({
-          "source": source,
-          "mountPoint": mount_point.display().to_string()
-      })
-    );
-  }
-
-  fn on_unmounted(&self) {
-    let _ = self.app.emit("vfs:unmounted", ());
-  }
-
-  fn on_error(&self, message: &str) {
-    let _ = self.app.emit(
-      "vfs:error",
-      serde_json::json!({
-          "message": message
-      })
-    );
-  }
-
-  fn on_log(&self, level: LogLevel, message: &str) {
-    let _ = self.app.emit(
-      "vfs:log",
-      serde_json::json!({
-          "level": format!("{level:?}").to_lowercase(),
-          "message": message
-      })
-    );
-  }
-
-  fn on_file_written(&self, path: &Path, bytes: usize) {
-    let _ = self.app.emit(
-      "vfs:file-written",
-      serde_json::json!({
-          "path": path.display().to_string(),
-          "bytes": bytes
-      })
-    );
-  }
-
-  fn on_file_dirty(&self, path: &Path) {
-    let _ = self.app.emit(
-      "vfs:file-dirty",
-      serde_json::json!({
-          "path": path.display().to_string()
-      })
-    );
-  }
-
-  fn on_file_created(&self, path: &Path) {
-    let _ = self.app.emit(
-      "vfs:file-created",
-      serde_json::json!({
-          "path": path.display().to_string()
-      })
-    );
-  }
-
-  fn on_file_deleted(&self, path: &Path) {
-    let _ = self.app.emit(
-      "vfs:file-deleted",
-      serde_json::json!({
-          "path": path.display().to_string()
-      })
-    );
-  }
-
-  fn on_file_renamed(&self, old_path: &Path, new_path: &Path) {
-    let _ = self.app.emit(
-      "vfs:file-renamed",
-      serde_json::json!({
-          "oldPath": old_path.display().to_string(),
-          "newPath": new_path.display().to_string()
-      })
-    );
-  }
-
-  fn on_commit(&self, hash: &str, files_count: usize, message: &str) {
-    let _ = self.app.emit(
-      "vfs:commit",
-      serde_json::json!({
-          "hash": hash,
-          "filesCount": files_count,
-          "message": message
-      })
-    );
-  }
-
-  fn on_push(&self, items_count: usize) {
-    let _ = self.app.emit(
-      "vfs:push",
-      serde_json::json!({
-          "commitsCount": items_count
-      })
-    );
-  }
-
-  fn on_push_rejected(&self) {
-    let _ = self.app.emit("vfs:push-rejected", ());
-  }
-
-  fn on_sync(&self, result: &str) {
-    let _ = self.app.emit(
-      "vfs:sync",
-      serde_json::json!({
-          "result": result
-      })
-    );
+impl<R: Runtime> Sink for TauriEventHandler<R> {
+  fn emit(&self, event: Event) {
+    let _ = self.app.emit("omnifuse:event", event);
   }
 }
 
 #[cfg(test)]
 mod tests {
   #![allow(clippy::expect_used)]
+  #![allow(clippy::manual_async_fn)]
 
   use std::{
     future::Future,
@@ -155,9 +36,8 @@ mod tests {
   };
 
   use omnifuse_core::{
-    Backend, BufferConfig, Disposition, ErrorKind, EventSeverity, FuseMountOptions, InitResult, LoggingConfig,
-    MountConfig, ObservabilitySession, OperationKind, OperationalEvent, RemoteRefresh, RemoteRefreshResult, SyncConfig,
-    SyncResult, run_mount
+    Action, Backend, BufferConfig, Code, EventError, FuseMountOptions, InitResult, Kind, Level, LoggingConfig,
+    MountConfig, RemoteRefresh, RemoteRefreshResult, Session, Source, SyncConfig, SyncResult, run_mount
   };
   use serde_json::Value;
   use tauri::{Event, Listener};
@@ -198,11 +78,11 @@ mod tests {
       "test"
     }
 
-    fn classify_error(&self, error: &anyhow::Error) -> ErrorKind {
+    fn classify_error(&self, error: &anyhow::Error) -> Code {
       if error.to_string().contains("init failed for test") {
-        ErrorKind::InvalidConfig
+        Code::InvalidConfig
       } else {
-        ErrorKind::Internal
+        Code::Internal
       }
     }
   }
@@ -229,71 +109,58 @@ mod tests {
   }
 
   #[test]
-  fn test_on_event_emits_structured_operational_payload() {
+  fn test_emit_product_event_payload() {
     let app = tauri::test::mock_app();
     let handle = app.handle().clone();
     let (tx, rx) = channel();
 
-    handle.listen_any("vfs:event", move |event: Event| {
+    handle.listen_any("omnifuse:event", move |event: Event| {
       tx.send(serde_json::from_str::<Value>(event.payload()).expect("deserialize payload"))
         .expect("send payload to test");
     });
 
     let handler = TauriEventHandler::new(handle);
-    let session = ObservabilitySession::new(
+    let session = Session::new(
       "git",
       PathBuf::from("/mnt/omnifuse"),
       PathBuf::from("/tmp/omnifuse-cache")
     );
-    let context = session.start_operation(OperationKind::Poll, 3, None);
+    let op = session.op();
 
-    handler.on_event(&OperationalEvent::RemotePollFailed {
-      context: context.clone(),
-      severity: EventSeverity::Warn,
-      error_kind: ErrorKind::Offline,
-      message: "network unavailable".to_string(),
-      disposition: Disposition::AutoRetrying,
-      elapsed_ms: 250
-    });
+    handler.emit(
+      session
+        .op_event(&op, Kind::RemoteFail, Level::Warn, Source::Sync)
+        .data(serde_json::json!({
+            "elapsedMs": 250
+        }))
+        .error(EventError::new("network unavailable", Code::Offline, Action::Wait))
+    );
 
     let payload = rx
       .recv_timeout(Duration::from_secs(1))
-      .expect("receive vfs:event payload");
+      .expect("receive omnifuse:event payload");
 
-    assert_eq!(payload["type"], "remote_poll_failed");
-    assert_eq!(payload["context"]["mount_id"], session.mount_id());
-    assert_eq!(payload["context"]["kind"], "poll");
-    assert_eq!(payload["context"]["attempt"].as_u64(), Some(3));
-    assert_eq!(payload["context"]["op_id"].as_u64(), Some(context.op_id()));
-    assert_eq!(payload["error_kind"], "offline");
-    assert_eq!(payload["disposition"], "auto_retrying");
-    assert_eq!(payload["severity"], "warn");
-    assert_eq!(payload["message"], "network unavailable");
-    assert_eq!(payload["elapsed_ms"].as_u64(), Some(250));
+    assert_eq!(payload["version"].as_u64(), Some(1));
+    assert_eq!(payload["kind"], "remote.fail");
+    assert_eq!(payload["mountId"], session.mount_id());
+    assert_eq!(payload["opId"].as_u64(), Some(op.id()));
+    assert_eq!(payload["source"], "sync");
+    assert_eq!(payload["level"], "warn");
+    assert_eq!(payload["data"]["elapsedMs"].as_u64(), Some(250));
+    assert_eq!(payload["error"]["code"], "offline");
+    assert_eq!(payload["error"]["message"], "network unavailable");
+    assert_eq!(payload["error"]["action"], "wait");
   }
 
   #[tokio::test]
-  async fn test_run_mount_failure_emits_tauri_error_and_mount_failed_event() {
+  async fn test_run_mount_failure_emits_mount_fail_event() {
     let app = tauri::test::mock_app();
     let handle = app.handle().clone();
-    let (tx, rx) = channel::<(String, Value)>();
+    let (tx, rx) = channel::<Value>();
 
-    let event_tx = tx.clone();
-    handle.listen_any("vfs:event", move |event: Event| {
-      event_tx
-        .send((
-          "vfs:event".to_string(),
-          serde_json::from_str::<Value>(event.payload()).expect("deserialize vfs:event payload")
-        ))
-        .expect("send vfs:event payload to test");
-    });
-
-    handle.listen_any("vfs:error", move |event: Event| {
-      tx.send((
-        "vfs:error".to_string(),
-        serde_json::from_str::<Value>(event.payload()).expect("deserialize vfs:error payload")
-      ))
-      .expect("send vfs:error payload to test");
+    handle.listen_any("omnifuse:event", move |event: Event| {
+      tx.send(serde_json::from_str::<Value>(event.payload()).expect("deserialize payload"))
+        .expect("send payload to test");
     });
 
     let handler = TauriEventHandler::new(handle);
@@ -304,45 +171,31 @@ mod tests {
     let mut payloads = Vec::new();
     while let Ok(payload) = rx.recv_timeout(Duration::from_millis(100)) {
       payloads.push(payload);
-      if payloads.len() >= 4 {
+      if payloads.len() >= 3 {
         break;
       }
     }
 
-    let mount_started = payloads
-      .iter()
-      .filter(|(name, _)| name == "vfs:event")
-      .map(|(_, payload)| payload)
-      .find(|payload| payload["type"] == "mount_started");
-    assert!(mount_started.is_some(), "expected mount_started event");
+    let mount_start = payloads.iter().find(|payload| payload["kind"] == "mount.start");
+    assert!(mount_start.is_some(), "expected mount.start event");
 
-    let mount_failed = payloads
+    let mount_fail = payloads
       .iter()
-      .filter(|(name, _)| name == "vfs:event")
-      .map(|(_, payload)| payload)
-      .find(|payload| payload["type"] == "mount_failed")
-      .expect("expected mount_failed event");
+      .find(|payload| payload["kind"] == "mount.fail")
+      .expect("expected mount.fail event");
 
-    let error_payload = payloads
-      .iter()
-      .find(|(name, _)| name == "vfs:error")
-      .map(|(_, payload)| payload)
-      .expect("expected vfs:error payload");
-
-    assert_eq!(mount_failed["context"]["kind"], "mount");
-    assert_eq!(mount_failed["source"], "mount");
-    assert_eq!(mount_failed["severity"], "error");
-    assert_eq!(mount_failed["disposition"], "fatal");
-    assert_eq!(error_payload["message"], mount_failed["message"]);
+    assert_eq!(mount_fail["source"], "mount");
+    assert_eq!(mount_fail["level"], "error");
+    assert_eq!(mount_fail["error"]["action"], "stop");
 
     if omnifuse_core::is_fuse_available() {
-      assert_eq!(mount_failed["error_kind"], "invalid_config");
-      assert_eq!(mount_failed["message"], "init failed for test");
+      assert_eq!(mount_fail["error"]["code"], "invalid_config");
+      assert_eq!(mount_fail["error"]["message"], "init failed for test");
     } else {
-      let message = mount_failed["message"]
+      let message = mount_fail["error"]["message"]
         .as_str()
-        .expect("mount_failed message should be string");
-      assert_eq!(mount_failed["error_kind"], "internal");
+        .expect("mount_fail message should be string");
+      assert_eq!(mount_fail["error"]["code"], "internal");
       assert!(
         message.contains("FUSE/WinFsp"),
         "expected FUSE availability error, got: {message}"

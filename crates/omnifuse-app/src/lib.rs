@@ -1,5 +1,9 @@
 //! Application-level mount preparation for `OmniFuse`.
 
+// Test support lives beside the production environment abstraction; allow
+// fixture-only visibility/layout lints in test builds.
+#![cfg_attr(test, allow(clippy::items_after_test_module, clippy::redundant_pub_crate))]
+
 mod environment;
 mod mount_layout;
 mod mount_service;

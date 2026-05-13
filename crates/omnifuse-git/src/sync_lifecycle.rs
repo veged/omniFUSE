@@ -130,13 +130,13 @@ impl GitSyncLifecycle {
         synced_files: dirty_files.len()
       }),
       Err(error) => match classify_git_error(&error) {
-        Some(omnifuse_core::ErrorKind::Conflict) => {
+        Some(omnifuse_core::Code::Conflict) => {
           warn!("sync_local: conflicts during push");
           Ok(GitSync::Conflict {
             files: dirty_files.to_vec()
           })
         }
-        Some(omnifuse_core::ErrorKind::Offline) => Ok(GitSync::Offline),
+        Some(omnifuse_core::Code::Offline) => Ok(GitSync::Offline),
         _ => Err(error)
       }
     }
@@ -153,7 +153,7 @@ impl GitSyncLifecycle {
 
     if let Err(error) = engine.fetch().await {
       return match classify_git_error(&error) {
-        Some(omnifuse_core::ErrorKind::Offline) => Ok(GitRefresh::Offline),
+        Some(omnifuse_core::Code::Offline) => Ok(GitRefresh::Offline),
         _ => Err(error)
       };
     }
@@ -185,7 +185,7 @@ impl GitSyncLifecycle {
       Ok(files) => files,
       Err(error) => {
         return match classify_git_error(&error) {
-          Some(omnifuse_core::ErrorKind::Offline) => Ok(RemoteRefreshResult::Offline),
+          Some(omnifuse_core::Code::Offline) => Ok(RemoteRefreshResult::Offline),
           _ => Err(error)
         };
       }
@@ -230,8 +230,8 @@ impl GitSyncLifecycle {
 
   /// Classify a git error for core observability.
   #[must_use]
-  pub fn classify(&self, error: &anyhow::Error) -> omnifuse_core::ErrorKind {
-    classify_git_error(error).unwrap_or(omnifuse_core::ErrorKind::Internal)
+  pub fn classify(&self, error: &anyhow::Error) -> omnifuse_core::Code {
+    classify_git_error(error).unwrap_or(omnifuse_core::Code::Internal)
   }
 
   /// Repository path.

@@ -351,7 +351,7 @@ mod tests {
     );
 
     // Verify that io::Error without os_error returns EIO
-    let io_err_no_os = std::io::Error::new(std::io::ErrorKind::Other, "custom");
+    let io_err_no_os = std::io::Error::other("custom");
     let fs_err_no_os = FsError::Io(io_err_no_os);
     assert_eq!(
       fs_err_no_os.to_errno(),

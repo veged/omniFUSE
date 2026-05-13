@@ -102,6 +102,8 @@ fn is_vfs_component(component: Component<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::expect_used)]
+
   use std::path::{Path, PathBuf};
 
   use super::{PageRef, Slug};

@@ -8,7 +8,14 @@
 //!
 //! Run: `cargo test -p omnifuse-core --test real_fuse_tests`
 
-#![allow(clippy::expect_used)]
+// Scenario tests keep historical helper names and tuple fixtures.
+#![allow(
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::type_complexity,
+  dead_code,
+  unused_variables
+)]
 
 use std::{
   path::{Path, PathBuf},
@@ -17,9 +24,9 @@ use std::{
 };
 
 use omnifuse_core::{
+  Level, Sink,
   backend::SyncResult,
   config::{BufferConfig, SyncConfig},
-  events::{LogLevel, VfsEventHandler},
   sync_engine::SyncEngine,
   test_utils::{MockBackend, TEST_TIMEOUT, TestEventHandler, with_timeout},
   vfs::OmniFuseVfs
@@ -47,13 +54,13 @@ fn create_pipeline(
     debounce_timeout_secs: debounce_secs,
     ..SyncConfig::default()
   };
-  let events_dyn: Arc<dyn VfsEventHandler> = events.clone();
+  let events_dyn: Arc<dyn Sink> = events.clone();
   let (engine, handle) = SyncEngine::start(config, backend.clone(), events_dyn);
   let vfs = OmniFuseVfs::new(
     tmp.path().to_path_buf(),
     engine.sender(),
     backend.clone(),
-    events.clone() as Arc<dyn VfsEventHandler>,
+    events.clone() as Arc<dyn Sink>,
     BufferConfig::default()
   );
   (Arc::new(vfs), engine, handle, backend, events, tmp)
@@ -106,7 +113,7 @@ async fn test_honest_editor_open_read_write_save() {
 #[tokio::test]
 async fn test_honest_open_read_no_modify_close() {
   with_timeout("test_honest_open_read_no_modify_close", async {
-    let (vfs, engine, handle, backend, _events, tmp) = create_pipeline(0);
+    let (vfs, engine, handle, _backend, _events, tmp) = create_pipeline(0);
     let file_path = tmp.path().join("readme.md");
     std::fs::write(&file_path, "# README").expect("write");
     let path = Path::new("readme.md");
@@ -117,7 +124,6 @@ async fn test_honest_open_read_no_modify_close() {
     wait_processing().await;
     safe_shutdown(&engine).await;
     safe_join(handle).await;
-    assert!(backend.sync_call_count() >= 0, "sync may be called on release");
   })
   .await;
 }
@@ -271,7 +277,7 @@ async fn test_honest_conflict_detection_and_preservation() {
       tmp.path().join("conflict.md").exists(),
       "local file should be preserved after conflict"
     );
-    assert!(events.log_count(LogLevel::Warn) > 0, "conflict should log a warning");
+    assert!(events.log_count(Level::Warn) > 0, "conflict should log a warning");
   })
   .await;
 }

@@ -6,13 +6,19 @@
 //!
 //! Run: `cargo test -p omnifuse-core --test concurrent_editing_tests`
 
-#![allow(clippy::expect_used)]
+// Concurrent scenario tests favor direct assertions over pedantic reshaping.
+#![allow(
+  clippy::doc_markdown,
+  clippy::expect_used,
+  clippy::redundant_closure_for_method_calls,
+  clippy::significant_drop_tightening
+)]
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use omnifuse_core::{
+  NoopSink, Sink,
   config::{BufferConfig, SyncConfig},
-  events::{NoopEventHandler, VfsEventHandler},
   sync_engine::{FsEvent, SyncEngine},
   test_utils::{MockBackend, TestEventHandler, with_timeout},
   vfs::OmniFuseVfs
@@ -33,7 +39,7 @@ fn create_test_vfs(
   backend: Arc<MockBackend>
 ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>, mpsc::Sender<FsEvent>) {
   let (tx, rx) = mpsc::channel(256);
-  let events: Arc<dyn VfsEventHandler> = Arc::new(NoopEventHandler);
+  let events: Arc<dyn Sink> = Arc::new(NoopSink);
   let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx.clone(), backend, events, BufferConfig::default());
   (vfs, rx, tx)
 }
@@ -345,7 +351,7 @@ async fn test_write_during_sync_delay() {
     backend.set_sync_delay(Duration::from_millis(300));
 
     let events = Arc::new(TestEventHandler::new());
-    let events_dyn: Arc<dyn VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn Sink> = Arc::clone(&events) as _;
     let config = SyncConfig {
       debounce_timeout_secs: 0,
       ..SyncConfig::default()
@@ -355,7 +361,7 @@ async fn test_write_during_sync_delay() {
 
     // Also create the VFS to do actual writes
     let (vfs_tx, _vfs_rx) = mpsc::channel(256);
-    let vfs_events: Arc<dyn VfsEventHandler> = Arc::new(NoopEventHandler);
+    let vfs_events: Arc<dyn Sink> = Arc::new(NoopSink);
     let vfs = OmniFuseVfs::new(
       tmp.path().to_path_buf(),
       vfs_tx,
@@ -590,7 +596,7 @@ async fn test_many_writers_one_sync_engine() {
     backend.set_sync_result(omnifuse_core::SyncResult::Success { synced_files: 1 });
 
     let events = Arc::new(TestEventHandler::new());
-    let events_dyn: Arc<dyn VfsEventHandler> = Arc::clone(&events) as _;
+    let events_dyn: Arc<dyn Sink> = Arc::clone(&events) as _;
     let config = SyncConfig {
       debounce_timeout_secs: 0,
       ..SyncConfig::default()
@@ -606,7 +612,7 @@ async fn test_many_writers_one_sync_engine() {
     for v in 0..num_vfs {
       let tmp = tempfile::tempdir().expect("tempdir");
       let sender = engine.sender();
-      let vfs_events: Arc<dyn VfsEventHandler> = Arc::new(NoopEventHandler);
+      let vfs_events: Arc<dyn Sink> = Arc::new(NoopSink);
       let vfs = OmniFuseVfs::new(
         tmp.path().to_path_buf(),
         sender,

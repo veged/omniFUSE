@@ -1,323 +1,107 @@
-# OmniFuse Observability Design
+# OmniFuse Event Contract
 
-Дата: 2026-04-06
-Статус: draft
+Date: 2026-04-06
+Status: implemented baseline
 
-## Контекст
+## Context
 
-В проекте уже есть `tracing`, локальные `warn!/error!` и строковый `VfsEventHandler`, но наблюдаемость остаётся фрагментированной:
+OmniFuse needs one small product event contract shared by the core, GUI, CLI-oriented tooling and tests.
 
-- CLI инициализирует `tracing`, GUI нет.
-- `LoggingConfig` существует как конфиг, но не управляет реальным logging pipeline.
-- значимая часть ошибок передаётся как строки и местами классифицируется через `contains(...)`;
-- пользовательские события и техническая диагностика смешаны.
+Technical logs remain a separate `tracing` concern. Events describe user-visible system behavior: mount lifecycle, file changes, sync work, remote updates, conflicts and recoverable failures.
 
-Это достаточно для happy path и локального дебага, но недостаточно для разбора сложных сбоев, корреляции событий и честного UI для нештатных сценариев.
+## Decision
 
-## Цель
+The production event API is `event::Sink` receiving `event::Event`.
 
-Прийти к модели, в которой для любого инцидента можно быстро ответить на четыре вопроса:
+Legacy string callbacks and per-case GUI events are not part of the contract. The GUI consumes a single Tauri channel:
 
-1. Что сломалось.
-2. Где сломалось.
-3. Насколько это серьёзно.
-4. Что система сделала дальше.
+```text
+omnifuse:event
+```
 
-## Не-цели
+## Event Shape
 
-- Не внедрять сейчас внешнюю telemetry platform.
-- Не тащить в проект тяжёлые зависимости ради наблюдаемости.
-- Не переписывать сразу все контракты между crates одним большим коммитом.
+```ts
+type Event = {
+  version: 1;
+  seq: number;
+  time: number;
+  mountId: string;
+  opId?: number;
+  kind: Kind;
+  level: 'info' | 'warn' | 'error';
+  source: Source;
+  data?: object;
+  error?: EventError;
+};
+```
 
-## Ключевое решение
+`seq` is monotonic inside one mount session. `opId` correlates events belonging to the same operation.
 
-Наблюдаемость делится на два контура:
+## Kinds
 
-- технический контур: структурные логи через `tracing`;
-- продуктовый контур: typed operational events для UI и верхнеуровневой диагностики.
+```text
+mount.start
+mount.ready
+mount.stop
+mount.fail
 
-Оба контура строятся поверх общего `ObservabilityContext`.
+file.change
+file.flush
+file.create
+file.delete
+file.rename
 
-## Целевая модель
+sync.start
+sync.done
+sync.defer
+sync.fail
 
-### 1. ObservabilityContext
+remote.poll
+remote.change
+remote.apply
+remote.defer
+remote.fail
 
-В `omnifuse-core` вводится root-session для каждого mount:
+conflict
+queue.drop
+auth.fail
+```
 
-- `mount_id`
-- `backend`
-- `mount_point`
-- `local_dir`
-- `session_started_at`
-- `op_seq`
+The kind carries the outcome when that keeps the model smaller. For example, `sync.done`, `sync.defer` and `sync.fail` are separate kinds instead of one `sync.finished` event with an extra outcome field.
 
-Из него порождаются контексты операций:
+## Error
 
-- `MountOp`
-- `InitOp`
-- `SyncOp`
-- `PollOp`
-- `ApplyRemoteOp`
-- `FileOp`
+```ts
+type EventError = {
+  code: Code;
+  message: string;
+  action: 'retry' | 'wait' | 'fix' | 'stop';
+};
+```
 
-У каждой операции есть:
+`message` is diagnostic text. UI behavior must depend on `kind`, `level`, `code` and `action`, not string matching.
 
-- `op_id`
-- `kind`
-- `attempt`
-- `started_at`
-- опционально `path`
+## Data
 
-### 2. OperationalEvent
+`data` must stay small and semantic. It may include paths, counters and elapsed time, but not document contents.
 
-Строковый `VfsEventHandler` перестаёт быть primary contract. Основной моделью становится typed enum `OperationalEvent`.
+Examples:
 
-Минимальный набор событий:
+```json
+{ "path": "draft.md", "bytes": 120 }
+{ "dirty": 3, "synced": 3, "conflicts": 0 }
+{ "changed": 2, "deleted": 1 }
+{ "paths": ["article.md", "seeds/short.md"] }
+```
 
-- `MountStarted`
-- `MountFinished`
-- `MountFailed`
-- `BackendInitStarted`
-- `BackendInitFinished`
-- `SyncStarted`
-- `SyncFinished`
-- `SyncDeferredOffline`
-- `ConflictDetected`
-- `RemotePollStarted`
-- `RemotePollFailed`
-- `RemoteChangesDetected`
-- `RemoteApplyFailed`
-- `SlowOperationDetected`
-- `FileMarkedDirty`
-- `FileFlushed`
-- `PushRejected`
-- `UserVisibleWarning`
+## Testing
 
-Каждое событие несёт:
+Tests should assert observable behavior through:
 
-- `context`
-- `severity`
-- `outcome`
-- `error_kind`
-- `source`
-- `disposition`
-- payload с конкретными полями сценария
+- event `kind`;
+- `mountId`, `opId` and `seq` correlation;
+- small semantic `data` fields;
+- final file/backend contents for realistic workflows.
 
-### 3. Taxonomy ошибок
-
-Вместо строковых эвристик вводится стабильная классификация.
-
-`ErrorKind`:
-
-- `Offline`
-- `Timeout`
-- `AuthFailed`
-- `PermissionDenied`
-- `NotFound`
-- `Conflict`
-- `RateLimited`
-- `InvalidConfig`
-- `InvalidInput`
-- `FsIo`
-- `BackendCommandFailed`
-- `ProtocolViolation`
-- `Internal`
-
-`ErrorSource`:
-
-- `Mount`
-- `Vfs`
-- `SyncEngine`
-- `Git`
-- `Wiki`
-- `Fuse`
-- `Gui`
-
-`Disposition`:
-
-- `Retryable`
-- `AutoRetrying`
-- `UserActionRequired`
-- `Fatal`
-
-### 4. Единый logging pipeline
-
-В `omnifuse-core` появляется единая инициализация логирования:
-
-- общий `init_logging`;
-- поддержка `LoggingConfig.level`;
-- поддержка `LoggingConfig.log_file`;
-- одинаковый pipeline для CLI и GUI;
-- структурные поля по умолчанию: `mount_id`, `backend`, `op_id`, `attempt`, `path`, `elapsed_ms`, `outcome`.
-
-### 5. Совместимость
-
-Миграция делается через adapter layer:
-
-- новый контракт: `OperationalEventSink`;
-- старый контракт: `VfsEventHandler`;
-- bridge: `OperationalEvent -> VfsEventHandler`.
-
-Это позволяет перевести core, GUI и тесты постепенно.
-
-## Точки интеграции
-
-### `crates/omnifuse-core`
-
-Новые или изменяемые модули:
-
-- `src/observability.rs`: `ObservabilitySession`, `OperationContext`, `OperationalEvent`, `ErrorKind`, `OperationalEventSink`, `init_logging`;
-- `src/lib.rs`: создание root session, mount-level events, wiring sinks;
-- `src/sync_engine.rs`: `SyncOp`, `PollOp`, `ApplyRemoteOp`, slow-iteration detection как typed events;
-- `src/vfs.rs`: file-level events и честная диагностика потери событий при backpressure;
-- `src/events.rs`: compatibility adapter.
-
-### `crates/omnifuse-git`
-
-Базовая идея: не ломать сразу `Backend`, а обернуть backend в `ObservedBackend<B>`.
-
-Это позволит:
-
-- создавать spans и operation context вокруг `init/sync/poll_remote/apply_remote`;
-- классифицировать git-ошибки в `ErrorKind`;
-- убрать принятие решений по `e.to_string().contains(...)`.
-
-### `crates/omnifuse-wiki`
-
-Нужно:
-
-- поднять текущую HTTP-классификацию до общего `ErrorKind`;
-- ограничить body logging и добавить redaction для чувствительных данных;
-- эмитить typed events для offline, auth, conflict и protocol-level ошибок.
-
-### `crates/omnifuse-gui/tauri`
-
-Нужно:
-
-- инициализировать тот же logging pipeline, что и в CLI;
-- перейти от string-first IPC к typed operational events;
-- оставить совместимый mapping для текущих UI-событий на время миграции.
-
-## План внедрения
-
-### Фаза 1. База инфраструктуры
-
-Результат:
-
-- единый `init_logging`;
-- реальное использование `LoggingConfig`;
-- root `ObservabilitySession`;
-- `mount_id` в логах CLI и GUI.
-
-Маленькие коммиты:
-
-1. `core: add observability primitives and init_logging`
-2. `cli: wire logging config into shared init`
-3. `gui: initialize shared logging pipeline`
-
-### Фаза 2. Operation context и backend decorator
-
-Результат:
-
-- `ObservedBackend<B>`;
-- operation spans и `op_id`;
-- start/finish/failure events для `init/sync/poll/apply_remote`.
-
-Маленькие коммиты:
-
-1. `core: add operation context and observed backend wrapper`
-2. `core: emit mount and backend lifecycle events`
-3. `git/wiki: classify backend failures into shared error kinds`
-
-### Фаза 3. Typed events в core runtime
-
-Результат:
-
-- `SyncEngine` и `VFS` перестают эмитить только строки;
-- UI и тесты получают typed operational events;
-- slow/offline/conflict scenarios видны как отдельные исходы.
-
-Маленькие коммиты:
-
-1. `core: add operational event sink and compatibility adapter`
-2. `core: migrate sync engine to typed events`
-3. `core: migrate vfs file lifecycle to typed events`
-
-### Фаза 4. GUI bridge и совместимость
-
-Результат:
-
-- Tauri подписан на typed events;
-- старые IPC события живут как compatibility layer;
-- UI не парсит английские строки для различения сценариев.
-
-Маленькие коммиты:
-
-1. `gui: add bridge from operational events to tauri payloads`
-2. `gui: expose structured mount/sync/error states`
-3. `gui: reduce string-first event handling`
-
-### Фаза 5. Очистка и закрепление
-
-Результат:
-
-- удалены строковые эвристики и лишние дубли;
-- тесты опираются на typed payload;
-- новая модель становится дефолтной.
-
-Маленькие коммиты:
-
-1. `core: remove string-based error routing`
-2. `tests: migrate observability assertions to typed events`
-3. `docs: document observability model and operator workflow`
-
-## Тестовая стратегия
-
-Покрытие нужно строить по слоям:
-
-- unit: `ErrorKind` mapping, `mount_id/op_id`, adapters;
-- integration: offline, conflict, slow sync, poll failure, apply_remote failure, cancel during mount;
-- event-sequence tests: проверка последовательности `OperationalEvent`, а не строк;
-- correlation tests: один `mount_id` связывает mount, sync engine, backend и GUI bridge;
-- regression tests на backpressure в `VFS`.
-
-## Безопасность логов
-
-По умолчанию нельзя логировать:
-
-- auth token;
-- authorization headers;
-- сырые тела ответов API без explicit trace gate;
-- пользовательские данные без необходимости.
-
-TRACE-body logging допускается только с redaction и только как режим целевого дебага.
-
-## Definition of Done
-
-Вариант 3 считается достигнутым, когда:
-
-- у каждого mount есть стабильный `mount_id`;
-- у каждой значимой операции есть `op_id`, `attempt`, `elapsed_ms`, `outcome`;
-- UI различает `offline`, `conflict`, `auth`, `timeout`, `invalid config` без парсинга текста;
-- core не принимает решения через `contains(...)` по тексту ошибки;
-- CLI и GUI используют один logging pipeline;
-- `LoggingConfig` реально управляет выводом;
-- по одному `mount_id` можно восстановить цепочку инцидента end-to-end;
-- чувствительные данные не попадают в обычные логи.
-
-## Риски
-
-- Миграция затронет существующие e2e и test-utils, где ожидания завязаны на строки.
-- При неаккуратной миграции можно получить дубли между `tracing`, `OperationalEvent` и compatibility adapter.
-- Если сразу полезть менять `Backend` trait, объём и риск вырастут непропорционально.
-
-## Рекомендация
-
-Цель фиксируется как вариант 3, но реализация идёт последовательно:
-
-1. выровнять logging infrastructure;
-2. ввести typed operational events;
-3. перевести runtime и GUI на correlation-first модель;
-4. удалить строковые эвристики и временные мосты.
-
-Это даёт честную наблюдаемость без лишнего архитектурного взрыва.
+Tests should not depend on exact diagnostic text unless that text is an explicit public contract.

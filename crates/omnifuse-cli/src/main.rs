@@ -182,7 +182,7 @@ async fn cmd_mount_git(
         allow_other,
         read_only
       },
-      omnifuse_core::NoopEventHandler
+      omnifuse_core::NoopSink
     )
     .await
     .context("mount error")?;
@@ -221,7 +221,7 @@ async fn cmd_mount_wiki(
         allow_other,
         read_only
       },
-      omnifuse_core::NoopEventHandler
+      omnifuse_core::NoopSink
     )
     .await
     .context("mount error")?;

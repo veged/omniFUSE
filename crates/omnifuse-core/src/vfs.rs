@@ -20,11 +20,10 @@ use tokio::sync::mpsc;
 use unifuse::{DirEntry, FileAttr, FileHandle, FileType, FsError, OpenFlags, StatFs};
 
 use crate::{
-  ObservabilitySession,
+  Session, Sink,
   backend::Backend,
   buffer::FileBufferManager,
   config::BufferConfig,
-  events::VfsEventHandler,
   file_mutations::{DirtySink, FileMutationPipeline, OpenFileMutation, metadata_to_attr},
   sync_engine::FsEvent
 };
@@ -213,14 +212,10 @@ impl<B: Backend> OmniFuseVfs<B> {
     local_dir: PathBuf,
     sync_tx: mpsc::Sender<FsEvent>,
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
+    events: Arc<dyn Sink>,
     buffer_config: BufferConfig
   ) -> Self {
-    let session = Arc::new(ObservabilitySession::new(
-      backend.name(),
-      PathBuf::new(),
-      local_dir.clone()
-    ));
+    let session = Arc::new(Session::new(backend.name(), PathBuf::new(), local_dir.clone()));
     Self::new_with_session(local_dir, sync_tx, backend, events, session, buffer_config)
   }
 
@@ -229,8 +224,8 @@ impl<B: Backend> OmniFuseVfs<B> {
     local_dir: PathBuf,
     sync_tx: mpsc::Sender<FsEvent>,
     backend: Arc<B>,
-    events: Arc<dyn VfsEventHandler>,
-    session: Arc<ObservabilitySession>,
+    events: Arc<dyn Sink>,
+    session: Arc<Session>,
     buffer_config: BufferConfig
   ) -> Self {
     let buffer_manager = Arc::new(FileBufferManager::new(buffer_config));
@@ -567,7 +562,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    OperationalEvent,
+    Kind,
     config::BufferConfig,
     sync_engine::FsEvent,
     test_utils::{MockBackend, TestEventHandler}
@@ -579,7 +574,7 @@ mod tests {
     backend: Arc<MockBackend>
   ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>) {
     let (tx, rx) = mpsc::channel(256);
-    let events: Arc<dyn crate::events::VfsEventHandler> = Arc::new(crate::events::NoopEventHandler);
+    let events: Arc<dyn crate::Sink> = Arc::new(crate::NoopSink);
     let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx, backend, events, BufferConfig::default());
     (vfs, rx)
   }
@@ -587,7 +582,7 @@ mod tests {
   fn create_test_vfs_with_handler(
     dir: &std::path::Path,
     backend: Arc<MockBackend>,
-    events: Arc<dyn crate::events::VfsEventHandler>
+    events: Arc<dyn crate::Sink>
   ) -> (OmniFuseVfs<MockBackend>, mpsc::Receiver<FsEvent>) {
     let (tx, rx) = mpsc::channel(256);
     let vfs = OmniFuseVfs::new(dir.to_path_buf(), tx, backend, events, BufferConfig::default());
@@ -795,7 +790,7 @@ mod tests {
 
     let backend = Arc::new(MockBackend::new());
     let handler = Arc::new(TestEventHandler::new());
-    let events: Arc<dyn crate::events::VfsEventHandler> = handler.clone();
+    let events: Arc<dyn crate::Sink> = handler.clone();
     let (vfs, _rx) = create_test_vfs_with_handler(tmp.path(), backend, events);
 
     let fh = vfs
@@ -807,16 +802,24 @@ mod tests {
 
     let observed = handler.operational_events();
     assert!(
-      observed
-        .iter()
-        .any(|event| matches!(event, OperationalEvent::FileMarkedDirty { path, .. } if path == Path::new("obs.txt"))),
-      "write should emit FileMarkedDirty"
+      observed.iter().any(|event| event.kind == Kind::FileChange
+        && event
+          .data
+          .as_ref()
+          .and_then(|data| data.get("path"))
+          .and_then(serde_json::Value::as_str)
+          == Some("obs.txt")),
+      "write should emit file.change"
     );
     assert!(
-      observed
-        .iter()
-        .any(|event| matches!(event, OperationalEvent::FileFlushed { path, .. } if path == Path::new("obs.txt"))),
-      "flush should emit FileFlushed"
+      observed.iter().any(|event| event.kind == Kind::FileFlush
+        && event
+          .data
+          .as_ref()
+          .and_then(|data| data.get("path"))
+          .and_then(serde_json::Value::as_str)
+          == Some("obs.txt")),
+      "flush should emit file.flush"
     );
   }
 

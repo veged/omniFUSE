@@ -1,4 +1,5 @@
-#![allow(clippy::expect_used)]
+// Real CLI smoke tests keep long workflows and path helpers explicit.
+#![allow(clippy::expect_used, clippy::needless_borrow, clippy::too_many_lines)]
 
 use std::{
   fs,
