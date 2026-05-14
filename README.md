@@ -2,9 +2,9 @@
 
 <img src="./omniFUSE.png" width="200" height="200" alt="omniFUSE logo">
 
-Universal virtual filesystem — mount git repos, wikis, and cloud storage as local directories.
+Universal virtual filesystem for AI and humans: mount git repos, wikis, and cloud storage as local directories
 
-Edit files with your favorite editor, and **omniFUSE** syncs changes automatically.
+Edit files with your favorite editor — or let an AI agent do it through plain shell tools — and **omniFUSE** syncs changes automatically.
 
 ## Installation
 
@@ -83,6 +83,58 @@ cargo tauri dev
 ```
 
 ---
+
+## For AI agents
+
+Because **omniFUSE** mounts at the OS level via FUSE/WinFsp, any agent that can
+spawn a shell, read files, or open paths already speaks its language —
+no SDK, no plugin, no provider-specific tool wiring.
+
+```bash
+# Mount once on the host (or inside a long-lived sandbox)
+of mount git https://github.com/user/repo /workspace/repo
+
+# The agent uses whatever it already knows
+grep -r "TODO" /workspace/repo
+cat /workspace/repo/src/main.rs
+echo "fix" >> /workspace/repo/notes.md
+```
+
+What this gives you, beyond a generic shared volume:
+
+- **Versioned memory for free.** On the git backend, every save the agent makes
+  becomes a real commit pushed to the remote. Recover with `git log`,
+  `git revert`, `git diff` — the same tools humans already use.
+- **Concurrent editing with humans.** Both backends accept simultaneous writes.
+  Git delegates to native git merge (fast-forward, merge commit, or conflict
+  markers); wiki uses three-way merge via `diffy`. No locks, no "agent took
+  over the file" surprises.
+- **Credentials stay outside the sandbox.** Mount runs on the host with your
+  tokens. The agent sees a directory — it never touches the GitHub PAT or the
+  wiki OAuth token, even if its sandbox is compromised.
+- **Drop-in for any agent framework.** Claude Code (`--add-dir`), OpenAI Agents
+  SDK shell tool, LangChain `ShellTool`, self-hosted runners — all work
+  unmodified because the mount looks like a local directory.
+
+## Roadmap
+
+- **More backends.** S3-compatible (AWS S3, R2, B2, MinIO, Yandex Object
+  Storage), WebDAV (Nextcloud, ownCloud), SFTP/SSH, GitHub Issues/PRs as files,
+  Notion, Confluence, GitLab Wiki.
+- **Persistent cache between runs.** Reuse already-fetched data for the same
+  remote resource across CLI invocations.
+- **Index/metadata cache.** Separate listing cache for slow backends so
+  `readdir` stays snappy on S3, GDrive, etc.
+- **Workspace snapshots.** Capture and restore the state of a mount —
+  particularly useful as a rollback point for agent runs.
+- **Daemon mode.** Single `of` daemon owning all active mounts, with
+  `of list` / `of status` and shared cache between processes.
+- **`of skill` / `of <cmd> --skill`.** Agent-oriented help format, symmetric
+  to `--help` (works as both a subcommand and a flag on every command);
+  optional `--for=<tool>` to add tool-specific guidance.
+
+Contributions and proposals welcome — open an issue before starting on a new
+backend so we can agree on the shape.
 
 ## Development
 
