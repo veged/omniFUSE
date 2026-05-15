@@ -5,7 +5,10 @@
 //! of mount git /path/to/local/repo /mnt/repo
 //! of mount wiki https://wiki.example.com my/project /mnt/wiki --auth TOKEN
 //! of check
+//! of skill mount git --for=claude
 //! ```
+
+mod skill;
 
 use std::path::PathBuf;
 
@@ -20,10 +23,18 @@ use tracing::info;
 /// Mounts git repositories and other sources as a filesystem.
 #[derive(Parser)]
 #[command(name = "of", version, about)]
-struct Cli {
+pub(crate) struct Cli {
   /// Verbose output (can be repeated: -v, -vv).
   #[arg(short, long, action = clap::ArgAction::Count, global = true)]
   verbose: u8,
+
+  /// Print the agent-oriented manual (markdown). Symmetric to `--help`.
+  #[arg(long, global = true)]
+  skill: bool,
+
+  /// Tool to tailor the skill manual for (e.g. `claude`, `openai`, `langchain`).
+  #[arg(long = "for", global = true, value_name = "TOOL")]
+  for_tool: Option<String>,
 
   /// Command.
   #[command(subcommand)]
@@ -44,7 +55,13 @@ enum Commands {
   Check,
 
   /// Generate a sample configuration.
-  GenConfig
+  GenConfig,
+
+  /// Print the agent-oriented manual (markdown).
+  Skill {
+    /// Subcommand path (e.g. `mount git`).
+    path: Vec<String>
+  }
 }
 
 /// Backend for mounting.
@@ -111,13 +128,23 @@ fn logging_config_for_verbose(verbose: u8) -> LoggingConfig {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+  let argv: Vec<String> = std::env::args().collect();
+  if let Some(invocation) = skill::detect_skill_flag(&argv) {
+    print!("{}", skill::render(&invocation.path, invocation.for_tool.as_deref()));
+    return Ok(());
+  }
+
   let cli = Cli::parse();
   omnifuse_core::init_logging(&logging_config_for_verbose(cli.verbose))?;
 
   match cli.command {
     Commands::Mount { backend } => cmd_mount(backend).await,
     Commands::Check => cmd_check(),
-    Commands::GenConfig => cmd_gen_config()
+    Commands::GenConfig => cmd_gen_config(),
+    Commands::Skill { path } => {
+      print!("{}", skill::render(&path, cli.for_tool.as_deref()));
+      Ok(())
+    }
   }
 }
 

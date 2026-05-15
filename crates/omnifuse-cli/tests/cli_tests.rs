@@ -260,3 +260,134 @@ fn test_verbose_with_gen_config() {
   let output = result.get_output();
   assert!(output.status.code().is_some(), "process terminated abnormally");
 }
+
+// ─── skill (agent-oriented help) ─────────────────────────────────
+
+#[test]
+fn test_skill_flag_at_top_level() {
+  // `of --skill` — exits 0, output starts with version marker and intro
+  of_cmd()
+    .arg("--skill")
+    .assert()
+    .success()
+    .stdout(predicate::str::starts_with("<!-- of version: "))
+    .stdout(predicate::str::contains("omniFUSE — skill manual"))
+    .stdout(predicate::str::contains("Subcommand index"));
+}
+
+#[test]
+fn test_skill_subcommand_at_top_level() {
+  // `of skill` — same content as `of --skill`
+  of_cmd()
+    .arg("skill")
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("omniFUSE — skill manual"))
+    .stdout(predicate::str::contains("Subcommand index"));
+}
+
+#[test]
+fn test_skill_flag_with_required_args_missing() {
+  // `of mount git --skill` — skill flag short-circuits validation,
+  // so missing positional args don't cause an error.
+  of_cmd()
+    .args(["mount", "git", "--skill"])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("of mount git"))
+    .stdout(predicate::str::contains("Conflict behavior"));
+}
+
+#[test]
+fn test_skill_subcommand_with_path() {
+  // `of skill mount wiki` — section for `mount wiki`
+  of_cmd()
+    .args(["skill", "mount", "wiki"])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("of mount wiki"))
+    .stdout(predicate::str::contains("three-way merge"));
+}
+
+#[test]
+fn test_skill_flag_and_subcommand_outputs_match() {
+  // The flag form and the subcommand form must produce byte-identical output.
+  let via_flag = of_cmd().args(["mount", "git", "--skill"]).output().expect("run");
+  let via_sub = of_cmd().args(["skill", "mount", "git"]).output().expect("run");
+  assert!(via_flag.status.success());
+  assert!(via_sub.status.success());
+  assert_eq!(
+    String::from_utf8_lossy(&via_flag.stdout),
+    String::from_utf8_lossy(&via_sub.stdout),
+    "skill flag and subcommand should produce identical output"
+  );
+}
+
+#[test]
+fn test_skill_for_claude_appends_tail() {
+  // `of skill mount git --for=claude` — appends Claude-specific tail
+  of_cmd()
+    .args(["skill", "mount", "git", "--for=claude"])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("For Claude Code"))
+    .stdout(predicate::str::contains("--add-dir"));
+}
+
+#[test]
+fn test_skill_for_unknown_tool_silently_falls_back() {
+  // Unknown `--for` value: no error, no tail appended.
+  let with_unknown = of_cmd()
+    .args(["skill", "mount", "git", "--for=nonsense"])
+    .output()
+    .expect("run");
+  let without_for = of_cmd().args(["skill", "mount", "git"]).output().expect("run");
+  assert!(with_unknown.status.success());
+  assert!(without_for.status.success());
+  assert_eq!(
+    String::from_utf8_lossy(&with_unknown.stdout),
+    String::from_utf8_lossy(&without_for.stdout)
+  );
+}
+
+#[test]
+fn test_skill_starts_with_version_marker() {
+  // Invariant: first line of skill output is the version marker.
+  let out = of_cmd().arg("--skill").output().expect("run");
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let first_line = stdout.lines().next().expect("at least one line");
+  assert!(
+    first_line.starts_with("<!-- of version: "),
+    "first line should be version marker, got: {first_line:?}"
+  );
+}
+
+#[test]
+fn test_skill_for_each_subcommand_path() {
+  // Invariant: for every leaf subcommand we know about, both invocation
+  // forms succeed and produce non-empty output. Guards the
+  // "every form that works for --help works for --skill" contract.
+  let leaf_paths: &[&[&str]] = &[
+    &["mount", "git"],
+    &["mount", "wiki"],
+    &["check"],
+    &["gen-config"],
+    &["skill"]
+  ];
+
+  for path in leaf_paths {
+    // Flag form: `of <path...> --skill`
+    let mut args: Vec<&str> = path.to_vec();
+    args.push("--skill");
+    let out = of_cmd().args(&args).output().expect("run");
+    assert!(out.status.success(), "flag form failed for {path:?}");
+    assert!(!out.stdout.is_empty(), "flag form empty for {path:?}");
+
+    // Subcommand form: `of skill <path...>`
+    let mut args: Vec<&str> = vec!["skill"];
+    args.extend_from_slice(path);
+    let out = of_cmd().args(&args).output().expect("run");
+    assert!(out.status.success(), "subcommand form failed for {path:?}");
+    assert!(!out.stdout.is_empty(), "subcommand form empty for {path:?}");
+  }
+}
