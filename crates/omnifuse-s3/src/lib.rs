@@ -1,7 +1,13 @@
-//! omnifuse-s3 - S3-compatible backend for `OmniFuse` powered by OpenDAL.
+//! omnifuse-s3 - S3-compatible backend for `OmniFuse` powered by `OpenDAL`.
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
+#![allow(
+  clippy::doc_markdown,
+  clippy::match_same_arms,
+  clippy::significant_drop_tightening,
+  clippy::similar_names
+)]
 
 pub mod config;
 pub mod error;
@@ -22,7 +28,7 @@ use omnifuse_core::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, Syn
 
 use crate::{path::is_internal_path, session::S3Session};
 
-/// S3-compatible backend powered by OpenDAL.
+/// S3-compatible backend powered by `OpenDAL`.
 pub struct S3Backend {
   config: S3Config,
   session: OnceLock<S3Session>
@@ -82,7 +88,7 @@ impl Backend for S3Backend {
   }
 
   fn classify_error(&self, error: &anyhow::Error) -> omnifuse_core::Code {
-    classify_s3_error(error).unwrap_or(omnifuse_core::Code::Internal)
+    classify_s3_error(error)
   }
 }
 

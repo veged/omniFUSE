@@ -219,10 +219,10 @@ impl S3Session {
       match self.sync_one(path).await {
         Ok(true) => synced += 1,
         Ok(false) => {}
-        Err(error) if classify_s3_error(&error) == Some(omnifuse_core::Code::Conflict) => {
+        Err(error) if classify_s3_error(&error) == omnifuse_core::Code::Conflict => {
           conflicts.push(path.clone());
         }
-        Err(error) if classify_s3_error(&error) == Some(omnifuse_core::Code::Offline) => {
+        Err(error) if classify_s3_error(&error) == omnifuse_core::Code::Offline => {
           return Ok(SyncResult::Offline);
         }
         Err(error) => return Err(error)
@@ -257,9 +257,10 @@ impl S3Session {
 
   async fn upload_or_merge(&self, local_rel: &Path, object_path: &str, local_path: &Path) -> anyhow::Result<()> {
     for attempt in 0..MAX_PUT_RETRIES {
-      match self.upload_or_merge_once(local_rel, object_path, local_path).await {
-        Err(error) if is_precondition_failed(&error) && attempt + 1 < MAX_PUT_RETRIES => continue,
-        result => return result
+      let outcome = self.upload_or_merge_once(local_rel, object_path, local_path).await;
+      match outcome {
+        Err(error) if is_precondition_failed(&error) && attempt + 1 < MAX_PUT_RETRIES => {}
+        other => return other
       }
     }
 
@@ -282,11 +283,7 @@ impl S3Session {
           .merge_remote_drift(local_rel, object_path, &local_bytes, current_state)
           .await
       }
-      (Some(_base_state), None) => {
-        self
-          .handle_remote_delete_during_upload(local_rel, object_path, &local_bytes)
-          .await
-      }
+      (Some(_base_state), None) => self.handle_remote_delete_during_upload(local_rel, object_path, &local_bytes),
       (None, Some(_)) => {
         let remote_bytes = self.operator.read(object_path).await?.to_vec();
         if remote_bytes == local_bytes {
@@ -373,7 +370,7 @@ impl S3Session {
     }
   }
 
-  async fn handle_remote_delete_during_upload(
+  fn handle_remote_delete_during_upload(
     &self,
     local_rel: &Path,
     object_path: &str,

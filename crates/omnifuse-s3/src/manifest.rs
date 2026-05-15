@@ -66,7 +66,7 @@ pub struct S3Manifest {
 impl S3Manifest {
   /// Create an empty manifest.
   #[must_use]
-  pub fn empty() -> Self {
+  pub const fn empty() -> Self {
     Self {
       version: 1,
       entries: BTreeMap::new()

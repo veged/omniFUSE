@@ -132,18 +132,25 @@ cargo test -p unifuse             # Types, inode (19 tests)
 Implement the `Backend` trait from `omnifuse-core`:
 
 ```rust
-#[trait_variant::make(Send)]
 pub trait Backend: Send + Sync + 'static {
-    async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult>;
-    async fn sync(&self, dirty_files: &[PathBuf]) -> anyhow::Result<SyncResult>;
-    async fn poll_remote(&self) -> anyhow::Result<Vec<RemoteChange>>;
-    async fn apply_remote(&self, changes: Vec<RemoteChange>) -> anyhow::Result<()>;
+    fn init(&self, local_dir: &Path) -> impl Future<Output = anyhow::Result<InitResult>> + Send;
+    fn sync(&self, dirty_files: &[PathBuf]) -> impl Future<Output = anyhow::Result<SyncResult>> + Send;
+    fn refresh_remote(
+        &self,
+        request: RemoteRefresh<'_>,
+    ) -> impl Future<Output = anyhow::Result<RemoteRefreshResult>> + Send;
     fn should_track(&self, path: &Path) -> bool;
     fn poll_interval(&self) -> Duration;
-    async fn is_online(&self) -> bool;
+    fn is_online(&self) -> impl Future<Output = bool> + Send;
     fn name(&self) -> &'static str;
+    fn classify_error(&self, error: &anyhow::Error) -> Code { Code::Internal }
 }
 ```
+
+`refresh_remote` is the single entry point for remote-side updates; the backend
+decides what to apply, what to defer (via `RemoteRefreshResult::Deferred`), and
+which paths are protected for the current dirty workload. See
+`crates/omnifuse-core/src/backend.rs` for the authoritative definition.
 
 Then wire it into `omnifuse-cli` and/or `omnifuse-gui`.
 

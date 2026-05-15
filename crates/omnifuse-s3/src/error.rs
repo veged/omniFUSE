@@ -40,30 +40,31 @@ pub enum S3Error {
 
 /// Classify S3 errors into the shared core taxonomy.
 #[must_use]
-pub fn classify_s3_error(error: &anyhow::Error) -> Option<Code> {
-  match error.downcast_ref::<S3Error>() {
-    Some(S3Error::InvalidConfig(_) | S3Error::InvalidPath(_)) => Some(Code::InvalidConfig),
-    Some(S3Error::Conflict { .. } | S3Error::PreconditionFailed { .. }) => Some(Code::Conflict),
-    Some(S3Error::MissingCapability(_)) => Some(Code::InvalidConfig),
-    Some(S3Error::NotInitialized) => Some(Code::Internal),
-    Some(S3Error::OpenDal(error)) => classify_opendal_kind(error.kind()),
-    None => error
-      .downcast_ref::<opendal::Error>()
-      .and_then(|error| classify_opendal_kind(error.kind()))
+pub fn classify_s3_error(error: &anyhow::Error) -> Code {
+  if let Some(error) = error.downcast_ref::<S3Error>() {
+    return match error {
+      S3Error::InvalidConfig(_) | S3Error::InvalidPath(_) | S3Error::MissingCapability(_) => Code::InvalidConfig,
+      S3Error::Conflict { .. } | S3Error::PreconditionFailed { .. } => Code::Conflict,
+      S3Error::NotInitialized => Code::Internal,
+      S3Error::OpenDal(error) => classify_opendal_kind(error.kind())
+    };
   }
+  error
+    .downcast_ref::<opendal::Error>()
+    .map_or(Code::Internal, |error| classify_opendal_kind(error.kind()))
 }
 
-fn classify_opendal_kind(kind: ErrorKind) -> Option<Code> {
+#[must_use]
+pub(crate) const fn classify_opendal_kind(kind: ErrorKind) -> Code {
   match kind {
-    ErrorKind::ConfigInvalid => Some(Code::InvalidConfig),
-    ErrorKind::NotFound => Some(Code::NotFound),
-    ErrorKind::PermissionDenied => Some(Code::PermissionDenied),
-    ErrorKind::ConditionNotMatch | ErrorKind::AlreadyExists => Some(Code::Conflict),
+    ErrorKind::ConfigInvalid => Code::InvalidConfig,
+    ErrorKind::NotFound => Code::NotFound,
+    ErrorKind::PermissionDenied => Code::PermissionDenied,
+    ErrorKind::ConditionNotMatch | ErrorKind::AlreadyExists => Code::Conflict,
     ErrorKind::Unsupported | ErrorKind::IsADirectory | ErrorKind::NotADirectory | ErrorKind::RangeNotSatisfied => {
-      Some(Code::InvalidInput)
+      Code::InvalidInput
     }
-    ErrorKind::RateLimited => Some(Code::Offline),
-    ErrorKind::Unexpected | ErrorKind::IsSameFile => Some(Code::Internal),
-    _ => Some(Code::Internal)
+    ErrorKind::RateLimited => Code::Offline,
+    _ => Code::Internal
   }
 }

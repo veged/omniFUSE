@@ -64,6 +64,34 @@ of mount wiki https://api.wiki.yandex.net my/project ~/mnt/wiki --org-id YOUR_OR
 
 > **Note:** use the API host (`api.wiki.yandex.net`), not the web UI host.
 
+### Mount S3-compatible storage
+
+OmniFuse mounts any S3-compatible bucket through OpenDAL. Text objects with
+non-overlapping local and remote UTF-8 changes are merged automatically; binary
+objects report conflicts when both sides change.
+
+```bash
+export OMNIFUSE_S3_ACCESS_KEY_ID=your-access-key
+export OMNIFUSE_S3_SECRET_ACCESS_KEY=your-secret-key
+
+of mount s3 my-bucket ~/mnt/storage \
+  --endpoint https://s3.amazonaws.com \
+  --region us-east-1 \
+  --prefix project
+```
+
+For Cloudflare R2, point at the account endpoint and use `--region auto`:
+
+```bash
+of mount s3 my-bucket ~/mnt/r2 \
+  --endpoint https://ACCOUNT_ID.r2.cloudflarestorage.com \
+  --region auto
+```
+
+The backend refuses providers that do not advertise conditional writes
+(`write_with_if_match` / `write_with_if_not_exists`) — there is no degraded
+unsafe-write mode in V1.
+
 ### Other commands
 
 ```bash
@@ -73,8 +101,8 @@ of gen-config   # Print example TOML config
 
 ### Desktop GUI
 
-**omniFUSE** includes a Tauri-based GUI with git and wiki backend support,
-real-time sync logs, and a system folder picker.
+**omniFUSE** includes a Tauri-based GUI with git, wiki, and S3-compatible
+backend support, real-time sync logs, and a system folder picker.
 
 ```bash
 cd crates/omnifuse-gui

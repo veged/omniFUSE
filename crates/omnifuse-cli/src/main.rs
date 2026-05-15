@@ -32,6 +32,7 @@ struct Cli {
 
 /// Available commands.
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // clap-generated CLI enum, size unavoidable
 enum Commands {
   /// Mount a backend.
   Mount {

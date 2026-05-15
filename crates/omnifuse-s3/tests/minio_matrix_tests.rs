@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+  clippy::expect_used,
+  clippy::panic,
+  clippy::unwrap_used,
+  clippy::cloned_ref_to_slice_refs,
+  clippy::doc_markdown
+)]
 
 //! Live provider matrix against MinIO.
 //!
@@ -14,8 +20,11 @@
 //! docker exec omnifuse-minio mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
 //! docker exec omnifuse-minio mc mb local/omnifuse-test || true
 //!
-//! cargo test -p omnifuse-s3 --test minio_matrix_tests -- --ignored
+//! cargo test -p omnifuse-s3 --test minio_matrix_tests -- --ignored --test-threads=1
 //! ```
+//!
+//! Tests share a single MinIO instance and can race over connection limits when run in
+//! parallel; pin `--test-threads=1` for the matrix run.
 //!
 //! The same suite runs against R2, Yandex Object Storage and Backblaze B2 by overriding
 //! `OMNIFUSE_MINIO_ENDPOINT`, `OMNIFUSE_MINIO_BUCKET`, `OMNIFUSE_MINIO_REGION`,
