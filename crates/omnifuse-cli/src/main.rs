@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use omnifuse_app::{GitMountArgs, MountService, WikiMountArgs};
+use omnifuse_app::{GitMountArgs, MountService, S3MountArgs, WikiMountArgs};
 use omnifuse_core::LoggingConfig;
 use tracing::info;
 
@@ -61,6 +61,44 @@ enum MountBackend {
     branch: String,
     /// Remote polling interval (seconds).
     #[arg(long, default_value = "30")]
+    poll_interval: u64,
+    /// Allow access by other users.
+    #[arg(long)]
+    allow_other: bool,
+    /// Mount as read-only.
+    #[arg(long)]
+    read_only: bool
+  },
+
+  /// Mount an S3-compatible bucket.
+  S3 {
+    /// Bucket name.
+    bucket: String,
+    /// Mount point.
+    mountpoint: PathBuf,
+    /// Object key prefix mounted as root.
+    #[arg(long)]
+    prefix: Option<String>,
+    /// S3-compatible endpoint URL.
+    #[arg(long, env = "OMNIFUSE_S3_ENDPOINT")]
+    endpoint: Option<String>,
+    /// S3 region (`auto` for R2, real region for AWS).
+    #[arg(long, env = "OMNIFUSE_S3_REGION")]
+    region: Option<String>,
+    /// Access key ID.
+    #[arg(long, env = "OMNIFUSE_S3_ACCESS_KEY_ID")]
+    access_key_id: Option<String>,
+    /// Secret access key.
+    #[arg(long, env = "OMNIFUSE_S3_SECRET_ACCESS_KEY")]
+    secret_access_key: Option<String>,
+    /// Temporary session token.
+    #[arg(long, env = "OMNIFUSE_S3_SESSION_TOKEN")]
+    session_token: Option<String>,
+    /// Use virtual-hosted-style requests.
+    #[arg(long)]
+    virtual_host_style: bool,
+    /// Remote polling interval (seconds).
+    #[arg(long, default_value = "60")]
     poll_interval: u64,
     /// Allow access by other users.
     #[arg(long)]
@@ -154,7 +192,53 @@ async fn cmd_mount(backend: MountBackend) -> anyhow::Result<()> {
       )
       .await
     }
+    MountBackend::S3 {
+      bucket,
+      mountpoint,
+      prefix,
+      endpoint,
+      region,
+      access_key_id,
+      secret_access_key,
+      session_token,
+      virtual_host_style,
+      poll_interval,
+      allow_other,
+      read_only
+    } => {
+      cmd_mount_s3(S3MountArgs {
+        bucket,
+        mount_point: mountpoint,
+        prefix,
+        endpoint,
+        region,
+        access_key_id,
+        secret_access_key,
+        session_token,
+        virtual_host_style,
+        poll_interval_secs: Some(poll_interval),
+        allow_other,
+        read_only
+      })
+      .await
+    }
   }
+}
+
+async fn cmd_mount_s3(args: S3MountArgs) -> anyhow::Result<()> {
+  info!(
+    bucket = %args.bucket,
+    mountpoint = %args.mount_point.display(),
+    "mounting S3-compatible bucket"
+  );
+
+  MountService::default()
+    .run_s3(args, omnifuse_core::NoopSink)
+    .await
+    .context("mount error")?;
+
+  info!("unmounted");
+  Ok(())
 }
 
 async fn cmd_mount_git(

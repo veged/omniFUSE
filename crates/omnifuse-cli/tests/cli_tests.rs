@@ -260,3 +260,22 @@ fn test_verbose_with_gen_config() {
   let output = result.get_output();
   assert!(output.status.code().is_some(), "process terminated abnormally");
 }
+
+// ─── S3 subcommand ──────────────────────────────────────────────
+
+#[test]
+fn test_mount_s3_missing_args() {
+  // `of mount s3` without bucket/mountpoint should fail.
+  of_cmd().args(["mount", "s3"]).assert().failure();
+}
+
+#[test]
+fn test_mount_s3_help_mentions_endpoint_prefix_and_credentials() {
+  of_cmd()
+    .args(["mount", "s3", "--help"])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("--endpoint"))
+    .stdout(predicate::str::contains("--prefix"))
+    .stdout(predicate::str::contains("--access-key-id"));
+}
