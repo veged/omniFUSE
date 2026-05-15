@@ -1,10 +1,26 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use omnifuse_core::{InitResult, SyncResult};
+use omnifuse_core::{
+  InitResult, PathProtection, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult
+};
 use omnifuse_s3::session::S3Session;
 use opendal::{Operator, services};
+
+struct NoProtection;
+impl PathProtection for NoProtection {
+  fn is_protected(&self, _path: &Path) -> bool {
+    false
+  }
+}
+
+struct ProtectAll;
+impl PathProtection for ProtectAll {
+  fn is_protected(&self, _path: &Path) -> bool {
+    true
+  }
+}
 
 fn memory_operator() -> Operator {
   Operator::new(services::Memory::default())
@@ -88,4 +104,141 @@ async fn sync_deletes_remote_when_local_removed() {
     "got {result:?}"
   );
   assert!(operator.stat("gone.txt").await.is_err());
+}
+
+// `refresh_remote` returning `Unchanged` requires stable ETags; the memory operator does not
+// surface them, so the "no remote changes" round-trip is covered by the MinIO matrix in Task 9.
+
+#[tokio::test]
+async fn refresh_pulls_clean_remote_changes() {
+  let operator = memory_operator();
+  let dir = tempfile::tempdir().expect("tempdir");
+  let session = S3Session::attach_operator_for_tests(operator.clone(), dir.path()).expect("session");
+  session.initialize().await.expect("init");
+
+  operator.write("new.txt", "fresh").await.expect("remote add");
+
+  let result = session
+    .refresh_remote(RemoteRefresh {
+      protected_paths: &NoProtection,
+      mode: RemoteApplyMode::ApplySafe
+    })
+    .await
+    .expect("refresh");
+
+  assert!(matches!(result, RemoteRefreshResult::Applied { .. }), "got {result:?}");
+  assert_eq!(
+    std::fs::read_to_string(dir.path().join("new.txt")).expect("local"),
+    "fresh"
+  );
+}
+
+#[tokio::test]
+async fn refresh_defers_protected_changes() {
+  let operator = memory_operator();
+  let dir = tempfile::tempdir().expect("tempdir");
+  let session = S3Session::attach_operator_for_tests(operator.clone(), dir.path()).expect("session");
+  session.initialize().await.expect("init");
+
+  operator.write("doc.txt", "remote").await.expect("seed");
+
+  let result = session
+    .refresh_remote(RemoteRefresh {
+      protected_paths: &ProtectAll,
+      mode: RemoteApplyMode::ApplySafe
+    })
+    .await
+    .expect("refresh");
+
+  assert!(
+    matches!(
+      result,
+      RemoteRefreshResult::Deferred {
+        reason: RemoteDeferReason::ProtectedLocalChange,
+        ..
+      }
+    ),
+    "got {result:?}"
+  );
+  // Local file is NOT created when refresh is deferred.
+  assert!(!dir.path().join("doc.txt").exists());
+}
+
+#[tokio::test]
+async fn refresh_detect_only_does_not_apply() {
+  let operator = memory_operator();
+  let dir = tempfile::tempdir().expect("tempdir");
+  let session = S3Session::attach_operator_for_tests(operator.clone(), dir.path()).expect("session");
+  session.initialize().await.expect("init");
+  operator.write("doc.txt", "remote").await.expect("seed");
+
+  let result = session
+    .refresh_remote(RemoteRefresh {
+      protected_paths: &NoProtection,
+      mode: RemoteApplyMode::DetectOnly
+    })
+    .await
+    .expect("refresh");
+
+  assert!(
+    matches!(
+      result,
+      RemoteRefreshResult::Deferred {
+        reason: RemoteDeferReason::DetectOnly,
+        ..
+      }
+    ),
+    "got {result:?}"
+  );
+  assert!(!dir.path().join("doc.txt").exists());
+}
+
+#[tokio::test]
+async fn refresh_two_pass_avoids_partial_apply_on_conflict() {
+  let operator = memory_operator();
+  operator.write("safe.txt", "remote-safe").await.expect("seed-safe");
+  operator
+    .write("conflict.bin", vec![0u8, 1, 2])
+    .await
+    .expect("seed-conflict");
+
+  let dir = tempfile::tempdir().expect("tempdir");
+  let session = S3Session::attach_operator_for_tests(operator.clone(), dir.path()).expect("session");
+  session.initialize().await.expect("init");
+
+  // Diverge `conflict.bin`: local edit + non-UTF8 remote → text merge cannot resolve.
+  std::fs::write(dir.path().join("conflict.bin"), [9u8, 8, 7]).expect("local");
+  operator
+    .write("conflict.bin", vec![0xff_u8, 0xfe, 0xfd])
+    .await
+    .expect("remote");
+  // Also bump `safe.txt` on remote.
+  operator.write("safe.txt", "remote-safe-v2").await.expect("safe remote");
+
+  let result = session
+    .refresh_remote(RemoteRefresh {
+      protected_paths: &NoProtection,
+      mode: RemoteApplyMode::ApplySafe
+    })
+    .await
+    .expect("refresh");
+
+  assert!(
+    matches!(
+      result,
+      RemoteRefreshResult::Deferred {
+        reason: RemoteDeferReason::Conflict,
+        ..
+      }
+    ),
+    "got {result:?}"
+  );
+  // CRITICAL: safe.txt was downloaded during init; after refresh defers it must still hold
+  // the ORIGINAL content, not the remote v2 — two-pass refresh commits nothing when any
+  // change is unsafe.
+  assert_eq!(
+    std::fs::read_to_string(dir.path().join("safe.txt")).expect("safe local"),
+    "remote-safe",
+    "safe.txt was applied despite conflict"
+  );
 }

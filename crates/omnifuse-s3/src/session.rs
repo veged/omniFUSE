@@ -6,7 +6,10 @@ use std::{
   sync::{PoisonError, RwLock}
 };
 
-use omnifuse_core::{InitResult, SyncResult, TextMergeDecision, decide_text_merge, decode_utf8_text};
+use omnifuse_core::{
+  InitResult, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult, TextMergeDecision,
+  decide_text_merge, decode_utf8_text
+};
 use opendal::{EntryMode, Metadata, Operator};
 use tracing::warn;
 
@@ -452,6 +455,278 @@ impl S3Session {
   pub(crate) fn save_synced_state(&self, object_path: &str, state: ObjectState, bytes: &[u8]) -> anyhow::Result<()> {
     self.manifest_store.save_base(object_path, bytes)?;
     self.update_manifest(object_path, Some(state))
+  }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum RemoteChange {
+  Modified { object_path: String },
+  Deleted { object_path: String }
+}
+
+impl RemoteChange {
+  fn local_path(&self) -> PathBuf {
+    match self {
+      Self::Modified { object_path } | Self::Deleted { object_path } => PathBuf::from(object_path)
+    }
+  }
+}
+
+#[derive(Debug)]
+enum ChangeDecision {
+  Apply(ApplyDecision),
+  Conflict(PathBuf)
+}
+
+#[derive(Debug)]
+enum ApplyDecision {
+  /// Write remote bytes to local, set base = remote, refresh manifest.
+  WriteRemote {
+    local_rel: PathBuf,
+    object_path: String,
+    bytes: Vec<u8>,
+    state: ObjectState
+  },
+  /// Write merged bytes to local, set base = remote bytes, refresh manifest. Next sync uploads.
+  WriteMerged {
+    local_rel: PathBuf,
+    object_path: String,
+    merged: Vec<u8>,
+    base_bytes: Vec<u8>,
+    state: ObjectState
+  },
+  /// Remote metadata changed but local content already reflects it; refresh manifest only.
+  RefreshState {
+    local_rel: PathBuf,
+    object_path: String,
+    state: ObjectState
+  },
+  /// Remove local file, drop manifest entry and base.
+  DeleteLocal { local_rel: PathBuf, object_path: String }
+}
+
+impl S3Session {
+  /// Detect remote changes and apply safe updates locally.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if remote listing or reads fail.
+  pub async fn refresh_remote(&self, request: RemoteRefresh<'_>) -> anyhow::Result<RemoteRefreshResult> {
+    let remote = self.remote_entries().await?;
+    let changes = self.diff_remote(&remote);
+    if changes.is_empty() {
+      return Ok(RemoteRefreshResult::Unchanged);
+    }
+
+    let affected = changes.iter().map(RemoteChange::local_path).collect::<Vec<_>>();
+    let protected = affected
+      .iter()
+      .filter(|path| request.protected_paths.is_protected(path))
+      .cloned()
+      .collect::<Vec<_>>();
+
+    if !protected.is_empty() {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected: protected,
+        reason: RemoteDeferReason::ProtectedLocalChange
+      });
+    }
+
+    if matches!(request.mode, RemoteApplyMode::DetectOnly) {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected,
+        reason: RemoteDeferReason::DetectOnly
+      });
+    }
+
+    self.apply_remote_changes(changes, remote).await
+  }
+
+  fn diff_remote(&self, remote: &BTreeMap<String, ObjectState>) -> Vec<RemoteChange> {
+    let manifest = self.manifest.read().unwrap_or_else(PoisonError::into_inner);
+    let mut changes = Vec::new();
+
+    for (object_path, state) in remote {
+      let unchanged = manifest
+        .entries
+        .get(object_path)
+        .is_some_and(|base| base.same_generation(state));
+      if !unchanged {
+        changes.push(RemoteChange::Modified {
+          object_path: object_path.clone()
+        });
+      }
+    }
+
+    for object_path in manifest.entries.keys() {
+      if !remote.contains_key(object_path) {
+        changes.push(RemoteChange::Deleted {
+          object_path: object_path.clone()
+        });
+      }
+    }
+
+    changes
+  }
+
+  async fn apply_remote_changes(
+    &self,
+    changes: Vec<RemoteChange>,
+    remote: BTreeMap<String, ObjectState>
+  ) -> anyhow::Result<RemoteRefreshResult> {
+    let mut decisions = Vec::with_capacity(changes.len());
+    let mut conflicts = Vec::new();
+
+    for change in &changes {
+      match self.classify_remote_change(change, &remote).await? {
+        ChangeDecision::Apply(decision) => decisions.push(decision),
+        ChangeDecision::Conflict(path) => conflicts.push(path)
+      }
+    }
+
+    if !conflicts.is_empty() {
+      return Ok(RemoteRefreshResult::Deferred {
+        affected: conflicts,
+        reason: RemoteDeferReason::Conflict
+      });
+    }
+
+    let mut changed = Vec::new();
+    let mut deleted = Vec::new();
+
+    for decision in decisions {
+      match decision {
+        ApplyDecision::WriteRemote {
+          local_rel,
+          object_path,
+          bytes,
+          state
+        } => {
+          self.write_local(&local_rel, &bytes)?;
+          self.save_synced_state(&object_path, state, &bytes)?;
+          changed.push(local_rel);
+        }
+        ApplyDecision::WriteMerged {
+          local_rel,
+          object_path,
+          merged,
+          base_bytes,
+          state
+        } => {
+          self.write_local(&local_rel, &merged)?;
+          self.manifest_store.save_base(&object_path, &base_bytes)?;
+          self.update_manifest(&object_path, Some(state))?;
+          changed.push(local_rel);
+        }
+        ApplyDecision::RefreshState {
+          local_rel,
+          object_path,
+          state
+        } => {
+          self.update_manifest(&object_path, Some(state))?;
+          changed.push(local_rel);
+        }
+        ApplyDecision::DeleteLocal { local_rel, object_path } => {
+          let _ = std::fs::remove_file(self.local_dir.join(&local_rel));
+          self.update_manifest(&object_path, None)?;
+          self.manifest_store.remove_base(&object_path);
+          deleted.push(local_rel);
+        }
+      }
+    }
+
+    Ok(RemoteRefreshResult::Applied { changed, deleted })
+  }
+
+  async fn classify_remote_change(
+    &self,
+    change: &RemoteChange,
+    remote: &BTreeMap<String, ObjectState>
+  ) -> anyhow::Result<ChangeDecision> {
+    match change {
+      RemoteChange::Modified { object_path } => {
+        let local_rel = PathBuf::from(object_path);
+        let local_path = self.local_dir.join(&local_rel);
+        let remote_state = remote.get(object_path).cloned().ok_or_else(|| S3Error::Conflict {
+          path: local_rel.clone()
+        })?;
+        let remote_bytes = self.operator.read(object_path).await?.to_vec();
+
+        if !local_path.exists() || !self.local_changed_from_base(object_path, &local_path) {
+          return Ok(ChangeDecision::Apply(ApplyDecision::WriteRemote {
+            local_rel,
+            object_path: object_path.clone(),
+            bytes: remote_bytes,
+            state: remote_state
+          }));
+        }
+
+        let local_bytes = std::fs::read(&local_path)?;
+        let base_bytes = self.manifest_store.load_base(object_path).unwrap_or_default();
+        let (Some(base_text), Some(local_text), Some(remote_text)) = (
+          decode_utf8_text(&base_bytes),
+          decode_utf8_text(&local_bytes),
+          decode_utf8_text(&remote_bytes)
+        ) else {
+          return Ok(ChangeDecision::Conflict(local_rel));
+        };
+
+        match decide_text_merge(base_text, local_text, remote_text) {
+          TextMergeDecision::UploadLocal => Ok(ChangeDecision::Apply(ApplyDecision::RefreshState {
+            local_rel,
+            object_path: object_path.clone(),
+            state: remote_state
+          })),
+          TextMergeDecision::UploadMerged(merged) => Ok(ChangeDecision::Apply(ApplyDecision::WriteMerged {
+            local_rel,
+            object_path: object_path.clone(),
+            merged: merged.into_bytes(),
+            base_bytes: remote_bytes,
+            state: remote_state
+          })),
+          TextMergeDecision::AcceptRemote(remote_text) => Ok(ChangeDecision::Apply(ApplyDecision::WriteRemote {
+            local_rel,
+            object_path: object_path.clone(),
+            bytes: remote_text.into_bytes(),
+            state: remote_state
+          })),
+          TextMergeDecision::AlreadySynced => Ok(ChangeDecision::Apply(ApplyDecision::RefreshState {
+            local_rel,
+            object_path: object_path.clone(),
+            state: remote_state
+          })),
+          TextMergeDecision::Conflict => Ok(ChangeDecision::Conflict(local_rel))
+        }
+      }
+      RemoteChange::Deleted { object_path } => {
+        let local_rel = PathBuf::from(object_path);
+        let local_path = self.local_dir.join(&local_rel);
+        if local_path.exists() && self.local_changed_from_base(object_path, &local_path) {
+          Ok(ChangeDecision::Conflict(local_rel))
+        } else {
+          Ok(ChangeDecision::Apply(ApplyDecision::DeleteLocal {
+            local_rel,
+            object_path: object_path.clone()
+          }))
+        }
+      }
+    }
+  }
+
+  fn write_local(&self, local_rel: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let local_path = self.local_dir.join(local_rel);
+    if let Some(parent) = local_path.parent() {
+      std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(local_path, bytes)?;
+    Ok(())
+  }
+
+  fn local_changed_from_base(&self, object_path: &str, local_path: &Path) -> bool {
+    let Some(base) = self.manifest_store.load_base(object_path) else {
+      return true;
+    };
+    std::fs::read(local_path).map_or(true, |local| local != base)
   }
 }
 
