@@ -1,0 +1,34 @@
+[package]
+name = "omnifuse-s3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "S3-compatible backend for OmniFuse powered by OpenDAL"
+keywords = ["fuse", "s3", "opendal", "vfs", "filesystem"]
+categories = ["filesystem"]
+
+[features]
+## Expose S3 test hooks for integration tests.
+test-utils = []
+
+[lints]
+workspace = true
+
+[dependencies]
+omnifuse-core = { version = "0.2.0", path = "../omnifuse-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+opendal = { workspace = true }
+
+[dev-dependencies]
+omnifuse-s3 = { path = ".", features = ["test-utils"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
