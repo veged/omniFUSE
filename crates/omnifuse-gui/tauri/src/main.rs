@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       commands::check_fuse,
       commands::mount_git,
       commands::mount_wiki,
+      commands::mount_s3,
       commands::unmount,
       commands::pick_folder,
     ])
