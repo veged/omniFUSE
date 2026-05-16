@@ -260,7 +260,7 @@ async fn cmd_mount_s3(args: S3MountArgs) -> anyhow::Result<()> {
     "mounting S3-compatible bucket"
   );
 
-  MountService::default()
+  MountService::with_default_cache()?
     .run_s3(args, omnifuse_core::NoopSink)
     .await
     .context("mount error")?;

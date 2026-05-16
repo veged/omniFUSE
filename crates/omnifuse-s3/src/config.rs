@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use omnifuse_core::InstanceHash;
+
 /// S3-compatible backend configuration.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct S3Config {
@@ -30,5 +32,20 @@ impl S3Config {
   #[must_use]
   pub const fn poll_interval(&self) -> Duration {
     Duration::from_secs(self.poll_interval_secs)
+  }
+
+  /// Stable instance hash derived from the parameters that identify the remote.
+  ///
+  /// Credentials and transport flags are intentionally excluded — two clients
+  /// pointing at the same bucket/prefix see the same content.
+  #[must_use]
+  pub fn instance_hash(&self) -> InstanceHash {
+    InstanceHash::from_parts(&[
+      "s3",
+      self.endpoint.as_deref().unwrap_or(""),
+      self.region.as_deref().unwrap_or(""),
+      &self.bucket,
+      self.prefix.trim_matches('/')
+    ])
   }
 }

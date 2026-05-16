@@ -47,6 +47,7 @@ pub mod dirty_index;
 pub mod event;
 pub mod file_mutations;
 pub mod observability;
+pub mod persistent_cache;
 pub mod sync_engine;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -65,6 +66,9 @@ pub use event::{
   Action, Code, Error as EventError, Event, Kind, Level, NoopSink, Op, RecordSink, Session, Sink, Source
 };
 pub use observability::init_logging;
+pub use persistent_cache::{
+  CacheKey, DEFAULT_MAX_BYTES, FilesystemCache, FilesystemCacheConfig, InstanceHash, PersistentCache, SCHEMA_VERSION
+};
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
 pub use text_merge::{TextMergeDecision, TextMergeResult, decide_text_merge, decode_utf8_text, three_way_text_merge};
 use tracing::info;

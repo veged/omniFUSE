@@ -1,9 +1,11 @@
 //! Application-facing mount service.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use omnifuse_core::{BufferConfig, FuseMountOptions, LoggingConfig, MountConfig, Sink, SyncConfig};
+use omnifuse_core::{
+  BufferConfig, FilesystemCache, FilesystemCacheConfig, FuseMountOptions, LoggingConfig, MountConfig, Sink, SyncConfig
+};
 use omnifuse_git::{GitBackend, GitConfig};
 use omnifuse_s3::{S3Backend, S3Config};
 use omnifuse_wiki::{WikiBackend, WikiConfig};
@@ -124,12 +126,37 @@ pub struct PreparedMount<B> {
 #[derive(Debug, Clone)]
 pub struct MountService<E = StdMountEnvironment> {
   env: E,
-  defaults: MountDefaults
+  defaults: MountDefaults,
+  cache: Option<Arc<FilesystemCache>>
 }
 
 impl Default for MountService<StdMountEnvironment> {
   fn default() -> Self {
     Self::new(StdMountEnvironment)
+  }
+}
+
+impl MountService<StdMountEnvironment> {
+  /// Open a `MountService` with a process-wide persistent cache rooted under
+  /// the user's cache directory.
+  ///
+  /// On cache-open failures the service falls back to a no-cache setup and
+  /// emits a warning so mounting still works without a working cache directory.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error only if the cache base directory cannot be resolved.
+  pub fn with_default_cache() -> anyhow::Result<Self> {
+    let env = StdMountEnvironment;
+    let service = Self::new(env);
+    let cache_root = env.cache_base_dir()?.join("omnifuse").join("cache");
+    match FilesystemCache::open(cache_root, FilesystemCacheConfig::from_env()) {
+      Ok(cache) => Ok(service.with_cache(cache)),
+      Err(error) => {
+        tracing::warn!(error = %error, "failed to open persistent cache; continuing without it");
+        Ok(service)
+      }
+    }
   }
 }
 
@@ -139,14 +166,32 @@ impl<E: MountEnvironment> MountService<E> {
   pub fn new(env: E) -> Self {
     Self {
       env,
-      defaults: MountDefaults::default()
+      defaults: MountDefaults::default(),
+      cache: None
     }
   }
 
   /// Create a service with explicit defaults.
   #[must_use]
   pub const fn with_defaults(env: E, defaults: MountDefaults) -> Self {
-    Self { env, defaults }
+    Self {
+      env,
+      defaults,
+      cache: None
+    }
+  }
+
+  /// Attach a persistent cache that will be wired into prepared backends.
+  #[must_use]
+  pub fn with_cache(mut self, cache: Arc<FilesystemCache>) -> Self {
+    self.cache = Some(cache);
+    self
+  }
+
+  /// Borrow the configured persistent cache, if any.
+  #[must_use]
+  pub const fn cache(&self) -> Option<&Arc<FilesystemCache>> {
+    self.cache.as_ref()
   }
 
   /// Prepare a Git mount without starting FUSE.
@@ -262,6 +307,10 @@ impl<E: MountEnvironment> MountService<E> {
       virtual_host_style: args.virtual_host_style,
       poll_interval_secs
     });
+    let backend = match self.cache.as_ref() {
+      Some(cache) => backend.with_cache(Arc::clone(cache)),
+      None => backend
+    };
 
     Ok(PreparedMount {
       config,

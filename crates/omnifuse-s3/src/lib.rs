@@ -18,30 +18,39 @@ pub mod session;
 
 use std::{
   path::{Path, PathBuf},
-  sync::OnceLock,
+  sync::{Arc, OnceLock},
   time::Duration
 };
 
 pub use config::S3Config;
 pub use error::{S3Error, classify_s3_error};
-use omnifuse_core::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult};
+use omnifuse_core::{Backend, FilesystemCache, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult};
 
 use crate::{path::is_internal_path, session::S3Session};
 
 /// S3-compatible backend powered by `OpenDAL`.
 pub struct S3Backend {
   config: S3Config,
-  session: OnceLock<S3Session>
+  session: OnceLock<S3Session>,
+  cache: Option<Arc<FilesystemCache>>
 }
 
 impl S3Backend {
-  /// Create a backend.
+  /// Create a backend without a persistent cache.
   #[must_use]
   pub const fn new(config: S3Config) -> Self {
     Self {
       config,
-      session: OnceLock::new()
+      session: OnceLock::new(),
+      cache: None
     }
+  }
+
+  /// Attach a persistent cache. Calls past `init` are not affected.
+  #[must_use]
+  pub fn with_cache(mut self, cache: Arc<FilesystemCache>) -> Self {
+    self.cache = Some(cache);
+    self
   }
 
   fn session(&self) -> anyhow::Result<&S3Session> {
@@ -52,7 +61,7 @@ impl S3Backend {
 impl Backend for S3Backend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
     if self.session.get().is_none() {
-      let session = S3Session::attach(&self.config, local_dir)?;
+      let session = S3Session::attach(&self.config, local_dir, self.cache.clone())?;
       let _ = self.session.set(session);
     }
     self.session()?.initialize().await

@@ -207,13 +207,16 @@ that is the price of running standalone.
 
 These can land as separate PRs. Order is suggestive, not strict.
 
-1. `PersistentCache` trait + filesystem implementation + LRU eviction
-   in `omnifuse-core`. No backend uses it yet.
+1. **Done.** `PersistentCache` trait + filesystem implementation + LRU
+   eviction in `omnifuse-core`. Shipped as
+   `omnifuse_core::{PersistentCache, FilesystemCache, InstanceHash, CacheKey}`.
 2. Daemon scaffolding: new crate `omnifuse-daemon` (or module in
    `omnifuse-app`), UDS server, `of daemon start/stop/status`,
    `of list/status/unmount` (degraded mode only — no mounts hosted
    yet).
-3. S3 ↔ cache wiring. End-to-end persistence demonstrable.
+3. **Done.** S3 ↔ cache wiring. `S3Backend::with_cache` plus
+   `S3Session::read_object_cached` route reads through the cache by
+   `(instance, object_path, etag)`. Cached after successful PUT.
 4. Daemon hosts mounts. `of mount s3 ...` hands off; hot-tier sharing
    works.
 5. Wiki ↔ cache wiring.
