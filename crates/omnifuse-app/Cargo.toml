@@ -19,6 +19,10 @@ omnifuse-wiki = { version = "0.2.0", path = "../omnifuse-wiki" }
 omnifuse-s3 = { version = "0.2.0", path = "../omnifuse-s3" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

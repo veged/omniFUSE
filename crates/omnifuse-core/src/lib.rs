@@ -47,6 +47,7 @@ pub mod dirty_index;
 pub mod event;
 pub mod file_mutations;
 pub mod observability;
+pub mod persistent_cache;
 pub mod sync_engine;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -65,6 +66,9 @@ pub use event::{
   Action, Code, Error as EventError, Event, Kind, Level, NoopSink, Op, RecordSink, Session, Sink, Source
 };
 pub use observability::init_logging;
+pub use persistent_cache::{
+  CacheKey, DEFAULT_MAX_BYTES, FilesystemCache, FilesystemCacheConfig, InstanceHash, PersistentCache, SCHEMA_VERSION
+};
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
 pub use text_merge::{TextMergeDecision, TextMergeResult, decide_text_merge, decode_utf8_text, three_way_text_merge};
 use tracing::info;
@@ -82,6 +86,24 @@ pub use vfs::OmniFuseVfs;
 ///
 /// Returns an error if initialization or mounting fails.
 pub async fn run_mount<B: Backend>(config: MountConfig, backend: B, events: impl Sink) -> anyhow::Result<()> {
+  run_mount_with_buffer(config, backend, events, None).await
+}
+
+/// Mount `OmniFuse` reusing an externally-managed `FileBufferManager`.
+///
+/// Used by the daemon to pool the hot tier across mounts of the same instance.
+/// When `buffer_manager` is `None`, a new private manager is created from the
+/// configured `BufferConfig`.
+///
+/// # Errors
+///
+/// Returns an error if initialization or mounting fails.
+pub async fn run_mount_with_buffer<B: Backend>(
+  config: MountConfig,
+  backend: B,
+  events: impl Sink,
+  buffer_manager: Option<Arc<FileBufferManager>>
+) -> anyhow::Result<()> {
   init_logging(&config.logging)?;
 
   let events: Arc<dyn Sink> = Arc::new(events);
@@ -121,14 +143,16 @@ pub async fn run_mount<B: Backend>(config: MountConfig, backend: B, events: impl
       Arc::clone(&session)
     );
 
-    // Create VFS
-    let vfs = OmniFuseVfs::new_with_session(
+    // Create VFS — share the buffer manager when one is provided so concurrent
+    // mounts of the same instance see the same hot tier.
+    let buffer_manager = buffer_manager.unwrap_or_else(|| Arc::new(FileBufferManager::new(config.buffer.clone())));
+    let vfs = OmniFuseVfs::new_with_buffer_manager(
       config.local_dir.clone(),
       sync_engine.sender(),
       Arc::clone(&backend),
       Arc::clone(&events),
       Arc::clone(&session),
-      config.buffer.clone()
+      buffer_manager
     );
 
     // Mount

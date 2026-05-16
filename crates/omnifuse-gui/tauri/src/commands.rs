@@ -125,7 +125,13 @@ pub async fn mount_wiki(
   let state_clone = Arc::clone(&state);
 
   tokio::spawn(async move {
-    let service = MountService::default();
+    let service = match MountService::with_default_cache() {
+      Ok(svc) => svc,
+      Err(error) => {
+        tracing::warn!(%error, "failed to initialize persistent cache; mounting without it");
+        MountService::default()
+      }
+    };
     tokio::select! {
         result = service.run_wiki(args, events) => {
             if let Err(e) = result {
@@ -189,7 +195,13 @@ pub async fn mount_s3(
   let state_clone = Arc::clone(&state);
 
   tokio::spawn(async move {
-    let service = MountService::default();
+    let service = match MountService::with_default_cache() {
+      Ok(svc) => svc,
+      Err(error) => {
+        tracing::warn!(%error, "failed to initialize persistent cache; mounting without it");
+        MountService::default()
+      }
+    };
     tokio::select! {
         result = service.run_s3(args, events) => {
             if let Err(e) = result {

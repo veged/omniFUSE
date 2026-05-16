@@ -10,7 +10,7 @@ use crate::{
   engine::MergeResult,
   error::{classify_git_error, is_nothing_to_commit},
   ops::{GitOps, StartupSyncResult},
-  repo_source::RepoSource,
+  repo_source::{RepoSource, worktree_health},
   tracking::GitTrackingRules
 };
 
@@ -298,25 +298,42 @@ async fn prepare_repo(source: &RepoSource, branch: &str, target_dir: &Path) -> a
       }
 
       std::fs::create_dir_all(target_dir)?;
-      if !target_dir.join(".git").exists() {
-        info!(source = %path.display(), target = %target_dir.display(), "cloning local repo into cache");
-        let output = tokio::process::Command::new("git")
-          .args(["clone", "--branch", branch])
-          .arg(path)
-          .arg(target_dir)
-          .output()
-          .await?;
-
-        if !output.status.success() {
-          let stderr = String::from_utf8_lossy(&output.stderr);
-          anyhow::bail!("git clone failed: {stderr}");
+      if target_dir.join(".git").exists() {
+        match worktree_health(target_dir).await {
+          Ok(()) => {
+            info!(source = %path.display(), target = %target_dir.display(), "reusing cached local clone");
+          }
+          Err(reason) => {
+            warn!(source = %path.display(), target = %target_dir.display(), reason = %reason, "discarding stale local clone");
+            std::fs::remove_dir_all(target_dir)?;
+            std::fs::create_dir_all(target_dir)?;
+            clone_local(path, target_dir, branch).await?;
+          }
         }
+      } else {
+        clone_local(path, target_dir, branch).await?;
       }
 
       Ok(target_dir.to_path_buf())
     }
     RepoSource::Remote { .. } => source.ensure_available_at(branch, target_dir).await
   }
+}
+
+async fn clone_local(path: &Path, target_dir: &Path, branch: &str) -> anyhow::Result<()> {
+  info!(source = %path.display(), target = %target_dir.display(), "cloning local repo into cache");
+  let output = tokio::process::Command::new("git")
+    .args(["clone", "--branch", branch])
+    .arg(path)
+    .arg(target_dir)
+    .output()
+    .await?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!("git clone failed: {stderr}");
+  }
+  Ok(())
 }
 
 fn map_startup_sync(result: StartupSyncResult) -> GitInit {
@@ -391,6 +408,74 @@ mod tests {
     let result = git.sync_local(&[repo_path.join("README.md")]).await.expect("sync");
 
     assert!(matches!(result, GitSync::Success { synced_files: 1 }));
+  }
+
+  #[tokio::test]
+  async fn second_mount_reuses_clean_worktree_into_target_dir() {
+    // Local source cloned into a separate cache dir: the second prepare must
+    // reuse the existing .git/ instead of re-cloning. The second open() must
+    // succeed and the cache dir keeps its identity (no fresh clone).
+    let (tmp, _bare, clone1, _clone2) = create_bare_and_two_clones().await;
+
+    let cache_dir = tmp.path().join("cache");
+    let config = GitConfig {
+      source: clone1.to_string_lossy().into_owned(),
+      branch: "main".to_string(),
+      max_push_retries: 1,
+      poll_interval_secs: 30,
+      local_dir: cache_dir.clone()
+    };
+
+    let (_git1, _init1) = GitSyncLifecycle::open(config.clone(), &cache_dir)
+      .await
+      .expect("first open");
+    let head_after_first = std::fs::read_to_string(cache_dir.join(".git/HEAD")).expect("HEAD after first open");
+
+    // Touch a file inside .git that a fresh clone would not have created — used
+    // as a sentinel: if the cache survives, the marker file survives.
+    std::fs::write(cache_dir.join(".git/.omnifuse-cache-sentinel"), "kept").expect("sentinel");
+
+    let (_git2, _init2) = GitSyncLifecycle::open(config, &cache_dir).await.expect("second open");
+
+    assert!(
+      cache_dir.join(".git/.omnifuse-cache-sentinel").exists(),
+      "second mount must reuse the cached working tree (sentinel was preserved)"
+    );
+    let head_after_second = std::fs::read_to_string(cache_dir.join(".git/HEAD")).expect("HEAD after second open");
+    assert_eq!(head_after_first, head_after_second);
+  }
+
+  #[tokio::test]
+  async fn dirty_worktree_is_discarded_and_recloned() {
+    // If the cached worktree has uncommitted changes the second mount must
+    // discard it and re-clone, so the materialized files reflect remote state.
+    let (tmp, _bare, clone1, _clone2) = create_bare_and_two_clones().await;
+
+    let cache_dir = tmp.path().join("cache-dirty");
+    let config = GitConfig {
+      source: clone1.to_string_lossy().into_owned(),
+      branch: "main".to_string(),
+      max_push_retries: 1,
+      poll_interval_secs: 30,
+      local_dir: cache_dir.clone()
+    };
+
+    let (_git1, _init1) = GitSyncLifecycle::open(config.clone(), &cache_dir)
+      .await
+      .expect("first open");
+
+    // Leave the cached working tree dirty plus drop a sentinel in .git.
+    std::fs::write(cache_dir.join("README.md"), "stray local edit").expect("dirty");
+    std::fs::write(cache_dir.join(".git/.omnifuse-stale-marker"), "drop me").expect("sentinel");
+
+    let (_git2, _init2) = GitSyncLifecycle::open(config, &cache_dir).await.expect("second open");
+
+    assert!(
+      !cache_dir.join(".git/.omnifuse-stale-marker").exists(),
+      "dirty cached worktree must be discarded (sentinel removed)"
+    );
+    let readme = std::fs::read_to_string(cache_dir.join("README.md")).expect("README");
+    assert_eq!(readme.trim(), "# Shared", "fresh clone restores the canonical content");
   }
 
   #[tokio::test]

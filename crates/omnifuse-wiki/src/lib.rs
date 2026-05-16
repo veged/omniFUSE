@@ -25,7 +25,9 @@ use std::{
 };
 
 pub use error::{WikiError, classify_wiki_error};
-use omnifuse_core::{Backend, InitResult, RemoteRefresh, RemoteRefreshResult, SyncResult};
+use omnifuse_core::{
+  Backend, FilesystemCache, InitResult, InstanceHash, RemoteRefresh, RemoteRefreshResult, SyncResult
+};
 
 use crate::{
   client::Client,
@@ -65,6 +67,22 @@ impl Default for WikiConfig {
   }
 }
 
+impl WikiConfig {
+  /// Stable instance hash derived from the parameters that identify the wiki content.
+  ///
+  /// The auth token is intentionally excluded — two clients pointing at the same
+  /// base URL and root slug see the same pages.
+  #[must_use]
+  pub fn instance_hash(&self) -> InstanceHash {
+    InstanceHash::from_parts(&[
+      "wiki",
+      self.base_url.trim_end_matches('/'),
+      self.org_id.as_deref().unwrap_or(""),
+      &self.root_slug
+    ])
+  }
+}
+
 /// Wiki backend for `OmniFuse`.
 ///
 /// Adapts the core `Backend` trait to `WikiPageSyncSession`.
@@ -74,7 +92,9 @@ pub struct WikiBackend {
   /// HTTP client shared with the page sync session.
   client: Arc<Client>,
   /// Page synchronization session (initialized in `init`).
-  session: OnceLock<WikiPageSyncSession>
+  session: OnceLock<WikiPageSyncSession>,
+  /// Optional persistent cache wired into the session.
+  cache: Option<Arc<FilesystemCache>>
 }
 
 impl WikiBackend {
@@ -89,8 +109,22 @@ impl WikiBackend {
     Ok(Self {
       config,
       client: Arc::new(client),
-      session: OnceLock::new()
+      session: OnceLock::new(),
+      cache: None
     })
+  }
+
+  /// Attach a persistent cache. Subsequent `init` calls will route page reads through it.
+  #[must_use]
+  pub fn with_cache(mut self, cache: Arc<FilesystemCache>) -> Self {
+    self.cache = Some(cache);
+    self
+  }
+
+  /// Borrow the underlying configuration.
+  #[must_use]
+  pub const fn config(&self) -> &WikiConfig {
+    &self.config
   }
 
   /// Get initialized page sync session.
@@ -102,7 +136,13 @@ impl WikiBackend {
 impl Backend for WikiBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
     if self.session.get().is_none() {
-      let session = WikiPageSyncSession::attach(self.config.clone(), self.client.clone(), local_dir)?;
+      let session = WikiPageSyncSession::attach_with_cache(
+        self.config.clone(),
+        self.client.clone(),
+        local_dir,
+        self.config.instance_hash(),
+        self.cache.clone()
+      )?;
       let _ = self.session.set(session);
     }
 

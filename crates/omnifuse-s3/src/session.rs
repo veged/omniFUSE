@@ -3,12 +3,12 @@
 use std::{
   collections::BTreeMap,
   path::{Path, PathBuf},
-  sync::{PoisonError, RwLock}
+  sync::{Arc, PoisonError, RwLock}
 };
 
 use omnifuse_core::{
-  InitResult, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult, TextMergeDecision,
-  decide_text_merge, decode_utf8_text
+  CacheKey, FilesystemCache, InitResult, InstanceHash, PersistentCache, RemoteApplyMode, RemoteDeferReason,
+  RemoteRefresh, RemoteRefreshResult, SyncResult, TextMergeDecision, decide_text_merge, decode_utf8_text
 };
 use opendal::{EntryMode, Metadata, Operator};
 use tracing::warn;
@@ -27,7 +27,9 @@ pub struct S3Session {
   operator: Operator,
   local_dir: PathBuf,
   manifest_store: ManifestStore,
-  manifest: RwLock<S3Manifest>
+  manifest: RwLock<S3Manifest>,
+  instance: InstanceHash,
+  cache: Option<Arc<FilesystemCache>>
 }
 
 impl S3Session {
@@ -37,10 +39,10 @@ impl S3Session {
   ///
   /// Returns an error if the operator cannot be built, required capabilities are missing,
   /// or local manifest storage cannot be prepared.
-  pub fn attach(config: &S3Config, local_dir: &Path) -> anyhow::Result<Self> {
+  pub fn attach(config: &S3Config, local_dir: &Path, cache: Option<Arc<FilesystemCache>>) -> anyhow::Result<Self> {
     let operator = build_operator(config)?;
     validate_required_capabilities(&operator)?;
-    Self::attach_unchecked(operator, local_dir)
+    Self::attach_unchecked(operator, local_dir, config.instance_hash(), cache)
   }
 
   /// Attach session using an existing operator without enforcing the capability gate.
@@ -54,10 +56,30 @@ impl S3Session {
   /// Returns an error if local manifest storage cannot be prepared.
   #[cfg(any(test, feature = "test-utils"))]
   pub fn attach_operator_for_tests(operator: Operator, local_dir: &Path) -> anyhow::Result<Self> {
-    Self::attach_unchecked(operator, local_dir)
+    Self::attach_unchecked(operator, local_dir, InstanceHash::from_parts(&["s3", "test"]), None)
   }
 
-  fn attach_unchecked(operator: Operator, local_dir: &Path) -> anyhow::Result<Self> {
+  /// Attach session for tests, wiring an explicit persistent cache.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if local manifest storage cannot be prepared.
+  #[cfg(any(test, feature = "test-utils"))]
+  pub fn attach_operator_with_cache_for_tests(
+    operator: Operator,
+    local_dir: &Path,
+    instance: InstanceHash,
+    cache: Option<Arc<FilesystemCache>>
+  ) -> anyhow::Result<Self> {
+    Self::attach_unchecked(operator, local_dir, instance, cache)
+  }
+
+  fn attach_unchecked(
+    operator: Operator,
+    local_dir: &Path,
+    instance: InstanceHash,
+    cache: Option<Arc<FilesystemCache>>
+  ) -> anyhow::Result<Self> {
     let local_dir = local_dir.canonicalize().unwrap_or_else(|_| local_dir.to_path_buf());
     std::fs::create_dir_all(&local_dir)?;
     let manifest_store = ManifestStore::new(&local_dir)?;
@@ -66,7 +88,9 @@ impl S3Session {
       operator,
       local_dir,
       manifest_store,
-      manifest: RwLock::new(manifest)
+      manifest: RwLock::new(manifest),
+      instance,
+      cache
     })
   }
 
@@ -86,6 +110,52 @@ impl S3Session {
   #[must_use]
   pub const fn manifest_store(&self) -> &ManifestStore {
     &self.manifest_store
+  }
+
+  /// Read an object's bytes, going through the persistent cache when an ETag is available.
+  ///
+  /// On miss the bytes are fetched once and stored in the cache for the next mount.
+  ///
+  /// # Errors
+  ///
+  /// Propagates any error from the underlying operator read.
+  pub async fn read_object_cached(&self, object_path: &str, etag: Option<&str>) -> anyhow::Result<Vec<u8>> {
+    if let (Some(cache), Some(etag)) = (self.cache.as_ref(), etag) {
+      let key = CacheKey {
+        instance: &self.instance,
+        path: object_path,
+        version: etag
+      };
+      if let Some(bytes) = cache.get(key).await {
+        return Ok(bytes);
+      }
+      let bytes = self.operator.read(object_path).await?.to_vec();
+      if let Err(error) = cache.put(key, bytes.clone()).await {
+        warn!(error = %error, object_path, "cache put after remote read failed");
+      }
+      return Ok(bytes);
+    }
+    Ok(self.operator.read(object_path).await?.to_vec())
+  }
+
+  fn cache_after_upload(&self, object_path: &str, etag: Option<&str>, bytes: &[u8]) {
+    if let (Some(cache), Some(etag)) = (self.cache.as_ref(), etag) {
+      let cache = Arc::clone(cache);
+      let instance = self.instance.clone();
+      let object_path = object_path.to_string();
+      let etag = etag.to_string();
+      let bytes = bytes.to_vec();
+      tokio::spawn(async move {
+        let key = CacheKey {
+          instance: &instance,
+          path: &object_path,
+          version: &etag
+        };
+        if let Err(error) = cache.put(key, bytes).await {
+          warn!(error = %error, path = %object_path, "cache put after upload failed");
+        }
+      });
+    }
   }
 
   pub(crate) fn manifest_entry(&self, object_path: &str) -> Option<ObjectState> {
@@ -189,7 +259,9 @@ impl S3Session {
         std::fs::create_dir_all(parent)?;
       }
 
-      let bytes = self.operator.read(object_path.as_str()).await?.to_vec();
+      let bytes = self
+        .read_object_cached(object_path.as_str(), state.etag.as_deref())
+        .await?;
       let needs_write = std::fs::read(&local_path).map_or(true, |existing| existing != bytes);
       if needs_write {
         std::fs::write(&local_path, &bytes)?;
@@ -284,8 +356,10 @@ impl S3Session {
           .await
       }
       (Some(_base_state), None) => self.handle_remote_delete_during_upload(local_rel, object_path, &local_bytes),
-      (None, Some(_)) => {
-        let remote_bytes = self.operator.read(object_path).await?.to_vec();
+      (None, Some(remote_meta)) => {
+        let remote_bytes = self
+          .read_object_cached(object_path, remote_meta.etag.as_deref())
+          .await?;
         if remote_bytes == local_bytes {
           let meta = self.operator.stat(object_path).await?;
           self.save_synced_state(object_path, object_state(object_path, &meta), &local_bytes)
@@ -315,7 +389,9 @@ impl S3Session {
     remote_state: &ObjectState
   ) -> anyhow::Result<()> {
     let base_bytes = self.manifest_store.load_base(object_path).unwrap_or_default();
-    let remote_bytes = self.operator.read(object_path).await?.to_vec();
+    let remote_bytes = self
+      .read_object_cached(object_path, remote_state.etag.as_deref())
+      .await?;
 
     let Some(base_text) = decode_utf8_text(&base_bytes) else {
       return Err(
@@ -400,7 +476,9 @@ impl S3Session {
       .if_not_exists(true)
       .await
       .map_err(|error| precondition_or_opendal(local_rel, error))?;
-    self.save_synced_state(object_path, object_state(object_path, &metadata), bytes)
+    let state = object_state(object_path, &metadata);
+    self.cache_after_upload(object_path, state.etag.as_deref(), bytes);
+    self.save_synced_state(object_path, state, bytes)
   }
 
   async fn put_update_and_record(
@@ -416,7 +494,9 @@ impl S3Session {
       .if_match(etag)
       .await
       .map_err(|error| precondition_or_opendal(local_rel, error))?;
-    self.save_synced_state(object_path, object_state(object_path, &metadata), bytes)
+    let state = object_state(object_path, &metadata);
+    self.cache_after_upload(object_path, state.etag.as_deref(), bytes);
+    self.save_synced_state(object_path, state, bytes)
   }
 
   async fn delete_remote(&self, local_rel: &Path, object_path: &str) -> anyhow::Result<()> {
@@ -647,7 +727,9 @@ impl S3Session {
         let remote_state = remote.get(object_path).cloned().ok_or_else(|| S3Error::Conflict {
           path: local_rel.clone()
         })?;
-        let remote_bytes = self.operator.read(object_path).await?.to_vec();
+        let remote_bytes = self
+          .read_object_cached(object_path, remote_state.etag.as_deref())
+          .await?;
 
         if !local_path.exists() || !self.local_changed_from_base(object_path, &local_path) {
           return Ok(ChangeDecision::Apply(ApplyDecision::WriteRemote {

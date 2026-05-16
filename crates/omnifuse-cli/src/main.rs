@@ -10,7 +10,7 @@
 
 mod skill;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -52,6 +52,30 @@ enum Commands {
     backend: MountBackend
   },
 
+  /// List active mounts.
+  ///
+  /// Uses the daemon when one is running; falls back to the OS mount table.
+  List,
+
+  /// Inspect a mounted path.
+  Status {
+    /// Mount point to inspect.
+    mountpoint: PathBuf
+  },
+
+  /// Unmount a mounted path.
+  Unmount {
+    /// Mount point to unmount.
+    mountpoint: PathBuf
+  },
+
+  /// Manage the background daemon.
+  Daemon {
+    /// Subcommand.
+    #[command(subcommand)]
+    action: DaemonAction
+  },
+
   /// Check FUSE/`WinFsp` availability.
   Check,
 
@@ -63,6 +87,20 @@ enum Commands {
     /// Subcommand path (e.g. `mount git`).
     path: Vec<String>
   }
+}
+
+/// Daemon lifecycle subcommands.
+#[derive(Subcommand)]
+enum DaemonAction {
+  /// Start the daemon in the background (idempotent).
+  Start,
+  /// Stop the daemon and unmount everything it hosts.
+  Stop,
+  /// Show daemon state.
+  Status,
+  /// Run the daemon process in the foreground (used internally by `start`).
+  #[command(hide = true)]
+  Run
 }
 
 /// Backend for mounting.
@@ -178,6 +216,10 @@ async fn main() -> anyhow::Result<()> {
 
   match cli.command {
     Commands::Mount { backend } => cmd_mount(backend).await,
+    Commands::List => cmd_list().await,
+    Commands::Status { mountpoint } => cmd_status(&mountpoint).await,
+    Commands::Unmount { mountpoint } => cmd_unmount(&mountpoint).await,
+    Commands::Daemon { action } => cmd_daemon(action).await,
     Commands::Check => cmd_check(),
     Commands::GenConfig => cmd_gen_config(),
     Commands::Skill { path } => {
@@ -260,7 +302,11 @@ async fn cmd_mount_s3(args: S3MountArgs) -> anyhow::Result<()> {
     "mounting S3-compatible bucket"
   );
 
-  MountService::default()
+  if try_daemon_mount("s3", &args).await? {
+    return Ok(());
+  }
+
+  MountService::with_default_cache()?
     .run_s3(args, omnifuse_core::NoopSink)
     .await
     .context("mount error")?;
@@ -284,18 +330,21 @@ async fn cmd_mount_git(
     "mounting git repository"
   );
 
-  MountService::default()
-    .run_git(
-      GitMountArgs {
-        source,
-        mount_point: mountpoint,
-        branch: Some(branch),
-        poll_interval_secs: Some(poll_interval),
-        allow_other,
-        read_only
-      },
-      omnifuse_core::NoopSink
-    )
+  let args = GitMountArgs {
+    source,
+    mount_point: mountpoint,
+    branch: Some(branch),
+    poll_interval_secs: Some(poll_interval),
+    allow_other,
+    read_only
+  };
+
+  if try_daemon_mount("git", &args).await? {
+    return Ok(());
+  }
+
+  MountService::with_default_cache()?
+    .run_git(args, omnifuse_core::NoopSink)
     .await
     .context("mount error")?;
 
@@ -321,20 +370,23 @@ async fn cmd_mount_wiki(
     "mounting wiki"
   );
 
-  MountService::default()
-    .run_wiki(
-      WikiMountArgs {
-        base_url,
-        root_slug,
-        auth_token: auth,
-        org_id,
-        mount_point: mountpoint,
-        poll_interval_secs: Some(poll_interval),
-        allow_other,
-        read_only
-      },
-      omnifuse_core::NoopSink
-    )
+  let args = WikiMountArgs {
+    base_url,
+    root_slug,
+    auth_token: auth,
+    org_id,
+    mount_point: mountpoint,
+    poll_interval_secs: Some(poll_interval),
+    allow_other,
+    read_only
+  };
+
+  if try_daemon_mount("wiki", &args).await? {
+    return Ok(());
+  }
+
+  MountService::with_default_cache()?
+    .run_wiki(args, omnifuse_core::NoopSink)
     .await
     .context("mount error")?;
 
@@ -406,4 +458,229 @@ sync_interval = "60s"
 
   println!("{example}");
   Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Daemon-aware lifecycle commands.
+
+/// `OMNIFUSE_NO_DAEMON=1` opts out of daemon use even when a socket exists.
+const NO_DAEMON_ENV: &str = "OMNIFUSE_NO_DAEMON";
+
+async fn try_daemon_mount<T: serde::Serialize + Sync>(backend: &str, args: &T) -> anyhow::Result<bool> {
+  if std::env::var(NO_DAEMON_ENV).is_ok_and(|value| value == "1") {
+    return Ok(false);
+  }
+  let socket = omnifuse_app::daemon::default_socket()?;
+  let Some(mut client) = omnifuse_app::daemon::try_connect(&socket).await? else {
+    return Ok(false);
+  };
+  let payload = serde_json::to_value(args)?;
+  let ack = client.mount(backend, payload).await?;
+  info!(mount_point = %ack.mount_point.display(), "daemon mounted instance");
+  println!("mounted {} (daemon)", ack.mount_point.display());
+  Ok(true)
+}
+
+async fn cmd_list() -> anyhow::Result<()> {
+  let socket = omnifuse_app::daemon::default_socket()?;
+  let mounts = if let Some(mut client) = omnifuse_app::daemon::try_connect(&socket).await? {
+    client.list().await?.mounts
+  } else {
+    omnifuse_app::daemon::mount_table::list_active().await?
+  };
+
+  if mounts.is_empty() {
+    println!("no active mounts");
+    return Ok(());
+  }
+
+  println!("{:<12} {:<10} MOUNT POINT", "BACKEND", "AGE(s)");
+  for entry in mounts {
+    println!(
+      "{:<12} {:<10} {}",
+      entry.backend,
+      entry.age_secs,
+      entry.mount_point.display()
+    );
+  }
+  Ok(())
+}
+
+async fn cmd_status(mountpoint: &Path) -> anyhow::Result<()> {
+  let socket = omnifuse_app::daemon::default_socket()?;
+  if let Some(mut client) = omnifuse_app::daemon::try_connect(&socket).await? {
+    let status = client.status(mountpoint).await?;
+    match status.mount {
+      Some(entry) => {
+        println!(
+          "{} ({}, instance {}) age {}s",
+          entry.mount_point.display(),
+          entry.backend,
+          entry.instance,
+          entry.age_secs
+        );
+        println!("dirty files: {}", status.dirty_files);
+        if let Some(ratio) = status.cache_hit_ratio {
+          println!("cache hit ratio: {ratio:.3}");
+        }
+      }
+      None => {
+        println!("{} is not currently mounted by the daemon", mountpoint.display());
+      }
+    }
+    return Ok(());
+  }
+
+  match omnifuse_app::daemon::mount_table::lookup(mountpoint).await? {
+    Some(entry) => {
+      println!(
+        "{} ({}, degraded view — no daemon running)",
+        entry.mount_point.display(),
+        entry.backend
+      );
+    }
+    None => println!("{} is not currently mounted", mountpoint.display())
+  }
+  Ok(())
+}
+
+async fn cmd_unmount(mountpoint: &Path) -> anyhow::Result<()> {
+  let socket = omnifuse_app::daemon::default_socket()?;
+  if let Some(mut client) = omnifuse_app::daemon::try_connect(&socket).await? {
+    let ack = client.unmount(mountpoint).await?;
+    println!("unmounted {}", ack.mount_point.display());
+    return Ok(());
+  }
+  omnifuse_app::daemon::unmount_filesystem(mountpoint).await?;
+  println!("unmounted {}", mountpoint.display());
+  Ok(())
+}
+
+async fn cmd_daemon(action: DaemonAction) -> anyhow::Result<()> {
+  match action {
+    DaemonAction::Start => cmd_daemon_start().await,
+    DaemonAction::Stop => cmd_daemon_stop().await,
+    DaemonAction::Status => cmd_daemon_status().await,
+    DaemonAction::Run => cmd_daemon_run().await
+  }
+}
+
+async fn cmd_daemon_start() -> anyhow::Result<()> {
+  let paths = omnifuse_app::daemon::DaemonPaths::resolve(&omnifuse_app::StdMountEnvironment)?;
+  paths.ensure_dir()?;
+  if omnifuse_app::daemon::try_connect(&paths.socket).await?.is_some() {
+    println!("daemon already running at {}", paths.socket.display());
+    return Ok(());
+  }
+
+  // Spawn the daemon as a detached child process so the foreground call returns immediately.
+  let mut command = std::process::Command::new(std::env::current_exe()?);
+  command.arg("daemon").arg("run");
+  command.stdin(std::process::Stdio::null());
+  command.stdout(std::process::Stdio::null());
+  command.stderr(std::process::Stdio::null());
+  let child = command.spawn().context("spawning daemon process")?;
+  println!("daemon starting (pid {})", child.id());
+
+  // Wait briefly for the socket to appear, but do not block indefinitely.
+  for _ in 0..50 {
+    if omnifuse_app::daemon::try_connect(&paths.socket).await?.is_some() {
+      println!("daemon listening at {}", paths.socket.display());
+      return Ok(());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  }
+  println!(
+    "daemon spawned; socket has not appeared yet at {}",
+    paths.socket.display()
+  );
+  Ok(())
+}
+
+#[allow(clippy::unused_async)]
+async fn cmd_daemon_stop() -> anyhow::Result<()> {
+  let paths = omnifuse_app::daemon::DaemonPaths::resolve(&omnifuse_app::StdMountEnvironment)?;
+  let pid_text = match std::fs::read_to_string(&paths.pid) {
+    Ok(text) => text,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+      println!("daemon is not running");
+      return Ok(());
+    }
+    Err(error) => return Err(error.into())
+  };
+  let pid: i32 = pid_text
+    .trim()
+    .parse()
+    .context("daemon pid file does not contain an integer")?;
+
+  #[cfg(unix)]
+  {
+    use nix::{
+      sys::signal::{Signal, kill},
+      unistd::Pid
+    };
+    kill(Pid::from_raw(pid), Signal::SIGTERM).context("sending SIGTERM to daemon")?;
+    println!("sent SIGTERM to daemon (pid {pid})");
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = pid;
+    anyhow::bail!("daemon stop is only supported on Unix");
+  }
+
+  Ok(())
+}
+
+async fn cmd_daemon_status() -> anyhow::Result<()> {
+  let paths = omnifuse_app::daemon::DaemonPaths::resolve(&omnifuse_app::StdMountEnvironment)?;
+  let pid = std::fs::read_to_string(&paths.pid).ok();
+  if let Some(mut client) = omnifuse_app::daemon::try_connect(&paths.socket).await? {
+    let mounts = client.list().await?.mounts;
+    println!(
+      "daemon running ({}, {} mount{})",
+      pid
+        .as_deref()
+        .map(str::trim)
+        .map_or_else(|| "pid unknown".to_string(), |pid| format!("pid {pid}")),
+      mounts.len(),
+      if mounts.len() == 1 { "" } else { "s" }
+    );
+    return Ok(());
+  }
+  match pid {
+    Some(pid) => println!("daemon socket is unreachable (stale pid file: {})", pid.trim()),
+    None => println!("daemon is not running")
+  }
+  Ok(())
+}
+
+async fn cmd_daemon_run() -> anyhow::Result<()> {
+  let paths = omnifuse_app::daemon::DaemonPaths::resolve(&omnifuse_app::StdMountEnvironment)?;
+  let daemon = omnifuse_app::daemon::Daemon::with_default_cache()?;
+  let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+  // Trigger graceful shutdown on SIGINT/SIGTERM.
+  #[cfg(unix)]
+  {
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let trigger = shutdown_tx;
+    tokio::spawn(async move {
+      tokio::select! {
+        _ = sigint.recv() => {},
+        _ = sigterm.recv() => {}
+      }
+      let _ = trigger.send(());
+    });
+  }
+  #[cfg(not(unix))]
+  {
+    let trigger = shutdown_tx;
+    tokio::spawn(async move {
+      let _ = tokio::signal::ctrl_c().await;
+      let _ = trigger.send(());
+    });
+  }
+
+  omnifuse_app::daemon::serve(paths, daemon, shutdown_rx).await
 }

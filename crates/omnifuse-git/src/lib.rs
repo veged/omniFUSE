@@ -88,6 +88,12 @@ impl GitBackend {
     }
   }
 
+  /// Borrow the underlying configuration.
+  #[must_use]
+  pub const fn config(&self) -> &GitConfig {
+    &self.config
+  }
+
   /// Get lifecycle (after initialization).
   ///
   /// # Errors

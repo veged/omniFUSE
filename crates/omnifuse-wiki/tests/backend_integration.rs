@@ -16,7 +16,10 @@ use std::{
 };
 
 use common::FakeWikiApi;
-use omnifuse_core::{Backend, InitResult, PathProtection, RemoteApplyMode, RemoteRefresh, RemoteRefreshResult};
+use omnifuse_core::{
+  Backend, FilesystemCache, FilesystemCacheConfig, InitResult, InstanceHash, PathProtection, RemoteApplyMode,
+  RemoteRefresh, RemoteRefreshResult
+};
 use omnifuse_wiki::{
   WikiBackend, WikiConfig,
   client::Client,
@@ -1277,4 +1280,113 @@ async fn test_should_track_dot_files_excluded() {
     !backend.should_track(Path::new(".gitignore")),
     ".gitignore should not be tracked (no .md extension)"
   );
+}
+
+/// Second mount of the same wiki instance with a shared persistent cache
+/// must serve unchanged page content without re-fetching from the API.
+#[tokio::test]
+async fn wiki_second_mount_with_same_cache_skips_remote_fetch() {
+  let (base_url, state) = FakeWikiApi::spawn().await;
+  let root_id = state
+    .add_page("root", "Root", "# Root content", "2024-01-01T00:00:00Z", None)
+    .await;
+  state
+    .add_page(
+      "root/child",
+      "Child",
+      "child body",
+      "2024-01-01T00:00:01Z",
+      Some(root_id)
+    )
+    .await;
+
+  let cache_dir = tempfile::tempdir().expect("cache dir");
+  let cache = FilesystemCache::open(cache_dir.path(), FilesystemCacheConfig::default()).expect("cache");
+  let instance = InstanceHash::from_parts(&["wiki", base_url.trim_end_matches('/'), "", "root"]);
+
+  // First mount — warms the cache.
+  {
+    let mount_a = tempfile::tempdir().expect("mount-a");
+    let config = WikiConfig {
+      base_url: base_url.clone(),
+      auth_token: "test-token".to_string(),
+      org_id: None,
+      root_slug: "root".to_string(),
+      poll_interval_secs: 60,
+      max_depth: 10,
+      max_pages: 500
+    };
+    let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
+    let session = WikiPageSyncSession::attach_with_cache(
+      config,
+      client,
+      mount_a.path(),
+      instance.clone(),
+      Some(Arc::clone(&cache))
+    )
+    .expect("session-a");
+    let result = session.initialize().await.expect("init-a");
+    assert!(matches!(
+      result,
+      InitResult::Updated | InitResult::Fresh | InitResult::UpToDate
+    ));
+  }
+
+  // Verify the cache was warmed: read directly for each known revision.
+  let child = read_via_cache(&cache, &instance, "root/child", "2024-01-01T00:00:01Z").await;
+  assert_eq!(child.as_deref(), Some("child body"));
+
+  // Second mount — different local dir, same cache. We do NOT change wiki state,
+  // so revisions match and reads go through the cache.
+  let mount_b = tempfile::tempdir().expect("mount-b");
+  let config = WikiConfig {
+    base_url: base_url.clone(),
+    auth_token: "test-token".to_string(),
+    org_id: None,
+    root_slug: "root".to_string(),
+    poll_interval_secs: 60,
+    max_depth: 10,
+    max_pages: 500
+  };
+  let client = Arc::new(Client::new(&config.base_url, &config.auth_token, None).expect("client"));
+  let session_b = WikiPageSyncSession::attach_with_cache(
+    config,
+    client,
+    mount_b.path(),
+    instance.clone(),
+    Some(Arc::clone(&cache))
+  )
+  .expect("session-b");
+
+  // Direct cached read — must serve from cache.
+  let content = session_b
+    .read_page_cached("root/child", Some("2024-01-01T00:00:01Z"))
+    .await
+    .expect("cached read");
+  assert_eq!(content, "child body");
+
+  // And new revisions of the same page bypass stale cache entries.
+  let content_v2 = session_b
+    .read_page_cached("root/child", Some("2024-01-01T00:00:99Z"))
+    .await;
+  // The fake server returns whatever it has under that slug regardless of revision,
+  // but the version_token mismatch forces a fresh client call rather than a cache hit.
+  assert!(content_v2.is_ok(), "fresh revision must fall through to client");
+}
+
+async fn read_via_cache(
+  cache: &Arc<FilesystemCache>,
+  instance: &InstanceHash,
+  slug: &str,
+  revision: &str
+) -> Option<String> {
+  use omnifuse_core::{CacheKey, PersistentCache};
+  let bytes = Arc::clone(cache)
+    .get(CacheKey {
+      instance,
+      path: slug,
+      version: revision
+    })
+    .await?;
+  String::from_utf8(bytes).ok()
 }

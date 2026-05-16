@@ -5,7 +5,10 @@ use std::{
   sync::Arc
 };
 
-use omnifuse_core::{InitResult, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult};
+use omnifuse_core::{
+  CacheKey, FilesystemCache, InitResult, InstanceHash, PersistentCache, RemoteApplyMode, RemoteDeferReason,
+  RemoteRefresh, RemoteRefreshResult, SyncResult
+};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -97,7 +100,9 @@ pub struct WikiPageSyncSession {
   client: Arc<Client>,
   local_dir: PathBuf,
   meta_store: MetaStore,
-  page_index: RwLock<PageIndex>
+  page_index: RwLock<PageIndex>,
+  instance: InstanceHash,
+  cache: Option<Arc<FilesystemCache>>
 }
 
 impl WikiPageSyncSession {
@@ -107,6 +112,22 @@ impl WikiPageSyncSession {
   ///
   /// Returns an error if the local metadata store cannot be created.
   pub fn attach(config: WikiConfig, client: Arc<Client>, local_dir: &Path) -> anyhow::Result<Self> {
+    let instance = config.instance_hash();
+    Self::attach_with_cache(config, client, local_dir, instance, None)
+  }
+
+  /// Attach a session and wire it to a persistent cache.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the local metadata store cannot be created.
+  pub fn attach_with_cache(
+    config: WikiConfig,
+    client: Arc<Client>,
+    local_dir: &Path,
+    instance: InstanceHash,
+    cache: Option<Arc<FilesystemCache>>
+  ) -> anyhow::Result<Self> {
     let local_dir = absolute_local_dir(local_dir)?;
     let meta_store = MetaStore::new(&local_dir)?;
 
@@ -115,8 +136,58 @@ impl WikiPageSyncSession {
       client,
       local_dir,
       meta_store,
-      page_index: RwLock::new(PageIndex::default())
+      page_index: RwLock::new(PageIndex::default()),
+      instance,
+      cache
     })
+  }
+
+  /// Read a page's content, going through the persistent cache when a revision token is known.
+  ///
+  /// # Errors
+  ///
+  /// Propagates errors from the underlying wiki API client.
+  pub async fn read_page_cached(&self, slug: &str, revision: Option<&str>) -> anyhow::Result<String> {
+    if let (Some(cache), Some(revision)) = (self.cache.as_ref(), revision) {
+      let key = CacheKey {
+        instance: &self.instance,
+        path: slug,
+        version: revision
+      };
+      if let Some(bytes) = cache.get(key).await {
+        if let Ok(text) = String::from_utf8(bytes) {
+          return Ok(text);
+        }
+      }
+      let page = self.client.get_page_by_slug(slug).await?;
+      let content = page.content.unwrap_or_default();
+      if let Err(error) = cache.put(key, content.clone().into_bytes()).await {
+        warn!(error = %error, slug, "wiki cache put after remote read failed");
+      }
+      return Ok(content);
+    }
+    let page = self.client.get_page_by_slug(slug).await?;
+    Ok(page.content.unwrap_or_default())
+  }
+
+  fn cache_after_update(&self, slug: &str, revision: Option<&str>, content: &str) {
+    if let (Some(cache), Some(revision)) = (self.cache.as_ref(), revision) {
+      let cache = Arc::clone(cache);
+      let instance = self.instance.clone();
+      let slug = slug.to_string();
+      let revision = revision.to_string();
+      let bytes = content.as_bytes().to_vec();
+      tokio::spawn(async move {
+        let key = CacheKey {
+          instance: &instance,
+          path: &slug,
+          version: &revision
+        };
+        if let Err(error) = cache.put(key, bytes).await {
+          warn!(error = %error, slug, "wiki cache put after upload failed");
+        }
+      });
+    }
   }
 
   /// Download the configured remote tree into local files, base content and metadata.
@@ -230,8 +301,9 @@ impl WikiPageSyncSession {
         .is_none_or(|snapshot| snapshot.modified_at != node.modified_at);
 
       if needs_update {
-        let page = self.client.get_page_by_slug(page_ref.slug.as_str()).await?;
-        let content = page.content.unwrap_or_default();
+        let content = self
+          .read_page_cached(page_ref.slug.as_str(), Some(node.modified_at.as_str()))
+          .await?;
         let snapshot = PageSnapshot {
           id: node.id,
           title: node.title.clone(),
@@ -354,14 +426,15 @@ impl WikiPageSyncSession {
     let page_ref = PageRef::from_slug(&self.local_dir, Slug::new(&node.slug))
       .ok_or_else(|| anyhow::anyhow!("invalid wiki page slug: {}", node.slug))?;
 
-    let page = self.client.get_page_by_slug(page_ref.slug.as_str()).await?;
-    let content = page.content.as_deref().unwrap_or("");
+    let content = self
+      .read_page_cached(page_ref.slug.as_str(), Some(node.modified_at.as_str()))
+      .await?;
     let changed = std::fs::read_to_string(&page_ref.path).map_or(true, |existing| existing != content);
 
     if let Some(parent) = page_ref.path.parent() {
       std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&page_ref.path, content)?;
+    std::fs::write(&page_ref.path, &content)?;
 
     let snapshot = PageSnapshot {
       id: node.id,
@@ -372,7 +445,7 @@ impl WikiPageSyncSession {
     self
       .meta_store
       .save_meta(page_ref.slug.as_str(), &page_meta(&page_ref, &snapshot))?;
-    self.meta_store.save_base(page_ref.slug.as_str(), content)?;
+    self.meta_store.save_base(page_ref.slug.as_str(), &content)?;
     index.insert(page_ref.clone(), snapshot);
 
     debug!(slug = %page_ref.slug.as_str(), changed, "page downloaded");
@@ -502,6 +575,7 @@ impl WikiPageSyncSession {
       .meta_store
       .save_meta(page_ref.slug.as_str(), &page_meta(page_ref, &snapshot))?;
     self.meta_store.save_base(page_ref.slug.as_str(), content)?;
+    self.cache_after_update(page_ref.slug.as_str(), Some(snapshot.modified_at.as_str()), content);
     self.page_index.write().await.insert(page_ref.clone(), snapshot);
     Ok(())
   }

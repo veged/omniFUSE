@@ -1,9 +1,13 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::path::{Path, PathBuf};
+use std::{
+  path::{Path, PathBuf},
+  sync::Arc
+};
 
 use omnifuse_core::{
-  InitResult, PathProtection, RemoteApplyMode, RemoteDeferReason, RemoteRefresh, RemoteRefreshResult, SyncResult
+  FilesystemCache, FilesystemCacheConfig, InitResult, InstanceHash, PathProtection, RemoteApplyMode, RemoteDeferReason,
+  RemoteRefresh, RemoteRefreshResult, SyncResult
 };
 use omnifuse_s3::session::S3Session;
 use opendal::{Operator, services};
@@ -191,6 +195,134 @@ async fn refresh_detect_only_does_not_apply() {
     "got {result:?}"
   );
   assert!(!dir.path().join("doc.txt").exists());
+}
+
+#[tokio::test]
+async fn cached_read_serves_from_cache_after_remote_purge() {
+  // After the first cached read, the bytes are pinned to (instance, path, etag).
+  // Deleting the object on the remote must not invalidate the cached entry —
+  // a second mount with the same parameters should still serve the bytes.
+  let operator = memory_operator();
+  operator.write("docs/a.md", "hello").await.expect("seed");
+
+  let cache_dir = tempfile::tempdir().expect("cache dir");
+  let mount_dir = tempfile::tempdir().expect("mount dir");
+  let cache = FilesystemCache::open(cache_dir.path(), FilesystemCacheConfig::default()).expect("cache");
+  let instance = InstanceHash::from_parts(&["s3", "memory", "test"]);
+  let session = S3Session::attach_operator_with_cache_for_tests(
+    operator.clone(),
+    mount_dir.path(),
+    instance,
+    Some(Arc::clone(&cache))
+  )
+  .expect("session");
+
+  let first = session
+    .read_object_cached("docs/a.md", Some("etag-1"))
+    .await
+    .expect("first read");
+  assert_eq!(first, b"hello");
+
+  // Wipe remote: subsequent operator.read would fail.
+  operator.delete("docs/a.md").await.expect("remote delete");
+  assert!(operator.read("docs/a.md").await.is_err(), "remote must be gone");
+
+  let second = session
+    .read_object_cached("docs/a.md", Some("etag-1"))
+    .await
+    .expect("second read");
+  assert_eq!(second, b"hello", "cache must serve bytes when remote is gone");
+}
+
+#[tokio::test]
+async fn cached_read_refetches_when_etag_changes() {
+  // Different version_token (etag) means a different cache slot. A new etag must
+  // trigger a fresh GET rather than returning the stale cached payload.
+  let operator = memory_operator();
+  operator.write("file.txt", "v1").await.expect("seed v1");
+
+  let cache_dir = tempfile::tempdir().expect("cache dir");
+  let mount_dir = tempfile::tempdir().expect("mount dir");
+  let cache = FilesystemCache::open(cache_dir.path(), FilesystemCacheConfig::default()).expect("cache");
+  let instance = InstanceHash::from_parts(&["s3", "memory", "test"]);
+  let session = S3Session::attach_operator_with_cache_for_tests(
+    operator.clone(),
+    mount_dir.path(),
+    instance.clone(),
+    Some(Arc::clone(&cache))
+  )
+  .expect("session");
+
+  let v1 = session
+    .read_object_cached("file.txt", Some("etag-1"))
+    .await
+    .expect("read v1");
+  assert_eq!(v1, b"v1");
+
+  // Remote rewrite under a new etag.
+  operator.write("file.txt", "v2").await.expect("seed v2");
+  let v2 = session
+    .read_object_cached("file.txt", Some("etag-2"))
+    .await
+    .expect("read v2");
+  assert_eq!(v2, b"v2", "new etag must bypass cached v1");
+
+  // Both versions remain accessible by their respective etags — old cache entries are not
+  // overwritten by new ones.
+  operator.delete("file.txt").await.expect("rm remote");
+  let stale = session
+    .read_object_cached("file.txt", Some("etag-1"))
+    .await
+    .expect("stale cached read");
+  assert_eq!(stale, b"v1", "cached v1 must survive new versions");
+}
+
+#[tokio::test]
+async fn second_mount_with_same_cache_skips_remote_get() {
+  // Models the headline scenario: warm the persistent cache from a first mount,
+  // then a second mount with a fresh local directory but the same cache must
+  // serve identical bytes without re-fetching from remote.
+  let operator = memory_operator();
+  operator.write("a.md", "alpha").await.expect("seed");
+
+  let cache_dir = tempfile::tempdir().expect("cache dir");
+  let cache = FilesystemCache::open(cache_dir.path(), FilesystemCacheConfig::default()).expect("cache");
+  let instance = InstanceHash::from_parts(&["s3", "memory", "test"]);
+
+  // Mount 1 — warm.
+  {
+    let mount_a = tempfile::tempdir().expect("mount-a");
+    let session = S3Session::attach_operator_with_cache_for_tests(
+      operator.clone(),
+      mount_a.path(),
+      instance.clone(),
+      Some(Arc::clone(&cache))
+    )
+    .expect("session-a");
+    let bytes = session
+      .read_object_cached("a.md", Some("rev-1"))
+      .await
+      .expect("warm cache");
+    assert_eq!(bytes, b"alpha");
+  }
+
+  // Remove the object from the remote — the second mount must not touch it.
+  operator.delete("a.md").await.expect("rm remote");
+
+  // Mount 2 — different local dir, same cache, same instance.
+  let mount_b = tempfile::tempdir().expect("mount-b");
+  let session_b = S3Session::attach_operator_with_cache_for_tests(
+    operator.clone(),
+    mount_b.path(),
+    instance,
+    Some(Arc::clone(&cache))
+  )
+  .expect("session-b");
+  let bytes_b = session_b
+    .read_object_cached("a.md", Some("rev-1"))
+    .await
+    .expect("second mount read");
+  assert_eq!(bytes_b, b"alpha", "second mount must serve bytes from cache");
 }
 
 #[tokio::test]
