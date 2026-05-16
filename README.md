@@ -172,6 +172,49 @@ What this gives you, beyond a generic shared volume:
 Contributions and proposals welcome — open an issue before starting on a new
 backend so we can agree on the shape.
 
+## Alternatives
+
+omniFUSE sits at the intersection of: a real OS-level mount (so any tool that
+opens files just works), multiple backends in one binary, safe concurrent
+writes with humans, and a first-class UX for AI agents. Adjacent tools, grouped
+by approach:
+
+### Open-source mounters
+
+| Project | Kind | Backends | OS | License |
+|---|---|---|---|---|
+| [rclone](https://rclone.org) + `rclone mount` | Generic | 70+ (S3, GDrive, SFTP, …) | L / M / W | MIT |
+| [JuiceFS](https://juicefs.com) Community | POSIX over object storage + metadata DB | S3 + Redis / Postgres / TiKV / … | L / M / W | Apache 2.0 |
+| [mountpoint-s3](https://github.com/awslabs/mountpoint-s3) (AWS) | Single backend | S3 (sequential writes, no rename) | L | Apache 2.0 |
+| [GeeseFS](https://github.com/yandex-cloud/geesefs) (Yandex) | Single backend | S3 (tuned for many small objects) | L / M | Apache-derived |
+| [s3fs-fuse](https://github.com/s3fs-fuse/s3fs-fuse) | Single backend | S3 | L / M | GPL-2.0 |
+| [sshfs](https://github.com/libfuse/sshfs) | Single backend | SSH / SFTP | L / M | GPL-2.0 |
+| [davfs2](https://savannah.nongnu.org/projects/davfs2/) | Single backend | WebDAV | L | GPL-3.0 |
+| [gitfs](https://github.com/presslabs/gitfs) (presslabs) | Git-as-FS | git repos | L / M | Apache 2.0 |
+| [EdenFS](https://github.com/facebook/sapling) (Meta Sapling) | Source-control VFS | Sapling / Mercurial | L / M / W | GPL-2.0 |
+| [Mirage](https://github.com/strukto-ai/mirage) (strukto-ai) | In-process VFS for AI agents | S3, GDrive, Slack, Gmail, … | L / M | Apache 2.0 |
+
+### Commercial GUI mounters
+
+| Project | Backends | OS | Price |
+|---|---|---|---|
+| [Mountain Duck](https://mountainduck.io/) | S3, GDrive, Dropbox, OneDrive, SharePoint, SMB, … | M / W | one-time ~$39 standalone; Mac App Store: subscription |
+| [ExpanDrive](https://www.expandrive.com/) | S3, GDrive, OneDrive, SFTP, WebDAV, … | L / M / W | free ≤ 10 users; business ~$99/mo for 50 devices |
+| [CloudMounter](https://cloudmounter.net/) | OneDrive, GDrive, S3, Dropbox, FTP / SFTP, WebDAV, … | M / W (+ Linux client) | one-time ~$30–45 standalone; Mac App Store: subscription |
+
+### Where omniFUSE fits
+
+If you need the broadest backend coverage today, **rclone** is the better
+choice. If you live on S3 on Linux and want maximum throughput, **mountpoint-s3**
+wins. If you want a polished end-user GUI and a credit card is fine, **Mountain
+Duck** or **ExpanDrive** are honest answers.
+
+omniFUSE differs in: a real OS-level mount in one Rust binary; git, wiki, and
+S3 covered today with more coming; explicit conflict-safe writes per backend
+(native git merge, three-way wiki merge via [`diffy`](https://github.com/bmwill/diffy),
+S3 conditional writes via `If-Match` / `If-None-Match`); and an agent-oriented
+manual via `of skill --for=<tool>` that ships in the binary.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, building, testing,
