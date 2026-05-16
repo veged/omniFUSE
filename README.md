@@ -122,10 +122,14 @@ no SDK, no plugin, no provider-specific tool wiring.
 # Mount once on the host (or inside a long-lived sandbox)
 of mount git https://github.com/user/repo /workspace/repo
 
+# Or an S3 data lake: agents read/write objects through normal POSIX paths
+of mount s3 my-bucket /workspace/data --region us-east-1 --prefix raw/
+
 # The agent uses whatever it already knows
 grep -r "TODO" /workspace/repo
 cat /workspace/repo/src/main.rs
 echo "fix" >> /workspace/repo/notes.md
+jq '.events[]' /workspace/data/2026-05-15/ingest.json
 ```
 
 What this gives you, beyond a generic shared volume:
@@ -133,22 +137,26 @@ What this gives you, beyond a generic shared volume:
 - **Versioned memory for free.** On the git backend, every save the agent makes
   becomes a real commit pushed to the remote. Recover with `git log`,
   `git revert`, `git diff` — the same tools humans already use.
-- **Concurrent editing with humans.** Both backends accept simultaneous writes.
-  Git delegates to native git merge (fast-forward, merge commit, or conflict
-  markers); wiki uses three-way merge via `diffy`. No locks, no "agent took
-  over the file" surprises.
+- **Concurrent editing with humans.** All three backends accept simultaneous
+  writes without locks. Git delegates to native git merge (fast-forward, merge
+  commit, or conflict markers); wiki and S3 use three-way merge via `diffy`,
+  with S3 layering compare-and-swap on top (`If-Match` / `If-None-Match`) so
+  concurrent remote updates can never be silently overwritten. Binary objects
+  on S3 surface as explicit conflicts instead of clobbering. No locks, no
+  "agent took over the file" surprises.
 - **Credentials stay outside the sandbox.** Mount runs on the host with your
-  tokens. The agent sees a directory — it never touches the GitHub PAT or the
-  wiki OAuth token, even if its sandbox is compromised.
+  tokens. The agent sees a directory — it never touches the GitHub PAT, wiki
+  OAuth token, or S3 access keys, even if its sandbox is compromised.
 - **Drop-in for any agent framework.** Claude Code (`--add-dir`), OpenAI Agents
   SDK shell tool, LangChain `ShellTool`, self-hosted runners — all work
   unmodified because the mount looks like a local directory.
 
 ## Roadmap
 
-- **More backends.** S3-compatible (AWS S3, R2, B2, MinIO, Yandex Object
-  Storage), WebDAV (Nextcloud, ownCloud), SFTP/SSH, GitHub Issues/PRs as files,
-  Notion, Confluence, GitLab Wiki.
+- **More backends.** WebDAV (Nextcloud, ownCloud), SFTP/SSH, GitHub Issues/PRs
+  as files, Notion, Confluence, GitLab Wiki. (S3-compatible storage — AWS S3,
+  R2, B2, MinIO, Yandex Object Storage — is already shipped, see
+  [Mount S3-compatible storage](#mount-s3-compatible-storage).)
 - **Persistent cache between runs.** Reuse already-fetched data for the same
   remote resource across CLI invocations.
 - **Index/metadata cache.** Separate listing cache for slow backends so
