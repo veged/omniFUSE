@@ -22,7 +22,7 @@ interface LogEntry {
   timestamp: Date;
 }
 
-type BackendKind = 'git' | 'wiki';
+type BackendKind = 'git' | 'wiki' | 's3';
 type EventLevel = 'info' | 'warn' | 'error';
 
 interface OmniEvent {
@@ -112,6 +112,9 @@ interface FieldErrors {
   wikiSlug?: string;
   wikiToken?: string;
   wikiMountPoint?: string;
+  s3Bucket?: string;
+  s3SecretAccessKey?: string;
+  s3MountPoint?: string;
 }
 
 function App() {
@@ -136,6 +139,15 @@ function App() {
   const [wikiSlug, setWikiSlug] = useLocalStorage({ key: 'omnifuse-wiki-slug', defaultValue: '' });
   const [wikiToken, setWikiToken] = useState('');
   const [wikiMountPoint, setWikiMountPoint] = useLocalStorage({ key: 'omnifuse-wiki-mount', defaultValue: '' });
+
+  // S3 (persisted, except secret)
+  const [s3Bucket, setS3Bucket] = useLocalStorage({ key: 'omnifuse-s3-bucket', defaultValue: '' });
+  const [s3Prefix, setS3Prefix] = useLocalStorage({ key: 'omnifuse-s3-prefix', defaultValue: '' });
+  const [s3Endpoint, setS3Endpoint] = useLocalStorage({ key: 'omnifuse-s3-endpoint', defaultValue: '' });
+  const [s3Region, setS3Region] = useLocalStorage({ key: 'omnifuse-s3-region', defaultValue: '' });
+  const [s3AccessKeyId, setS3AccessKeyId] = useLocalStorage({ key: 'omnifuse-s3-access-key-id', defaultValue: '' });
+  const [s3SecretAccessKey, setS3SecretAccessKey] = useState('');
+  const [s3MountPoint, setS3MountPoint] = useLocalStorage({ key: 'omnifuse-s3-mount', defaultValue: '' });
 
   const filteredLogs = useMemo(
     () => logFilter === 'all' ? logs : logs.filter((l) => l.level === logFilter),
@@ -194,7 +206,7 @@ function App() {
     if (backend === 'git') {
       if (!gitSource.trim()) e.gitSource = 'Required';
       if (!gitMountPoint.trim()) e.gitMountPoint = 'Required';
-    } else {
+    } else if (backend === 'wiki') {
       if (!wikiUrl.trim()) {
         e.wikiUrl = 'Required';
       } else {
@@ -203,6 +215,10 @@ function App() {
       if (!wikiSlug.trim()) e.wikiSlug = 'Required';
       if (!wikiToken.trim()) e.wikiToken = 'Required';
       if (!wikiMountPoint.trim()) e.wikiMountPoint = 'Required';
+    } else {
+      if (!s3Bucket.trim()) e.s3Bucket = 'Required';
+      if (!s3SecretAccessKey.trim()) e.s3SecretAccessKey = 'Required';
+      if (!s3MountPoint.trim()) e.s3MountPoint = 'Required';
     }
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -218,12 +234,22 @@ function App() {
           mountPoint: gitMountPoint.trim(),
           branch: gitBranch.trim() || null,
         });
-      } else {
+      } else if (backend === 'wiki') {
         await invoke('mount_wiki', {
           baseUrl: wikiUrl.trim(),
           rootSlug: wikiSlug.trim(),
           authToken: wikiToken,
           mountPoint: wikiMountPoint.trim(),
+        });
+      } else {
+        await invoke('mount_s3', {
+          bucket: s3Bucket.trim(),
+          prefix: s3Prefix.trim() || null,
+          endpoint: s3Endpoint.trim() || null,
+          region: s3Region.trim() || null,
+          accessKeyId: s3AccessKeyId.trim() || null,
+          secretAccessKey: s3SecretAccessKey,
+          mountPoint: s3MountPoint.trim(),
         });
       }
     } catch (e) {
@@ -271,7 +297,9 @@ function App() {
   const canMount =
     backend === 'git'
       ? gitSource && gitMountPoint
-      : wikiUrl && wikiSlug && wikiToken && wikiMountPoint;
+      : backend === 'wiki'
+        ? wikiUrl && wikiSlug && wikiToken && wikiMountPoint
+        : s3Bucket && s3SecretAccessKey && s3MountPoint;
 
   return (
     <Stack p="md" gap="sm">
@@ -295,11 +323,12 @@ function App() {
         data={[
           { label: 'Git', value: 'git' },
           { label: 'Wiki', value: 'wiki' },
+          { label: 'S3', value: 's3' },
         ]}
         disabled={mounted || loading}
       />
 
-      {backend === 'git' ? (
+      {backend === 'git' && (
         <>
           <TextInput
             label="Repository"
@@ -335,7 +364,9 @@ function App() {
             </Button>
           </Group>
         </>
-      ) : (
+      )}
+
+      {backend === 'wiki' && (
         <>
           <TextInput
             label="Wiki API URL"
@@ -373,6 +404,73 @@ function App() {
             />
             <Button
               onClick={() => handlePickFolder(setWikiMountPoint)}
+              disabled={mounted || loading}
+              variant="default"
+            >
+              Browse
+            </Button>
+          </Group>
+        </>
+      )}
+
+      {backend === 's3' && (
+        <>
+          <TextInput
+            label="Bucket"
+            placeholder="my-bucket"
+            value={s3Bucket}
+            onChange={(e) => { setS3Bucket(e.target.value); setErrors((p) => ({ ...p, s3Bucket: undefined })); }}
+            disabled={mounted || loading}
+            error={errors.s3Bucket}
+          />
+          <TextInput
+            label="Prefix"
+            placeholder="optional/key/prefix"
+            value={s3Prefix}
+            onChange={(e) => setS3Prefix(e.target.value)}
+            disabled={mounted || loading}
+          />
+          <TextInput
+            label="Endpoint"
+            placeholder="https://s3.amazonaws.com"
+            value={s3Endpoint}
+            onChange={(e) => setS3Endpoint(e.target.value)}
+            disabled={mounted || loading}
+          />
+          <TextInput
+            label="Region"
+            placeholder="us-east-1 / auto"
+            value={s3Region}
+            onChange={(e) => setS3Region(e.target.value)}
+            disabled={mounted || loading}
+          />
+          <TextInput
+            label="Access key ID"
+            placeholder="AKIA..."
+            value={s3AccessKeyId}
+            onChange={(e) => setS3AccessKeyId(e.target.value)}
+            disabled={mounted || loading}
+          />
+          <PasswordInput
+            label="Secret access key"
+            placeholder="secret"
+            value={s3SecretAccessKey}
+            onChange={(e) => { setS3SecretAccessKey(e.target.value); setErrors((p) => ({ ...p, s3SecretAccessKey: undefined })); }}
+            disabled={mounted || loading}
+            error={errors.s3SecretAccessKey}
+          />
+          <Group align="end" gap="xs">
+            <TextInput
+              label="Mount point"
+              placeholder="/path/to/mount"
+              value={s3MountPoint}
+              onChange={(e) => { setS3MountPoint(e.target.value); setErrors((p) => ({ ...p, s3MountPoint: undefined })); }}
+              disabled={mounted || loading}
+              style={{ flex: 1 }}
+              error={errors.s3MountPoint}
+            />
+            <Button
+              onClick={() => handlePickFolder(setS3MountPoint)}
               disabled={mounted || loading}
               variant="default"
             >

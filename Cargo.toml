@@ -5,6 +5,7 @@ members = [
   "crates/omnifuse-core",
   "crates/omnifuse-git",
   "crates/omnifuse-wiki",
+  "crates/omnifuse-s3",
   "crates/omnifuse-app",
   "crates/omnifuse-cli",
   "crates/omnifuse-gui/tauri"
@@ -45,6 +46,9 @@ windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_Fou
 
 # Merge
 diffy = "0.4"
+
+# S3 / object storage
+opendal = { version = "0.56", features = ["services-s3", "services-memory"] }
 
 # Git
 gix = { version = "0.72", default-features = false, features = [

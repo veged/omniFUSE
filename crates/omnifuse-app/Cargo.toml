@@ -16,6 +16,7 @@ workspace = true
 omnifuse-core = { version = "0.2.0", path = "../omnifuse-core" }
 omnifuse-git = { version = "0.2.0", path = "../omnifuse-git" }
 omnifuse-wiki = { version = "0.2.0", path = "../omnifuse-wiki" }
+omnifuse-s3 = { version = "0.2.0", path = "../omnifuse-s3" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 

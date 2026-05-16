@@ -50,6 +50,7 @@ pub mod observability;
 pub mod sync_engine;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
+pub mod text_merge;
 pub mod vfs;
 
 use std::{path::Path, sync::Arc};
@@ -65,6 +66,7 @@ pub use event::{
 };
 pub use observability::init_logging;
 pub use sync_engine::{FsEvent, SyncEngine, WorkerMetrics};
+pub use text_merge::{TextMergeDecision, TextMergeResult, decide_text_merge, decode_utf8_text, three_way_text_merge};
 use tracing::info;
 pub use vfs::OmniFuseVfs;
 

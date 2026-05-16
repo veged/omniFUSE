@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use omnifuse_app::{GitMountArgs, MountService, WikiMountArgs};
+use omnifuse_app::{GitMountArgs, MountService, S3MountArgs, WikiMountArgs};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
@@ -128,6 +128,70 @@ pub async fn mount_wiki(
     let service = MountService::default();
     tokio::select! {
         result = service.run_wiki(args, events) => {
+            if let Err(e) = result {
+                tracing::error!("VFS error: {e}");
+            }
+        }
+        () = async { let _ = cancel_rx.await; } => {
+            tracing::info!("VFS cancelled");
+        }
+    }
+
+    *state_clone.mounted.lock().await = false;
+  });
+
+  Ok(())
+}
+
+/// Mount an S3-compatible backend.
+#[tauri::command]
+#[allow(clippy::similar_names)]
+#[allow(clippy::too_many_arguments)]
+pub async fn mount_s3(
+  bucket: String,
+  prefix: Option<String>,
+  endpoint: Option<String>,
+  region: Option<String>,
+  access_key_id: Option<String>,
+  secret_access_key: String,
+  mount_point: String,
+  app: AppHandle,
+  state: State<'_, Arc<AppState>>
+) -> Result<(), String> {
+  let mut mounted = state.mounted.lock().await;
+  if *mounted {
+    return Err("Already mounted".to_string());
+  }
+
+  let mnt = PathBuf::from(&mount_point);
+
+  let events = TauriEventHandler::new(app);
+  let args = S3MountArgs {
+    bucket,
+    mount_point: mnt,
+    prefix,
+    endpoint,
+    region,
+    access_key_id,
+    secret_access_key: Some(secret_access_key),
+    session_token: None,
+    virtual_host_style: false,
+    poll_interval_secs: Some(60),
+    allow_other: false,
+    read_only: false
+  };
+  let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+  *state.cancel_token.lock().await = Some(cancel_tx);
+  *mounted = true;
+  drop(mounted);
+
+  let state_clone = Arc::clone(&state);
+
+  tokio::spawn(async move {
+    let service = MountService::default();
+    tokio::select! {
+        result = service.run_s3(args, events) => {
             if let Err(e) = result {
                 tracing::error!("VFS error: {e}");
             }
