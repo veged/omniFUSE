@@ -205,22 +205,33 @@ that is the price of running standalone.
 
 ## Milestones
 
-These can land as separate PRs. Order is suggestive, not strict.
+All shipped together in this PR.
 
 1. **Done.** `PersistentCache` trait + filesystem implementation + LRU
    eviction in `omnifuse-core`. Shipped as
    `omnifuse_core::{PersistentCache, FilesystemCache, InstanceHash, CacheKey}`.
-2. Daemon scaffolding: new crate `omnifuse-daemon` (or module in
-   `omnifuse-app`), UDS server, `of daemon start/stop/status`,
-   `of list/status/unmount` (degraded mode only — no mounts hosted
-   yet).
+2. **Done.** Daemon scaffolding in `omnifuse-app::daemon` — UDS server,
+   newline-delimited JSON protocol with schema version `v=1`,
+   `of daemon start/stop/status`, plus `of list/status/unmount` that
+   transparently falls back to scanning the OS mount table when no
+   daemon is running.
 3. **Done.** S3 ↔ cache wiring. `S3Backend::with_cache` plus
    `S3Session::read_object_cached` route reads through the cache by
    `(instance, object_path, etag)`. Cached after successful PUT.
-4. Daemon hosts mounts. `of mount s3 ...` hands off; hot-tier sharing
-   works.
-5. Wiki ↔ cache wiring.
-6. Git persistent working tree (no cache trait involvement).
+4. **Done.** Daemon hosts mounts: `of mount <backend> ...` opportunistically
+   hands off to the running daemon, otherwise mounts in the foreground.
+   `Daemon` pools `Arc<FileBufferManager>` keyed by `InstanceHash`, so
+   concurrent mounts of the same instance share the hot tier.
+5. **Done.** Wiki ↔ cache wiring. `WikiBackend::with_cache` plus
+   `WikiPageSyncSession::read_page_cached` key by
+   `(instance, slug, modified_at)`. Modified-at acts as the V1 revision
+   token. Cache is also written after successful page updates.
+6. **Done.** Git persistent working tree. `ensure_remote_repo` and the
+   local-clone-into-cache path now validate the cached worktree (no
+   in-progress merge/rebase/bisect, no uncommitted changes) before
+   reusing it. A clean tree → fetch + checkout. A stale tree → wipe +
+   re-clone with a warning. The `local_dir` was already keyed on
+   `(source, branch)` so the cache is preserved across runs.
 
 ## Open questions to resolve during implementation
 

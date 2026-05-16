@@ -229,6 +229,20 @@ impl<B: Backend> OmniFuseVfs<B> {
     buffer_config: BufferConfig
   ) -> Self {
     let buffer_manager = Arc::new(FileBufferManager::new(buffer_config));
+    Self::new_with_buffer_manager(local_dir, sync_tx, backend, events, session, buffer_manager)
+  }
+
+  /// Create a new VFS that shares an externally-managed `FileBufferManager`.
+  ///
+  /// Used by the daemon to pool the hot tier across mounts of the same instance.
+  pub fn new_with_buffer_manager(
+    local_dir: PathBuf,
+    sync_tx: mpsc::Sender<FsEvent>,
+    backend: Arc<B>,
+    events: Arc<dyn Sink>,
+    session: Arc<Session>,
+    buffer_manager: Arc<FileBufferManager>
+  ) -> Self {
     let mutation_pipeline = Arc::new(FileMutationPipeline::new(
       local_dir.clone(),
       buffer_manager,

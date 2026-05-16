@@ -7,7 +7,7 @@ use std::{
   path::{Path, PathBuf}
 };
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Git URL prefixes for remote repositories.
 const GIT_URL_PREFIXES: &[&str] = &["https://", "http://", "git://", "ssh://", "git@", "file://"];
@@ -174,13 +174,51 @@ impl RepoSource {
 
   async fn ensure_remote_repo(url: &str, target: &Path, branch: &str) -> anyhow::Result<PathBuf> {
     if target.join(".git").exists() {
-      info!(url, path = %target.display(), "using cached repository");
-      Self::fetch_updates(target).await?;
+      match worktree_health(target).await {
+        Ok(()) => {
+          info!(url, path = %target.display(), "reusing cached working tree");
+          Self::fetch_updates(target).await?;
+          Self::checkout_branch(target, branch).await?;
+        }
+        Err(reason) => {
+          warn!(url, path = %target.display(), reason = %reason, "discarding stale working tree");
+          std::fs::remove_dir_all(target)?;
+          Self::clone_repo(url, target, branch).await?;
+        }
+      }
     } else {
       info!(url, path = %target.display(), "cloning");
       Self::clone_repo(url, target, branch).await?;
     }
     Ok(target.to_path_buf())
+  }
+
+  /// Check out the target branch in an existing worktree.
+  async fn checkout_branch(target: &Path, branch: &str) -> anyhow::Result<()> {
+    let output = tokio::process::Command::new("git")
+      .args(["checkout", branch])
+      .current_dir(target)
+      .output()
+      .await?;
+    if output.status.success() {
+      return Ok(());
+    }
+
+    // Branch may not yet exist locally (e.g. it was fetched but never checked out).
+    // Try to create a tracking branch from the remote.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    debug!(branch, %stderr, "git checkout failed; trying tracking branch from origin");
+    let track = tokio::process::Command::new("git")
+      .args(["checkout", "-B", branch, "--track", &format!("origin/{branch}")])
+      .current_dir(target)
+      .output()
+      .await?;
+    if track.status.success() {
+      return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&track.stderr);
+    anyhow::bail!("git checkout {branch} failed: {stderr}")
   }
 
   /// Clone a remote repository.
@@ -246,6 +284,51 @@ impl RepoSource {
 
     Ok(())
   }
+}
+
+/// Validate that an existing cached worktree is safe to reuse.
+///
+/// Returns `Err(reason)` describing what makes the directory unsafe. Callers
+/// should discard the directory and re-clone in that case.
+pub(crate) async fn worktree_health(path: &Path) -> Result<(), String> {
+  // Interrupted merge/rebase/bisect leaves these state files behind. None of
+  // them are safe to fetch + checkout on top of.
+  for stale in [
+    ".git/MERGE_HEAD",
+    ".git/CHERRY_PICK_HEAD",
+    ".git/REVERT_HEAD",
+    ".git/rebase-merge",
+    ".git/rebase-apply",
+    ".git/BISECT_LOG"
+  ] {
+    if path.join(stale).exists() {
+      return Err(format!("in-progress {stale} state"));
+    }
+  }
+
+  let output = match tokio::process::Command::new("git")
+    .args(["status", "--porcelain"])
+    .current_dir(path)
+    .output()
+    .await
+  {
+    Ok(output) => output,
+    Err(error) => return Err(format!("git status failed: {error}"))
+  };
+
+  if !output.status.success() {
+    return Err(format!(
+      "git status exited with {}: {}",
+      output.status,
+      String::from_utf8_lossy(&output.stderr).trim()
+    ));
+  }
+
+  if !output.stdout.is_empty() {
+    return Err("uncommitted changes in cached worktree".to_string());
+  }
+
+  Ok(())
 }
 
 impl std::fmt::Display for RepoSource {

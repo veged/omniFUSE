@@ -44,6 +44,10 @@ pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Trigger eviction after this many puts.
 const EVICTION_PUT_INTERVAL: u64 = 64;
 
+/// Process-wide counter ensuring distinct tmp filenames even when two writers
+/// observe the same `SystemTime` nanosecond.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Stable hash of normalised mount parameters.
 ///
 /// Two cache users with the same normalised input produce the same hash across
@@ -380,12 +384,9 @@ fn write_blob_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
   }
 
   let pid = std::process::id();
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map(|d| d.subsec_nanos())
-    .unwrap_or_default();
+  let counter = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
   let tmp_name = format!(
-    "{}.tmp.{pid}.{nanos:08x}",
+    "{}.tmp.{pid}.{counter:016x}",
     path.file_name().and_then(|name| name.to_str()).unwrap_or("blob")
   );
   let tmp_path = path.with_file_name(tmp_name);
@@ -394,6 +395,13 @@ fn write_blob_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
   match fs::rename(&tmp_path, path) {
     Ok(()) => Ok(()),
     Err(error) => {
+      // Another writer may have already published the same `(path, version)`
+      // blob. Treat that as success since the bytes are content-addressed by
+      // `version` and therefore identical to ours.
+      if path.exists() {
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(());
+      }
       let _ = fs::remove_file(&tmp_path);
       Err(error)
     }

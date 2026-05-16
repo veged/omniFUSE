@@ -46,7 +46,7 @@ impl Default for MountDefaults {
 }
 
 /// Git mount request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GitMountArgs {
   /// Source URL or local repository path.
   pub source: String,
@@ -63,7 +63,7 @@ pub struct GitMountArgs {
 }
 
 /// Wiki mount request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WikiMountArgs {
   /// Base URL of the Wiki API.
   pub base_url: String,
@@ -84,7 +84,7 @@ pub struct WikiMountArgs {
 }
 
 /// S3-compatible mount request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct S3MountArgs {
   /// Bucket name.
   pub bucket: String,
@@ -251,6 +251,10 @@ impl<E: MountEnvironment> MountService<E> {
       max_pages: self.defaults.wiki_max_pages
     })
     .context("failed to create wiki backend")?;
+    let backend = match self.cache.as_ref() {
+      Some(cache) => backend.with_cache(Arc::clone(cache)),
+      None => backend
+    };
 
     Ok(PreparedMount {
       config,

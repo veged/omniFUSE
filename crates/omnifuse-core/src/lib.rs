@@ -86,6 +86,24 @@ pub use vfs::OmniFuseVfs;
 ///
 /// Returns an error if initialization or mounting fails.
 pub async fn run_mount<B: Backend>(config: MountConfig, backend: B, events: impl Sink) -> anyhow::Result<()> {
+  run_mount_with_buffer(config, backend, events, None).await
+}
+
+/// Mount `OmniFuse` reusing an externally-managed `FileBufferManager`.
+///
+/// Used by the daemon to pool the hot tier across mounts of the same instance.
+/// When `buffer_manager` is `None`, a new private manager is created from the
+/// configured `BufferConfig`.
+///
+/// # Errors
+///
+/// Returns an error if initialization or mounting fails.
+pub async fn run_mount_with_buffer<B: Backend>(
+  config: MountConfig,
+  backend: B,
+  events: impl Sink,
+  buffer_manager: Option<Arc<FileBufferManager>>
+) -> anyhow::Result<()> {
   init_logging(&config.logging)?;
 
   let events: Arc<dyn Sink> = Arc::new(events);
@@ -125,14 +143,16 @@ pub async fn run_mount<B: Backend>(config: MountConfig, backend: B, events: impl
       Arc::clone(&session)
     );
 
-    // Create VFS
-    let vfs = OmniFuseVfs::new_with_session(
+    // Create VFS — share the buffer manager when one is provided so concurrent
+    // mounts of the same instance see the same hot tier.
+    let buffer_manager = buffer_manager.unwrap_or_else(|| Arc::new(FileBufferManager::new(config.buffer.clone())));
+    let vfs = OmniFuseVfs::new_with_buffer_manager(
       config.local_dir.clone(),
       sync_engine.sender(),
       Arc::clone(&backend),
       Arc::clone(&events),
       Arc::clone(&session),
-      config.buffer.clone()
+      buffer_manager
     );
 
     // Mount

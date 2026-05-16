@@ -53,6 +53,12 @@ impl S3Backend {
     self
   }
 
+  /// Borrow the underlying configuration.
+  #[must_use]
+  pub const fn config(&self) -> &S3Config {
+    &self.config
+  }
+
   fn session(&self) -> anyhow::Result<&S3Session> {
     self.session.get().ok_or_else(|| S3Error::NotInitialized.into())
   }
