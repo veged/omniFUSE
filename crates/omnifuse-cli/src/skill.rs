@@ -13,6 +13,7 @@ use crate::Cli;
 const INTRO: &str = include_str!("../skill/intro.md");
 const MOUNT_GIT: &str = include_str!("../skill/mount-git.md");
 const MOUNT_WIKI: &str = include_str!("../skill/mount-wiki.md");
+const MOUNT_S3: &str = include_str!("../skill/mount-s3.md");
 const CHECK: &str = include_str!("../skill/check.md");
 const GEN_CONFIG: &str = include_str!("../skill/gen-config.md");
 const SKILL_SELF: &str = include_str!("../skill/skill.md");
@@ -102,10 +103,13 @@ pub fn render(path: &[String], for_tool: Option<&str>) -> String {
     [] => out.push_str(&top_level_index()),
     ["mount", "git"] => out.push_str(MOUNT_GIT),
     ["mount", "wiki"] => out.push_str(MOUNT_WIKI),
+    ["mount", "s3"] => out.push_str(MOUNT_S3),
     ["mount"] => {
       out.push_str(MOUNT_GIT);
       ensure_trailing_blank_line(&mut out);
       out.push_str(MOUNT_WIKI);
+      ensure_trailing_blank_line(&mut out);
+      out.push_str(MOUNT_S3);
     }
     ["check"] => out.push_str(CHECK),
     ["gen-config"] => out.push_str(GEN_CONFIG),
@@ -255,6 +259,24 @@ mod tests {
     let s = render(&["mount".into(), "git".into()], None);
     assert!(s.contains("of mount git"));
     assert!(s.contains("Conflict behavior"));
+  }
+
+  #[test]
+  fn render_mount_s3_includes_capability_requirements_and_cas() {
+    let s = render(&["mount".into(), "s3".into()], None);
+    assert!(s.contains("of mount s3"));
+    assert!(s.contains("If-Match"));
+    assert!(s.contains("If-None-Match"));
+    assert!(s.contains("Capability requirements"));
+    assert!(s.contains("write_with_if_match"));
+  }
+
+  #[test]
+  fn render_mount_root_chains_all_subcommands() {
+    let s = render(&["mount".into()], None);
+    assert!(s.contains("of mount git"));
+    assert!(s.contains("of mount wiki"));
+    assert!(s.contains("of mount s3"));
   }
 
   #[test]

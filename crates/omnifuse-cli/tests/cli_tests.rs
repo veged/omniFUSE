@@ -329,6 +329,18 @@ fn test_skill_subcommand_with_path() {
 }
 
 #[test]
+fn test_skill_for_mount_s3_renders_s3_section() {
+  // `of skill mount s3` — section for `mount s3` with CAS specifics.
+  of_cmd()
+    .args(["skill", "mount", "s3"])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("of mount s3"))
+    .stdout(predicate::str::contains("If-Match"))
+    .stdout(predicate::str::contains("Capability requirements"));
+}
+
+#[test]
 fn test_skill_flag_and_subcommand_outputs_match() {
   // The flag form and the subcommand form must produce byte-identical output.
   let via_flag = of_cmd().args(["mount", "git", "--skill"]).output().expect("run");

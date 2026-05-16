@@ -1,9 +1,10 @@
 # omniFUSE — skill manual for AI agents
 
-omniFUSE mounts remote backends (git repositories, wikis, more to come) as
-real local directories via FUSE (Linux/macOS) or WinFsp (Windows). Any tool
-that opens files — `cat`, `grep`, `python`, your editor — works against the
-mount with no special wiring.
+omniFUSE mounts remote backends (git repositories, wikis, S3-compatible
+object storage, more to come) as real local directories via FUSE
+(Linux/macOS) or WinFsp (Windows). Any tool that opens files — `cat`,
+`grep`, `python`, your editor — works against the mount with no special
+wiring.
 
 ## Mount lifecycle
 
@@ -24,6 +25,10 @@ Common environment variables:
 
 - `OMNIFUSE_WIKI_TOKEN` — wiki OAuth/IAM token.
 - `OMNIFUSE_WIKI_ORG_ID` — Yandex 360 organization ID.
+- `OMNIFUSE_S3_ENDPOINT` — S3-compatible service URL.
+- `OMNIFUSE_S3_REGION` — S3 region (or `auto` for R2 / most MinIO).
+- `OMNIFUSE_S3_ACCESS_KEY_ID` / `OMNIFUSE_S3_SECRET_ACCESS_KEY` — credentials.
+- `OMNIFUSE_S3_SESSION_TOKEN` — temporary credential, if used.
 
 For git: the standard `git` credentials on the host (SSH agent, `~/.netrc`,
 credential helper) are used.
