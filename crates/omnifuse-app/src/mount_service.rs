@@ -63,7 +63,7 @@ pub struct GitMountArgs {
 }
 
 /// Wiki mount request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct WikiMountArgs {
   /// Base URL of the Wiki API.
   pub base_url: String,
@@ -83,8 +83,23 @@ pub struct WikiMountArgs {
   pub read_only: bool
 }
 
+impl std::fmt::Debug for WikiMountArgs {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WikiMountArgs")
+      .field("base_url", &self.base_url)
+      .field("root_slug", &self.root_slug)
+      .field("auth_token", &"<redacted>")
+      .field("org_id", &self.org_id)
+      .field("mount_point", &self.mount_point)
+      .field("poll_interval_secs", &self.poll_interval_secs)
+      .field("allow_other", &self.allow_other)
+      .field("read_only", &self.read_only)
+      .finish()
+  }
+}
+
 /// S3-compatible mount request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct S3MountArgs {
   /// Bucket name.
   pub bucket: String,
@@ -110,6 +125,28 @@ pub struct S3MountArgs {
   pub allow_other: bool,
   /// Mount as read-only.
   pub read_only: bool
+}
+
+impl std::fmt::Debug for S3MountArgs {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("S3MountArgs")
+      .field("bucket", &self.bucket)
+      .field("mount_point", &self.mount_point)
+      .field("prefix", &self.prefix)
+      .field("endpoint", &self.endpoint)
+      .field("region", &self.region)
+      .field("access_key_id", &self.access_key_id.as_ref().map(|_| "<redacted>"))
+      .field(
+        "secret_access_key",
+        &self.secret_access_key.as_ref().map(|_| "<redacted>")
+      )
+      .field("session_token", &self.session_token.as_ref().map(|_| "<redacted>"))
+      .field("virtual_host_style", &self.virtual_host_style)
+      .field("poll_interval_secs", &self.poll_interval_secs)
+      .field("allow_other", &self.allow_other)
+      .field("read_only", &self.read_only)
+      .finish()
+  }
 }
 
 /// Prepared mount configuration and backend.
@@ -202,10 +239,11 @@ impl<E: MountEnvironment> MountService<E> {
   pub fn prepare_git(&self, args: GitMountArgs) -> anyhow::Result<PreparedMount<GitBackend>> {
     let branch = args.branch.unwrap_or_else(|| self.defaults.git_branch.clone());
     let poll_interval_secs = args.poll_interval_secs.unwrap_or(self.defaults.git_poll_interval_secs);
+    let source_identity = normalize_git_source_identity(&args.source);
     let layout = MountLayout::resolve(
       &self.env,
       &args.mount_point,
-      &CacheKey::new("git", format!("{}:{branch}", args.source))
+      &CacheKey::new("git", format!("{source_identity}:{branch}"))
     )?;
 
     let config = mount_config(&layout, "omnifuse-git", args.allow_other, args.read_only);
@@ -338,13 +376,7 @@ impl<E: MountEnvironment> MountService<E> {
 }
 
 fn s3_cache_identity(bucket: &str, prefix: &str, endpoint: Option<&str>, region: Option<&str>) -> String {
-  format!(
-    "{}:{}:{}:{}",
-    endpoint.unwrap_or(""),
-    region.unwrap_or(""),
-    bucket,
-    prefix.trim_matches('/')
-  )
+  omnifuse_s3::config::instance_identity_parts(endpoint, region, bucket, prefix)[1..].join(":")
 }
 
 fn mount_config(layout: &MountLayout, fs_name: &str, allow_other: bool, read_only: bool) -> MountConfig {
@@ -363,12 +395,46 @@ fn mount_config(layout: &MountLayout, fs_name: &str, allow_other: bool, read_onl
 }
 
 fn wiki_cache_identity(base_url: &str, root_slug: &str, org_id: Option<&str>) -> String {
-  format!(
-    "{}:{}:{}",
-    base_url.trim_end_matches('/'),
-    org_id.unwrap_or(""),
-    root_slug
-  )
+  omnifuse_wiki::instance_identity_parts(base_url, org_id, root_slug)[1..].join(":")
+}
+
+pub fn normalize_git_source_identity(source: &str) -> String {
+  let source = source.trim();
+  let without_slash = trim_trailing_slashes(source);
+  let normalized = without_slash.strip_suffix(".git").unwrap_or(without_slash);
+
+  if let Some((scheme, rest)) = normalized.split_once("://") {
+    return normalize_url_authority(scheme, rest);
+  }
+
+  if let Some((authority, path)) = normalized.split_once(':')
+    && authority.contains('@')
+  {
+    return format!("{}:{path}", normalize_scp_authority(authority));
+  }
+
+  normalized.to_string()
+}
+
+fn trim_trailing_slashes(value: &str) -> &str {
+  let trimmed = value.trim_end_matches('/');
+  if trimmed.is_empty() { value } else { trimmed }
+}
+
+fn normalize_url_authority(scheme: &str, rest: &str) -> String {
+  let scheme = scheme.to_ascii_lowercase();
+  match rest.split_once('/') {
+    Some((authority, "")) => format!("{scheme}://{}", authority.to_ascii_lowercase()),
+    Some((authority, path)) => format!("{scheme}://{}/{path}", authority.to_ascii_lowercase()),
+    None => format!("{scheme}://{}", rest.to_ascii_lowercase())
+  }
+}
+
+fn normalize_scp_authority(authority: &str) -> String {
+  match authority.split_once('@') {
+    Some((user, host)) => format!("{user}@{}", host.to_ascii_lowercase()),
+    None => authority.to_ascii_lowercase()
+  }
 }
 
 #[cfg(test)]
@@ -457,5 +523,21 @@ mod tests {
     assert_eq!(prepared.config.mount_point, PathBuf::from("/abs/mnt/s3"));
     assert_eq!(prepared.config.local_dir, prepared.layout.work_dir);
     assert_eq!(prepared.config.mount_options.fs_name, "omnifuse-s3");
+  }
+
+  #[test]
+  fn git_source_identity_normalizes_url_shape_without_changing_source() {
+    assert_eq!(
+      super::normalize_git_source_identity("HTTPS://GitHub.com/Owner/Repo.git/"),
+      "https://github.com/Owner/Repo"
+    );
+    assert_eq!(
+      super::normalize_git_source_identity("https://github.com/Owner/Repo/"),
+      "https://github.com/Owner/Repo"
+    );
+    assert_eq!(
+      super::normalize_git_source_identity("git@GitHub.com:Owner/Repo.git"),
+      "git@github.com:Owner/Repo"
+    );
   }
 }

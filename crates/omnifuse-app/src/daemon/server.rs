@@ -6,7 +6,7 @@
 
 use std::{
   path::{Path, PathBuf},
-  sync::Arc,
+  sync::{Arc, Mutex, PoisonError},
   time::Instant
 };
 
@@ -16,7 +16,7 @@ use omnifuse_core::{BufferConfig, FileBufferManager, FilesystemCache, Filesystem
 use omnifuse_git::GitBackend;
 use serde_json::Value;
 use tokio::{
-  io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
+  io::{AsyncBufRead, AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
   net::{UnixListener, UnixStream},
   task::JoinHandle
 };
@@ -27,8 +27,11 @@ use super::{
   protocol::{AckResult, ListResult, MountSummary, PROTOCOL_VERSION, Request, Response, StatusResult}
 };
 use crate::{
-  GitMountArgs, MountService, S3MountArgs, StdMountEnvironment, WikiMountArgs, mount_service::PreparedMount
+  GitMountArgs, MountService, S3MountArgs, StdMountEnvironment, WikiMountArgs,
+  mount_service::{PreparedMount, normalize_git_source_identity}
 };
+
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Active mount tracked by the daemon.
 struct ActiveMount {
@@ -47,6 +50,7 @@ pub struct Daemon {
   cache: Arc<FilesystemCache>,
   buffer_managers: DashMap<InstanceHash, Arc<FileBufferManager>>,
   mounts: DashMap<PathBuf, ActiveMount>,
+  lifecycle: Mutex<()>,
   service: MountService<StdMountEnvironment>
 }
 
@@ -59,6 +63,7 @@ impl Daemon {
       cache,
       buffer_managers: DashMap::new(),
       mounts: DashMap::new(),
+      lifecycle: Mutex::new(()),
       service
     })
   }
@@ -88,19 +93,19 @@ impl Daemon {
   /// Two concurrent mounts of the same `instance` see the same in-memory hot
   /// tier — that is the V1 hot-tier sharing model.
   fn shared_buffer_manager(&self, instance: &InstanceHash, config: &BufferConfig) -> Arc<FileBufferManager> {
-    if let Some(existing) = self.buffer_managers.get(instance) {
-      return Arc::clone(existing.value());
-    }
-    let manager = Arc::new(FileBufferManager::new(config.clone()));
-    self.buffer_managers.insert(instance.clone(), Arc::clone(&manager));
-    manager
+    Arc::clone(
+      self
+        .buffer_managers
+        .entry(instance.clone())
+        .or_insert_with(|| Arc::new(FileBufferManager::new(config.clone())))
+        .value()
+    )
   }
 
   fn drop_buffer_manager_if_idle(&self, instance: &InstanceHash) {
-    let still_used = self.mounts.iter().any(|entry| entry.value().instance == *instance);
-    if !still_used {
-      self.buffer_managers.remove(instance);
-    }
+    self.buffer_managers.remove_if(instance, |_, _| {
+      !self.mounts.iter().any(|entry| entry.value().instance == *instance)
+    });
   }
 
   /// Return the list of active mounts as a protocol payload.
@@ -172,6 +177,7 @@ impl Daemon {
     B: omnifuse_core::Backend
   {
     let mount_point = prepared.config.mount_point.clone();
+    let _guard = self.lifecycle.lock().unwrap_or_else(PoisonError::into_inner);
     if self.mounts.contains_key(&mount_point) {
       anyhow::bail!("mount already active at {}", mount_point.display());
     }
@@ -189,6 +195,7 @@ impl Daemon {
       } else {
         info!(mount_point = %mount_point_for_task.display(), "daemon-hosted mount stopped");
       }
+      let _guard = this.lifecycle.lock().unwrap_or_else(PoisonError::into_inner);
       this.mounts.remove(&mount_point_for_task);
       this.drop_buffer_manager_if_idle(&instance_for_task);
     });
@@ -267,7 +274,7 @@ impl Daemon {
 
 fn git_instance_hash(prepared: &PreparedMount<GitBackend>) -> InstanceHash {
   let cfg = prepared.backend.config();
-  InstanceHash::from_parts(&["git", &cfg.source, &cfg.branch])
+  InstanceHash::from_parts(&["git", &normalize_git_source_identity(&cfg.source), &cfg.branch])
 }
 
 /// Run the UDS server, accepting client connections until the shutdown signal fires.
@@ -281,8 +288,8 @@ pub async fn serve(
   mut shutdown: tokio::sync::oneshot::Receiver<()>
 ) -> anyhow::Result<()> {
   paths.ensure_dir()?;
+  let listener = bind_listener(&paths.socket).await?;
   let _pid_guard = PidFileGuard::write(&paths.pid)?;
-  let listener = bind_listener(&paths.socket)?;
   info!(socket = %paths.socket.display(), "daemon listening");
 
   let serve_loop = async {
@@ -317,9 +324,16 @@ pub async fn serve(
   Ok(())
 }
 
-fn bind_listener(socket: &Path) -> anyhow::Result<UnixListener> {
+async fn bind_listener(socket: &Path) -> anyhow::Result<UnixListener> {
   if socket.exists() {
-    let _ = std::fs::remove_file(socket);
+    if super::try_connect(socket).await?.is_some() {
+      anyhow::bail!("daemon already running at {}", socket.display());
+    }
+    match std::fs::remove_file(socket) {
+      Ok(()) => {}
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+      Err(error) => return Err(error).with_context(|| format!("removing stale socket {}", socket.display()))
+    }
   }
   let listener = UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
   // Restrict to owner only — the daemon brokers mount operations with the user's credentials.
@@ -361,7 +375,7 @@ async fn handle_client(stream: UnixStream, daemon: &Arc<Daemon>) -> anyhow::Resu
 
   loop {
     line.clear();
-    let bytes = reader.read_line(&mut line).await?;
+    let bytes = read_bounded_line(&mut reader, &mut line).await?;
     if bytes == 0 {
       return Ok(()); // peer closed
     }
@@ -375,6 +389,41 @@ async fn handle_client(stream: UnixStream, daemon: &Arc<Daemon>) -> anyhow::Resu
     write_half.write_all(encoded.as_bytes()).await?;
     write_half.flush().await?;
   }
+}
+
+async fn read_bounded_line<R>(reader: &mut R, line: &mut String) -> anyhow::Result<usize>
+where
+  R: AsyncBufRead + Unpin
+{
+  let mut bytes = Vec::new();
+  loop {
+    let available = reader.fill_buf().await?;
+    if available.is_empty() {
+      if bytes.is_empty() {
+        return Ok(0);
+      }
+      break;
+    }
+
+    let take = available
+      .iter()
+      .position(|byte| *byte == b'\n')
+      .map_or(available.len(), |idx| idx + 1);
+    if bytes.len().saturating_add(take) > MAX_FRAME_BYTES {
+      anyhow::bail!("daemon request frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    bytes.extend_from_slice(&available[..take]);
+    reader.consume(take);
+    if bytes.last() == Some(&b'\n') {
+      break;
+    }
+  }
+
+  let frame = String::from_utf8(bytes).context("daemon request frame is not valid UTF-8")?;
+  let len = frame.len();
+  line.push_str(&frame);
+  Ok(len)
 }
 
 async fn dispatch(line: &str, daemon: &Arc<Daemon>) -> Response {
@@ -471,6 +520,38 @@ mod tests {
     assert!(
       !Arc::ptr_eq(&a, &c),
       "different instances must get distinct buffer managers"
+    );
+  }
+
+  #[test]
+  fn shared_buffer_manager_is_same_arc_under_concurrency() {
+    let dir = TempDir::new().expect("tempdir");
+    let daemon = make_daemon(dir.path());
+    let cfg = BufferConfig::default();
+    let instance = InstanceHash::from_parts(&["test", "concurrent"]);
+    let barrier = Arc::new(std::sync::Barrier::new(16));
+
+    let handles = (0..16)
+      .map(|_| {
+        let daemon = Arc::clone(&daemon);
+        let cfg = cfg.clone();
+        let instance = instance.clone();
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+          barrier.wait();
+          daemon.shared_buffer_manager(&instance, &cfg)
+        })
+      })
+      .collect::<Vec<_>>();
+
+    let managers = handles
+      .into_iter()
+      .map(|handle| handle.join().expect("thread"))
+      .collect::<Vec<_>>();
+    let first = managers.first().expect("manager");
+    assert!(
+      managers.iter().all(|manager| Arc::ptr_eq(first, manager)),
+      "concurrent lookups must share one buffer manager"
     );
   }
 

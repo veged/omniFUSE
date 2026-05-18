@@ -18,7 +18,7 @@ pub mod session;
 
 use std::{
   path::{Path, PathBuf},
-  sync::{Arc, OnceLock},
+  sync::{Arc, Mutex, OnceLock, PoisonError},
   time::Duration
 };
 
@@ -32,6 +32,7 @@ use crate::{path::is_internal_path, session::S3Session};
 pub struct S3Backend {
   config: S3Config,
   session: OnceLock<S3Session>,
+  init_lock: Mutex<()>,
   cache: Option<Arc<FilesystemCache>>
 }
 
@@ -42,6 +43,7 @@ impl S3Backend {
     Self {
       config,
       session: OnceLock::new(),
+      init_lock: Mutex::new(()),
       cache: None
     }
   }
@@ -66,9 +68,12 @@ impl S3Backend {
 
 impl Backend for S3Backend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
-    if self.session.get().is_none() {
-      let session = S3Session::attach(&self.config, local_dir, self.cache.clone())?;
-      let _ = self.session.set(session);
+    {
+      let _guard = self.init_lock.lock().unwrap_or_else(PoisonError::into_inner);
+      if self.session.get().is_none() {
+        let session = S3Session::attach(&self.config, local_dir, self.cache.clone())?;
+        let _ = self.session.set(session);
+      }
     }
     self.session()?.initialize().await
   }

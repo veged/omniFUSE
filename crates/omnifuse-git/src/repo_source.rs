@@ -2,11 +2,9 @@
 //!
 //! Ported from `SimpleGitFS` `core/src/git/repo_source.rs`.
 
-use std::{
-  hash::{Hash, Hasher},
-  path::{Path, PathBuf}
-};
+use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 /// Git URL prefixes for remote repositories.
@@ -91,9 +89,13 @@ impl RepoSource {
 
   /// Hash a URL for a unique identifier.
   fn hash_url(url: &str) -> String {
-    let mut hasher = std::hash::DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let digest = Sha256::digest(url.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+      use std::fmt::Write as _;
+      let _ = write!(hex, "{byte:02x}");
+    }
+    hex
   }
 
   /// Local working path.
@@ -405,6 +407,14 @@ mod tests {
     assert_eq!(
       RepoSource::extract_repo_name("git@github.com:user/another-repo.git"),
       "another-repo"
+    );
+  }
+
+  #[test]
+  fn test_hash_url_is_stable_sha256_hex() {
+    assert_eq!(
+      RepoSource::hash_url("https://github.com/user/repo.git"),
+      "cb1fdf79c83e1634f3ce487b7813541d2d7fc345ba3be71cc1d85fc3b6f41474"
     );
   }
 

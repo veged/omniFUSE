@@ -20,7 +20,7 @@ pub mod session;
 
 use std::{
   path::{Path, PathBuf},
-  sync::{Arc, OnceLock},
+  sync::{Arc, Mutex, OnceLock, PoisonError},
   time::Duration
 };
 
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// Wiki backend configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WikiConfig {
   /// Base URL of the wiki API.
   pub base_url: String,
@@ -51,6 +51,20 @@ pub struct WikiConfig {
   pub max_depth: u32,
   /// Maximum number of pages when fetching the tree.
   pub max_pages: u32
+}
+
+impl std::fmt::Debug for WikiConfig {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WikiConfig")
+      .field("base_url", &self.base_url)
+      .field("auth_token", &"<redacted>")
+      .field("org_id", &self.org_id)
+      .field("root_slug", &self.root_slug)
+      .field("poll_interval_secs", &self.poll_interval_secs)
+      .field("max_depth", &self.max_depth)
+      .field("max_pages", &self.max_pages)
+      .finish()
+  }
 }
 
 impl Default for WikiConfig {
@@ -74,13 +88,21 @@ impl WikiConfig {
   /// base URL and root slug see the same pages.
   #[must_use]
   pub fn instance_hash(&self) -> InstanceHash {
-    InstanceHash::from_parts(&[
-      "wiki",
-      self.base_url.trim_end_matches('/'),
-      self.org_id.as_deref().unwrap_or(""),
+    InstanceHash::from_parts(&instance_identity_parts(
+      &self.base_url,
+      self.org_id.as_deref(),
       &self.root_slug
-    ])
+    ))
   }
+}
+
+/// Normalized identity parts for Wiki content.
+///
+/// The auth token is intentionally excluded: two clients pointing at the same
+/// base URL and root slug see the same pages.
+#[must_use]
+pub fn instance_identity_parts<'a>(base_url: &'a str, org_id: Option<&'a str>, root_slug: &'a str) -> [&'a str; 4] {
+  ["wiki", base_url.trim_end_matches('/'), org_id.unwrap_or(""), root_slug]
 }
 
 /// Wiki backend for `OmniFuse`.
@@ -93,6 +115,8 @@ pub struct WikiBackend {
   client: Arc<Client>,
   /// Page synchronization session (initialized in `init`).
   session: OnceLock<WikiPageSyncSession>,
+  /// Serializes fallible session initialization around `OnceLock`.
+  init_lock: Mutex<()>,
   /// Optional persistent cache wired into the session.
   cache: Option<Arc<FilesystemCache>>
 }
@@ -110,6 +134,7 @@ impl WikiBackend {
       config,
       client: Arc::new(client),
       session: OnceLock::new(),
+      init_lock: Mutex::new(()),
       cache: None
     })
   }
@@ -135,15 +160,18 @@ impl WikiBackend {
 
 impl Backend for WikiBackend {
   async fn init(&self, local_dir: &Path) -> anyhow::Result<InitResult> {
-    if self.session.get().is_none() {
-      let session = WikiPageSyncSession::attach_with_cache(
-        self.config.clone(),
-        self.client.clone(),
-        local_dir,
-        self.config.instance_hash(),
-        self.cache.clone()
-      )?;
-      let _ = self.session.set(session);
+    {
+      let _guard = self.init_lock.lock().unwrap_or_else(PoisonError::into_inner);
+      if self.session.get().is_none() {
+        let session = WikiPageSyncSession::attach_with_cache(
+          self.config.clone(),
+          self.client.clone(),
+          local_dir,
+          self.config.instance_hash(),
+          self.cache.clone()
+        )?;
+        let _ = self.session.set(session);
+      }
     }
 
     self.session()?.initialize().await

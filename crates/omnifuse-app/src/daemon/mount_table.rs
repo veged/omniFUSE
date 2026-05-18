@@ -197,7 +197,8 @@ async fn read_native_mount_table() -> anyhow::Result<Vec<RawMount>> {
 }
 
 fn classify_entry(raw: &RawMount) -> Option<MountSummary> {
-  let backend = OMNIFUSE_FS_NAMES.iter().find(|name| **name == raw.fs_name).copied()?;
+  let fs_name = raw.fs_name.split('@').next().unwrap_or(raw.fs_name.as_str());
+  let backend = OMNIFUSE_FS_NAMES.iter().find(|name| **name == fs_name).copied()?;
   let backend = backend.strip_prefix("omnifuse-").unwrap_or("omnifuse").to_string();
   Some(MountSummary {
     backend,
@@ -256,5 +257,16 @@ mod tests {
       mount_point: PathBuf::from("/")
     };
     assert!(classify_entry(&unrelated).is_none());
+  }
+
+  #[test]
+  fn classify_accepts_macos_macfuse_source_suffix() {
+    let entry = RawMount {
+      fs_name: "omnifuse-s3@osxfuse0".to_string(),
+      mount_point: PathBuf::from("/Volumes/bucket")
+    };
+    let summary = classify_entry(&entry).expect("classified");
+    assert_eq!(summary.backend, "s3");
+    assert_eq!(summary.mount_point, PathBuf::from("/Volumes/bucket"));
   }
 }

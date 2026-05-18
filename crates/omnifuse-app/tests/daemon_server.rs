@@ -78,6 +78,31 @@ async fn daemon_returns_error_for_unknown_method_path() {
 }
 
 #[tokio::test]
+async fn daemon_refuses_to_replace_live_socket() {
+  let tmp = TempDir::new().expect("tempdir");
+  let (paths, task, shutdown) = spawn_daemon(&tmp).await;
+
+  let cache = FilesystemCache::open(tmp.path().join("cache-2"), FilesystemCacheConfig::default()).expect("cache");
+  let daemon = Daemon::new(cache);
+  let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+  let error = serve(paths.clone(), daemon, rx)
+    .await
+    .expect_err("second daemon must fail");
+
+  assert!(
+    error.to_string().contains("already running"),
+    "unexpected error: {error}"
+  );
+  assert!(paths.pid.exists(), "first daemon pid file must remain intact");
+
+  shutdown.send(()).expect("send shutdown");
+  timeout(Duration::from_secs(5), task)
+    .await
+    .expect("join")
+    .expect("task");
+}
+
+#[tokio::test]
 async fn daemon_paths_resolve_via_std_env() {
   // Smoke test that path resolution does not panic on the host environment.
   let _ = DaemonPaths::resolve(&StdMountEnvironment).expect("paths");

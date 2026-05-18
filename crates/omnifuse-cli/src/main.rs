@@ -579,6 +579,11 @@ async fn cmd_daemon_start() -> anyhow::Result<()> {
   command.stdin(std::process::Stdio::null());
   command.stdout(std::process::Stdio::null());
   command.stderr(std::process::Stdio::null());
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+  }
   let child = command.spawn().context("spawning daemon process")?;
   println!("daemon starting (pid {})", child.id());
 
@@ -597,7 +602,6 @@ async fn cmd_daemon_start() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[allow(clippy::unused_async)]
 async fn cmd_daemon_stop() -> anyhow::Result<()> {
   let paths = omnifuse_app::daemon::DaemonPaths::resolve(&omnifuse_app::StdMountEnvironment)?;
   let pid_text = match std::fs::read_to_string(&paths.pid) {
@@ -608,6 +612,12 @@ async fn cmd_daemon_stop() -> anyhow::Result<()> {
     }
     Err(error) => return Err(error.into())
   };
+  if omnifuse_app::daemon::try_connect(&paths.socket).await?.is_none() {
+    let _ = std::fs::remove_file(&paths.pid);
+    println!("daemon is not running (removed stale pid file)");
+    return Ok(());
+  }
+
   let pid: i32 = pid_text
     .trim()
     .parse()
@@ -628,7 +638,17 @@ async fn cmd_daemon_stop() -> anyhow::Result<()> {
     anyhow::bail!("daemon stop is only supported on Unix");
   }
 
-  Ok(())
+  for _ in 0..100 {
+    let socket_gone = omnifuse_app::daemon::try_connect(&paths.socket).await?.is_none();
+    let pid_gone = !paths.pid.exists();
+    if socket_gone && pid_gone {
+      println!("daemon stopped");
+      return Ok(());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  }
+
+  anyhow::bail!("daemon did not stop within 10s")
 }
 
 async fn cmd_daemon_status() -> anyhow::Result<()> {

@@ -44,6 +44,9 @@ pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Trigger eviction after this many puts.
 const EVICTION_PUT_INTERVAL: u64 = 64;
 
+/// Cache layout is fixed-depth; anything deeper is ignored during eviction.
+const MAX_CACHE_WALK_DEPTH: usize = 8;
+
 /// Process-wide counter ensuring distinct tmp filenames even when two writers
 /// observe the same `SystemTime` nanosecond.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -207,7 +210,7 @@ impl FilesystemCache {
   fn spawn_eviction_if_needed(self: &Arc<Self>) {
     if self
       .eviction_in_flight
-      .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
       .is_err()
     {
       return;
@@ -217,7 +220,7 @@ impl FilesystemCache {
       if let Err(error) = this.evict_to_budget() {
         warn!(error = %error, "cache eviction failed");
       }
-      this.eviction_in_flight.store(false, Ordering::SeqCst);
+      this.eviction_in_flight.store(false, Ordering::Release);
     };
     // When called from inside a Tokio runtime, run eviction off the async pool so
     // the put path stays responsive. When called from sync code (e.g. cache open
@@ -295,7 +298,7 @@ impl PersistentCache for Arc<FilesystemCache> {
     let cache = Self::clone(self);
     let write_result = tokio::task::spawn_blocking(move || write_blob_atomic(&path, &bytes)).await?;
     write_result?;
-    let count = cache.put_counter.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    let count = cache.put_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     if count % EVICTION_PUT_INTERVAL == 0 {
       cache.spawn_eviction_if_needed();
     }
@@ -384,11 +387,12 @@ fn write_blob_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
   }
 
   let pid = std::process::id();
-  let counter = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-  let tmp_name = format!(
-    "{}.tmp.{pid}.{counter:016x}",
-    path.file_name().and_then(|name| name.to_str()).unwrap_or("blob")
-  );
+  let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+  let file_name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache blob path has no file name"))?;
+  let tmp_name = format!("{file_name}.tmp.{pid}.{counter:016x}");
   let tmp_path = path.with_file_name(tmp_name);
   fs::write(&tmp_path, bytes)?;
 
@@ -409,19 +413,9 @@ fn write_blob_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn touch_mtime(path: &Path) -> io::Result<()> {
-  #[cfg(unix)]
-  {
-    use std::os::unix::fs::OpenOptionsExt;
-    let now = SystemTime::now();
-    let file = fs::OpenOptions::new().write(true).custom_flags(0).open(path)?;
-    file.set_modified(now)
-  }
-  #[cfg(not(unix))]
-  {
-    let now = SystemTime::now();
-    let file = fs::OpenOptions::new().write(true).open(path)?;
-    file.set_modified(now)
-  }
+  let now = SystemTime::now();
+  let file = fs::OpenOptions::new().write(true).open(path)?;
+  file.set_modified(now)
 }
 
 #[derive(Debug)]
@@ -432,7 +426,14 @@ struct BlobEntry {
 }
 
 fn collect_blobs(root: &Path, out: &mut Vec<BlobEntry>, total: &mut u64) -> io::Result<()> {
+  collect_blobs_at(root, 0, out, total)
+}
+
+fn collect_blobs_at(root: &Path, depth: usize, out: &mut Vec<BlobEntry>, total: &mut u64) -> io::Result<()> {
   if !root.exists() {
+    return Ok(());
+  }
+  if depth >= MAX_CACHE_WALK_DEPTH {
     return Ok(());
   }
   for entry in fs::read_dir(root)? {
@@ -444,7 +445,7 @@ fn collect_blobs(root: &Path, out: &mut Vec<BlobEntry>, total: &mut u64) -> io::
       continue;
     };
     if file_type.is_dir() {
-      collect_blobs(&path, out, total)?;
+      collect_blobs_at(&path, depth + 1, out, total)?;
       continue;
     }
     if !file_type.is_file() {

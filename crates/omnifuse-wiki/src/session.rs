@@ -197,7 +197,7 @@ impl WikiPageSyncSession {
   /// Returns an error when remote data is unavailable and there is no local metadata fallback,
   /// or when local files/metadata cannot be written.
   pub async fn initialize(&self) -> anyhow::Result<InitResult> {
-    std::fs::create_dir_all(&self.local_dir)?;
+    tokio::fs::create_dir_all(&self.local_dir).await?;
 
     info!(
       root = %self.config.root_slug,
@@ -391,9 +391,9 @@ impl WikiPageSyncSession {
       match change {
         RemoteChange::Modified { path, content } => {
           if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
           }
-          std::fs::write(path, content)?;
+          tokio::fs::write(path, content).await?;
 
           let content = String::from_utf8_lossy(content);
           if let Some((page_ref, snapshot)) = batch.snapshot_for_path(path) {
@@ -406,7 +406,7 @@ impl WikiPageSyncSession {
           debug!(path = %path.display(), "remote change applied");
         }
         RemoteChange::Deleted { path } => {
-          let _ = std::fs::remove_file(path);
+          let _ = tokio::fs::remove_file(path).await;
 
           if let Some(page_ref) = PageRef::from_path(&self.local_dir, path) {
             self.meta_store.remove(page_ref.slug.as_str());
@@ -429,12 +429,12 @@ impl WikiPageSyncSession {
     let content = self
       .read_page_cached(page_ref.slug.as_str(), Some(node.modified_at.as_str()))
       .await?;
-    let changed = std::fs::read_to_string(&page_ref.path).map_or(true, |existing| existing != content);
+    let changed = local_text_differ(&page_ref.path, &content).await?;
 
     if let Some(parent) = page_ref.path.parent() {
-      std::fs::create_dir_all(parent)?;
+      tokio::fs::create_dir_all(parent).await?;
     }
-    std::fs::write(&page_ref.path, &content)?;
+    tokio::fs::write(&page_ref.path, &content).await?;
 
     let snapshot = PageSnapshot {
       id: node.id,
@@ -458,8 +458,9 @@ impl WikiPageSyncSession {
       return Ok(None);
     };
 
-    let local_content =
-      std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let local_content = tokio::fs::read_to_string(&path)
+      .await
+      .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
 
     let Some(snapshot) = self.snapshot_for(&page_ref).await else {
       self.create_remote_page(&page_ref, &local_content).await?;
@@ -490,12 +491,12 @@ impl WikiPageSyncSession {
         self
           .update_remote_page(&snapshot, &page_ref, &merged, true, false)
           .await?;
-        std::fs::write(path, &merged)?;
+        tokio::fs::write(path, &merged).await?;
         info!(slug = %page_ref.slug.as_str(), "merge successful");
         Ok(Some(true))
       }
       MergeDecision::AcceptRemote(remote) => {
-        std::fs::write(path, &remote)?;
+        tokio::fs::write(path, &remote).await?;
         self
           .save_page_state(&page_ref, snapshot_from_page(&remote_page), &remote)
           .await?;
@@ -563,7 +564,7 @@ impl WikiPageSyncSession {
       .update_page(snapshot.id, Some(&snapshot.title), Some(content), allow_merge)
       .await?;
     if update_local {
-      std::fs::write(&page_ref.path, content)?;
+      tokio::fs::write(&page_ref.path, content).await?;
     }
     self
       .save_page_state(page_ref, snapshot_from_page(&updated), content)
@@ -586,6 +587,14 @@ impl WikiPageSyncSession {
     } else {
       self.local_dir.join(path)
     }
+  }
+}
+
+async fn local_text_differ(path: &Path, content: &str) -> anyhow::Result<bool> {
+  match tokio::fs::read_to_string(path).await {
+    Ok(existing) => Ok(existing != content),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+    Err(error) => Err(error.into())
   }
 }
 

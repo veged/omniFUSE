@@ -256,15 +256,15 @@ impl S3Session {
       let object_path = ObjectPath::from_remote(&object_path)?;
       let local_path = self.local_dir.join(object_path.to_local_path());
       if let Some(parent) = local_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
       }
 
       let bytes = self
         .read_object_cached(object_path.as_str(), state.etag.as_deref())
         .await?;
-      let needs_write = std::fs::read(&local_path).map_or(true, |existing| existing != bytes);
+      let needs_write = local_bytes_differ(&local_path, &bytes).await?;
       if needs_write {
-        std::fs::write(&local_path, &bytes)?;
+        tokio::fs::write(&local_path, &bytes).await?;
         changed += 1;
       }
 
@@ -314,11 +314,11 @@ impl S3Session {
   async fn sync_one(&self, path: &Path) -> anyhow::Result<bool> {
     let object_path = ObjectPath::from_local(path)?;
     let local_path = self.local_dir.join(path);
-    if local_path.is_dir() {
+    if is_local_dir(&local_path).await? {
       return Ok(false);
     }
 
-    if local_path.exists() {
+    if local_path_exists(&local_path).await? {
       self.upload_or_merge(path, object_path.as_str(), &local_path).await?;
     } else {
       self.delete_remote(path, object_path.as_str()).await?;
@@ -355,7 +355,11 @@ impl S3Session {
           .merge_remote_drift(local_rel, object_path, &local_bytes, current_state)
           .await
       }
-      (Some(_base_state), None) => self.handle_remote_delete_during_upload(local_rel, object_path, &local_bytes),
+      (Some(_base_state), None) => {
+        self
+          .handle_remote_delete_during_upload(local_rel, object_path, &local_bytes)
+          .await
+      }
       (None, Some(remote_meta)) => {
         let remote_bytes = self
           .read_object_cached(object_path, remote_meta.etag.as_deref())
@@ -426,14 +430,14 @@ impl S3Session {
       }
       TextMergeDecision::UploadMerged(merged) => {
         let merged_bytes = merged.into_bytes();
-        std::fs::write(self.local_dir.join(local_rel), &merged_bytes)?;
+        tokio::fs::write(self.local_dir.join(local_rel), &merged_bytes).await?;
         self
           .put_update_and_record(local_rel, object_path, remote_state.required_etag()?, &merged_bytes)
           .await
       }
       TextMergeDecision::AcceptRemote(remote) => {
         let bytes = remote.into_bytes();
-        std::fs::write(self.local_dir.join(local_rel), &bytes)?;
+        tokio::fs::write(self.local_dir.join(local_rel), &bytes).await?;
         self.save_synced_state(object_path, remote_state.clone(), &bytes)
       }
       TextMergeDecision::AlreadySynced => self.save_synced_state(object_path, remote_state.clone(), local_bytes),
@@ -446,7 +450,7 @@ impl S3Session {
     }
   }
 
-  fn handle_remote_delete_during_upload(
+  async fn handle_remote_delete_during_upload(
     &self,
     local_rel: &Path,
     object_path: &str,
@@ -455,7 +459,7 @@ impl S3Session {
     let base_bytes = self.manifest_store.load_base(object_path).unwrap_or_default();
     if base_bytes == local_bytes {
       let local_path = self.local_dir.join(local_rel);
-      let _ = std::fs::remove_file(local_path);
+      let _ = tokio::fs::remove_file(local_path).await;
       self.update_manifest(object_path, None)?;
       self.manifest_store.remove_base(object_path);
       Ok(())
@@ -679,7 +683,7 @@ impl S3Session {
           bytes,
           state
         } => {
-          self.write_local(&local_rel, &bytes)?;
+          self.write_local(&local_rel, &bytes).await?;
           self.save_synced_state(&object_path, state, &bytes)?;
           changed.push(local_rel);
         }
@@ -690,7 +694,7 @@ impl S3Session {
           base_bytes,
           state
         } => {
-          self.write_local(&local_rel, &merged)?;
+          self.write_local(&local_rel, &merged).await?;
           self.manifest_store.save_base(&object_path, &base_bytes)?;
           self.update_manifest(&object_path, Some(state))?;
           changed.push(local_rel);
@@ -704,7 +708,7 @@ impl S3Session {
           changed.push(local_rel);
         }
         ApplyDecision::DeleteLocal { local_rel, object_path } => {
-          let _ = std::fs::remove_file(self.local_dir.join(&local_rel));
+          let _ = tokio::fs::remove_file(self.local_dir.join(&local_rel)).await;
           self.update_manifest(&object_path, None)?;
           self.manifest_store.remove_base(&object_path);
           deleted.push(local_rel);
@@ -731,7 +735,7 @@ impl S3Session {
           .read_object_cached(object_path, remote_state.etag.as_deref())
           .await?;
 
-        if !local_path.exists() || !self.local_changed_from_base(object_path, &local_path) {
+        if !local_path_exists(&local_path).await? || !self.local_changed_from_base(object_path, &local_path).await {
           return Ok(ChangeDecision::Apply(ApplyDecision::WriteRemote {
             local_rel,
             object_path: object_path.clone(),
@@ -740,7 +744,7 @@ impl S3Session {
           }));
         }
 
-        let local_bytes = std::fs::read(&local_path)?;
+        let local_bytes = tokio::fs::read(&local_path).await?;
         let base_bytes = self.manifest_store.load_base(object_path).unwrap_or_default();
         let (Some(base_text), Some(local_text), Some(remote_text)) = (
           decode_utf8_text(&base_bytes),
@@ -780,7 +784,7 @@ impl S3Session {
       RemoteChange::Deleted { object_path } => {
         let local_rel = PathBuf::from(object_path);
         let local_path = self.local_dir.join(&local_rel);
-        if local_path.exists() && self.local_changed_from_base(object_path, &local_path) {
+        if local_path_exists(&local_path).await? && self.local_changed_from_base(object_path, &local_path).await {
           Ok(ChangeDecision::Conflict(local_rel))
         } else {
           Ok(ChangeDecision::Apply(ApplyDecision::DeleteLocal {
@@ -792,20 +796,44 @@ impl S3Session {
     }
   }
 
-  fn write_local(&self, local_rel: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+  async fn write_local(&self, local_rel: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let local_path = self.local_dir.join(local_rel);
     if let Some(parent) = local_path.parent() {
-      std::fs::create_dir_all(parent)?;
+      tokio::fs::create_dir_all(parent).await?;
     }
-    std::fs::write(local_path, bytes)?;
+    tokio::fs::write(local_path, bytes).await?;
     Ok(())
   }
 
-  fn local_changed_from_base(&self, object_path: &str, local_path: &Path) -> bool {
+  async fn local_changed_from_base(&self, object_path: &str, local_path: &Path) -> bool {
     let Some(base) = self.manifest_store.load_base(object_path) else {
       return true;
     };
-    std::fs::read(local_path).map_or(true, |local| local != base)
+    tokio::fs::read(local_path).await.map_or(true, |local| local != base)
+  }
+}
+
+async fn local_path_exists(path: &Path) -> anyhow::Result<bool> {
+  match tokio::fs::metadata(path).await {
+    Ok(_) => Ok(true),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+    Err(error) => Err(error.into())
+  }
+}
+
+async fn is_local_dir(path: &Path) -> anyhow::Result<bool> {
+  match tokio::fs::metadata(path).await {
+    Ok(metadata) => Ok(metadata.is_dir()),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+    Err(error) => Err(error.into())
+  }
+}
+
+async fn local_bytes_differ(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
+  match tokio::fs::read(path).await {
+    Ok(existing) => Ok(existing != bytes),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+    Err(error) => Err(error.into())
   }
 }
 
